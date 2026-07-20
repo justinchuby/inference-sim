@@ -59,6 +59,10 @@ input {
   height: 260px;
 }
 
+.partition-chart {
+  height: 300px;
+}
+
 .recharts-surface {
   overflow: visible;
 }
@@ -122,6 +126,10 @@ input {
 
   .chart-frame {
     height: 230px;
+  }
+
+  .partition-chart {
+    height: 320px;
   }
 
   .cache-chart {

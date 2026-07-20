@@ -63,6 +63,18 @@ export default function ResultCharts({
             ? <ServingLatencyChart result={result} />
             : <CacheOutcomeChart result={result} />}
       </section>
+      {result.expertCache
+        ? (
+            <section className="panel">
+              <SectionHeading
+                title="Cache partitions"
+                detail={`${result.expertCache.hotPartitions.length} hot owners · ${result.expertCache.warmPartitions.length} warm nodes`}
+              />
+              <CachePartitionPressure result={result} />
+              <CachePartitionChart result={result} />
+            </section>
+          )
+        : null}
     </>
   );
 }
@@ -357,6 +369,160 @@ function CacheOutcomeChart({
   );
 }
 
+function CachePartitionChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const data = cachePartitionRows(result.expertCache);
+  return (
+    <div className="partition-chart chart-frame flex flex-col">
+      <div className="min-h-0 flex-1">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={data}
+            layout="vertical"
+            margin={{ left: 8, right: 14 }}
+          >
+            <CartesianGrid stroke="#e4e4e7" horizontal={false} />
+            <XAxis
+              type="number"
+              domain={[0, 100]}
+              tickFormatter={(value: number) => `${Math.round(value)}%`}
+              tick={{ fill: "#71717a", fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={112}
+              tick={{ fill: "#52525b", fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <ChartTooltip
+              formatter={(value, name, item) => [
+                `${Number(value).toFixed(1)}%`,
+                `${String(name)} · ${Number(item.payload.capacityMiB).toFixed(0)} MiB`,
+              ]}
+              contentStyle={chartTooltipStyle}
+            />
+            <Bar
+              dataKey="resident"
+              name="Resident"
+              stackId="capacity"
+            >
+              {data.map((entry) => (
+                <Cell
+                  key={entry.name}
+                  fill={entry.tier === "hot" ? "#0369a1" : "#d97706"}
+                />
+              ))}
+            </Bar>
+            <Bar
+              dataKey="reserved"
+              name="Reserved"
+              stackId="capacity"
+              fill="#be123c"
+            />
+            <Bar
+              dataKey="free"
+              name="Free"
+              stackId="capacity"
+              fill="#d4d4d8"
+              radius={[0, 3, 3, 0]}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 px-3 pb-2 text-[11px] text-zinc-600">
+        {[
+          ["Hot resident", "#0369a1"],
+          ["Warm resident", "#d97706"],
+          ["Reserved", "#be123c"],
+          ["Free", "#d4d4d8"],
+        ].map(([label, color]) => (
+          <span key={label} className="flex items-center gap-1.5">
+            <span
+              className="size-2.5 shrink-0 rounded-sm"
+              style={{ backgroundColor: color }}
+            />
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CachePartitionPressure({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element | null {
+  const cache = result.expertCache;
+  if (cache === undefined || cache.metrics.evictions === 0) {
+    return null;
+  }
+  const pressured = cachePartitionRows(cache).filter((partition) => (
+    partition.resident + partition.reserved >= 90
+  ));
+  if (pressured.length === 0) {
+    return null;
+  }
+  return (
+    <div
+      role="status"
+      className="mb-3 flex flex-wrap items-center justify-between gap-2 border-l-2 border-amber-600 bg-amber-50 px-3 py-2 text-xs"
+    >
+      <span className="font-semibold text-amber-900">
+        Capacity pressure · {cache.metrics.evictions.toLocaleString()} evictions
+      </span>
+      <span className="text-amber-800">
+        {pressured.map((partition) => (
+          `${partition.name} ${Math.round(
+            partition.resident + partition.reserved,
+          )}%`
+        )).join(" · ")}
+      </span>
+    </div>
+  );
+}
+
+export function cachePartitionRows(
+  cache: DashboardResult["expertCache"],
+) {
+  if (cache === undefined) {
+    return [];
+  }
+  return [
+    ...cache.hotPartitions.map((partition) => ({
+      ...partition,
+      tier: "hot" as const,
+    })),
+    ...cache.warmPartitions.map((partition) => ({
+      ...partition,
+      tier: "warm" as const,
+    })),
+  ].filter((partition) => partition.capacityBytes > 0)
+    .map((partition) => ({
+      name: `${partition.tier === "hot" ? "H" : "W"} ${shortPartition(partition.id)}`,
+      tier: partition.tier,
+      resident: partition.residentBytes / partition.capacityBytes * 100,
+      reserved: partition.reservedBytes / partition.capacityBytes * 100,
+      free: Math.max(
+        0,
+        (
+          partition.capacityBytes
+          - partition.residentBytes
+          - partition.reservedBytes
+        ) / partition.capacityBytes * 100,
+      ),
+      capacityMiB: partition.capacityBytes / 1024 ** 2,
+    }));
+}
+
 function SectionHeading({
   title,
   detail,
@@ -370,6 +536,12 @@ function SectionHeading({
       <span className="truncate text-xs text-zinc-500">{detail}</span>
     </div>
   );
+}
+
+function shortPartition(id: string): string {
+  return id
+    .replace("target-shard-", "owner ")
+    .replace("node", "node ");
 }
 
 const chartTooltipStyle = {

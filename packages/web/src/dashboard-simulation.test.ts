@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { parseCalibrationFileText } from "./calibration-import.js";
 import { parseTokenTraceFileText } from "./token-trace-import.js";
+import { cachePartitionRows } from "./ResultCharts.js";
 import { simulateDashboard } from "./dashboard-simulation.js";
 import type { DashboardRunConfig } from "./types.js";
 
@@ -149,6 +150,15 @@ describe("simulateDashboard", () => {
         <= partition.capacityBytes
     ))).toBe(true);
     expect(first.expertCache?.warmPartitions).toHaveLength(1);
+    const partitionRows = cachePartitionRows(first.expertCache);
+    expect(partitionRows.map((row) => row.name)).toEqual([
+      "H owner 0",
+      "H owner 1",
+      "W node 0",
+    ]);
+    expect(partitionRows.every((row) => (
+      Math.abs(row.resident + row.reserved + row.free - 100) < 1e-9
+    ))).toBe(true);
 
     const roundRobin = simulateDashboard({
       ...config,
