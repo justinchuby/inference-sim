@@ -30,6 +30,9 @@ Phase 2 is in progress:
   tensor collectives, and topology-aware heuristic timing; and
 - time-anchored device/link/topology-epoch fault injection, submission closure,
   quiescence, independent replay, and deterministic per-resource campaigns.
+- seeded multi-execution FrozenPlan campaigns with arrival-ordered admission,
+  shared compute/link/collective lanes, communicator ownership, physical
+  allocation leases, and independent global replay.
 
 Phase 3 has an initial speculative workload slice:
 
@@ -133,6 +136,7 @@ pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
+pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
 pnpm dev:web
 ```
 

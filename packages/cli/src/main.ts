@@ -24,6 +24,7 @@ import {
   simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   runPlanFaultCampaign,
+  runSeededConcurrentPlanCampaign,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -44,6 +45,7 @@ import {
   type TopologyServingResult,
   type TopologyCostModel,
   type TopologyWorkloadProfile,
+  type ConcurrentPlanCampaignOptions,
 } from "@inference-sim/core";
 import {
   optionalBoolean,
@@ -302,6 +304,36 @@ export async function runCli(
         printJson(
           io,
           summarizeFaultCampaign(runPlanFaultCampaign(scenario, plan)),
+        );
+        return 0;
+      }
+      case "concurrent-campaign": {
+        if (!argument) {
+          throw new Error(
+            "concurrent-campaign requires a scenario preset name",
+          );
+        }
+        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
+          throw new Error(`unknown scenario preset ${argument}`);
+        }
+        const config = await loadRequiredConfig(
+          secondArgument,
+          "concurrent-campaign",
+        );
+        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const costModel = await loadCostModel(thirdArgument);
+        const plan = compileTopologyWorkloadPlan(
+          scenario,
+          buildTopologyProfile(config),
+          costModel,
+        );
+        printJson(
+          io,
+          summarizeConcurrentCampaign(runSeededConcurrentPlanCampaign(
+            scenario,
+            plan,
+            parseConcurrentCampaignOptions(config, scenario.execution.seed),
+          )),
         );
         return 0;
       }
@@ -880,6 +912,85 @@ function summarizeFaultCampaign(
   };
 }
 
+function parseConcurrentCampaignOptions(
+  config: Record<string, unknown>,
+  defaultSeed: number,
+): ConcurrentPlanCampaignOptions {
+  const campaign = config.concurrent_campaign === undefined
+    ? {}
+    : requireRecord(config.concurrent_campaign, "concurrent_campaign");
+  return {
+    executionCount: optionalNumber(
+      campaign,
+      "execution_count",
+      32,
+      "concurrent_campaign",
+    ),
+    seed: optionalNumber(
+      campaign,
+      "seed",
+      defaultSeed,
+      "concurrent_campaign",
+    ),
+    arrivalWindowNs: optionalNumber(
+      campaign,
+      "arrival_window_ns",
+      1_000_000,
+      "concurrent_campaign",
+    ),
+  };
+}
+
+function summarizeConcurrentCampaign(
+  result: ReturnType<typeof runSeededConcurrentPlanCampaign>,
+) {
+  const arrivals = new Map(
+    result.requests.map((request) => [
+      request.executionId,
+      request.arrivalNs,
+    ]),
+  );
+  const latencies = result.execution.executions
+    .map((execution) => (
+      execution.completedAtNs - (arrivals.get(execution.executionId) ?? 0)
+    ))
+    .sort((left, right) => left - right);
+  const totalOperations = result.execution.trace.operations.length;
+  return {
+    options: result.options,
+    assumptions: [
+      "physical allocation ids remain shared across executions; conflicting writes are lease-serialized",
+      "this campaign stresses shared execution resources and is not a substitute for paged-KV request serving",
+    ],
+    completedAtNs: result.execution.completedAtNs,
+    executionCount: result.execution.executions.length,
+    maximumConcurrentExecutions:
+      result.execution.maximumConcurrentExecutions,
+    submittedOperations: totalOperations,
+    replayAppliedEvents: result.replay.appliedEvents,
+    replayExecutions: result.replay.executions.length,
+    latencyNs: {
+      minimum: latencies[0] ?? 0,
+      average: latencies.length === 0
+        ? 0
+        : latencies.reduce((sum, value) => sum + value, 0) / latencies.length,
+      p95: percentile(latencies, 0.95),
+      maximum: latencies.at(-1) ?? 0,
+    },
+    admissionsPreview: result.requests.slice(0, 16),
+  };
+}
+
+function percentile(values: readonly number[], quantile: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values[Math.min(
+    values.length - 1,
+    Math.max(0, Math.ceil(values.length * quantile) - 1),
+  )];
+}
+
 function summarizeServingRun(result: TopologyServingResult) {
   return {
     scenarioId: result.scenarioId,
@@ -1043,6 +1154,7 @@ Usage:
   inference-sim run <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
   inference-sim compare <workload.yaml|json> [calibration.yaml|json]
   inference-sim fault-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim concurrent-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
 `;
 }
 

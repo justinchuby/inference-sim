@@ -269,6 +269,39 @@ sets before enqueue:
 - dropping an observation handle does not release backend ownership; and
 - free/reuse occurs only after terminal success or abort quiescence.
 
+### 8.4 Concurrent Plan Campaigns
+
+Multiple valid `FrozenPlan` instances may be admitted into one deterministic
+executor. Admission order is a contiguous sequence ordered first by arrival
+time and then by an explicit tie-break. At an arrival boundary, completions and
+their newly ready submissions are processed before the new admission batch.
+Ready work is then selected by admission order and source-plan step order.
+
+All executions share the scenario's actual compute lanes, directed link lanes,
+collective lanes, communicator sequencers, and physical-allocation lease
+registry. A repeated `PhysicalAllocationId` still names one physical
+reservation: it is never silently namespaced by execution. Consequently,
+read/read access may overlap while conflicting KV, workspace, checkpoint, or
+sidecar access is lease-serialized even if the operations use otherwise
+different devices or links. Modeling independent per-execution storage requires
+the scenario to declare distinct physical allocations and charge their bytes.
+
+The seeded concurrent campaign clones one plan's execution envelope but
+intentionally retains its physical allocation identities. It is a stress test
+for shared scheduler, communicator, resource, and lease behavior; it is not a
+request-throughput shortcut and does not create free KV capacity. Continuous
+request throughput remains the responsibility of the paged-KV serving model.
+
+The concurrent trace records canonical admissions, a global operation
+submission sequence with execution-local source sequences, and one terminal per
+execution. Independent replay reconstructs dependency readiness, communicator
+ownership release, resource-lane choice, lease-constrained start time, rank
+completion, and terminal order. It rejects unexplained submission delay,
+collective overtaking, resource reassignment, lease overlap, and terminal
+mutation.
+Admissions, operations, and terminals all consume the scenario `maxEvents`
+budget; manual admission cannot bypass the event/trace-size guard.
+
 ## 9. Speculative Decoding
 
 Speculative decoding is an execution protocol, not a scalar speedup factor.
@@ -904,12 +937,13 @@ Status: in progress. Implemented:
 - deterministic fault campaigns over every device/link used by a plan plus an
   epoch-change case; and
 - communicator abort propagation across overlapping groups, poisoned-epoch
-  admission closure, and explicit epoch advance.
+  admission closure, and explicit epoch advance; and
+- seeded multi-execution campaigns with arrival-ordered admission, shared
+  device/link/collective lanes, shared physical-allocation leases, per-group
+  communicator ownership, and independent global trace replay.
 
 Remaining Phase 2 work:
 
-- seeded large-scale campaigns that run multiple FrozenPlan executors
-  concurrently through shared communicator sequencers;
 - node-wide correlated failure and recovery/replan policy.
 
 ### Phase 3: Speculative, Workload, and Cache Dynamics
@@ -1020,6 +1054,11 @@ work-item-range mismatches.
 The `fault-campaign` command compiles that workload, executes and replays a
 successful baseline, then injects deterministic mid-operation faults into each
 used device/link and the next topology epoch.
+The `concurrent-campaign` command compiles one workload, generates seeded
+arrival-ordered execution envelopes, runs them through shared resources and
+communicator sequencers, and independently replays the global trace. Its output
+explicitly reports that repeated physical allocation IDs remain shared and
+lease-serialized.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,

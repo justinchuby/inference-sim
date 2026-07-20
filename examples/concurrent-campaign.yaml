@@ -1,0 +1,7 @@
+concurrent_campaign:
+  execution_count: 32
+  seed: 24301
+  arrival_window_ns: 1000000
+
+target_only:
+  token_count: 8

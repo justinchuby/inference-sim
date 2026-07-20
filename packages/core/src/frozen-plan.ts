@@ -804,6 +804,34 @@ export class CollectiveSubmitSequencer {
   }
 
   submit(executionId: string, groupId: string, commSequenceId: number): void {
+    if (!this.canSubmit(executionId, groupId, commSequenceId)) {
+      throw new FrozenPlanExecutionError(
+        `execution ${executionId} is not the submit owner for ${groupId}`,
+      );
+    }
+    const groups = this.executions.get(executionId);
+    const progress = groups?.get(groupId);
+    const queue = this.groupQueues.get(groupId);
+    if (!groups || !progress || !queue) {
+      throw new FrozenPlanExecutionError(
+        `collective submit state disappeared for ${executionId}/${groupId}`,
+      );
+    }
+    progress.submitted++;
+    if (progress.submitted === progress.expected) {
+      queue.shift();
+      groups.delete(groupId);
+      if (queue.length === 0) {
+        this.groupQueues.delete(groupId);
+      }
+    }
+  }
+
+  canSubmit(
+    executionId: string,
+    groupId: string,
+    commSequenceId: number,
+  ): boolean {
     const groups = this.executions.get(executionId);
     if (!groups) {
       throw new FrozenPlanExecutionError(`unknown execution ${executionId}`);
@@ -815,24 +843,12 @@ export class CollectiveSubmitSequencer {
       );
     }
     const queue = this.groupQueues.get(groupId);
-    if (!queue || queue[0] !== executionId) {
-      throw new FrozenPlanExecutionError(
-        `execution ${executionId} is not the submit owner for ${groupId}`,
-      );
-    }
     if (commSequenceId !== progress.submitted) {
       throw new FrozenPlanExecutionError(
         `collective sequence ${commSequenceId} does not match ${progress.submitted} for ${executionId}/${groupId}`,
       );
     }
-    progress.submitted++;
-    if (progress.submitted === progress.expected) {
-      queue.shift();
-      groups.delete(groupId);
-      if (queue.length === 0) {
-        this.groupQueues.delete(groupId);
-      }
-    }
+    return queue?.[0] === executionId;
   }
 
   completeExecution(executionId: string): void {

@@ -273,6 +273,20 @@ export {
   validateFrozenPlan,
 } from "./frozen-plan.js";
 export {
+  CONCURRENT_PLAN_TRACE_REVISION,
+  executeConcurrentFrozenPlans,
+  replayConcurrentPlanTrace,
+  runSeededConcurrentPlanCampaign,
+  type ConcurrentPlanAdmission,
+  type ConcurrentPlanCampaignOptions,
+  type ConcurrentPlanCampaignResult,
+  type ConcurrentPlanExecutionResult,
+  type ConcurrentPlanExecutionTrace,
+  type ConcurrentPlanOperationEvent,
+  type ConcurrentPlanReplayResult,
+  type ConcurrentPlanRequest,
+} from "./concurrent-plan.js";
+export {
   CALIBRATION_DATASET_REVISION,
   CalibrationError,
   fitTopologyCostModel,

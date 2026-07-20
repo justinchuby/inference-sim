@@ -510,6 +510,60 @@ target_only:
       entry.status !== "succeeded" && entry.replayAppliedEvents > 0
     ))).toBe(true);
   });
+
+  it("runs a seeded concurrent campaign over shared plan resources", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "concurrent-workload.yaml");
+    await writeFile(path, `
+concurrent_campaign:
+  execution_count: 12
+  seed: 24301
+  arrival_window_ns: 100000
+target_only:
+  token_count: 2
+`, "utf8");
+    const firstCapture = captureIo();
+    const secondCapture = captureIo();
+
+    expect(
+      await runCli(
+        ["concurrent-campaign", "multi-gpu", path],
+        firstCapture.io,
+      ),
+    ).toBe(0);
+    expect(
+      await runCli(
+        ["concurrent-campaign", "multi-gpu", path],
+        secondCapture.io,
+      ),
+    ).toBe(0);
+    expect(firstCapture.stdout()).toBe(secondCapture.stdout());
+    const output = JSON.parse(firstCapture.stdout()) as {
+      executionCount: number;
+      maximumConcurrentExecutions: number;
+      submittedOperations: number;
+      replayAppliedEvents: number;
+      replayExecutions: number;
+      assumptions: readonly string[];
+      latencyNs: { minimum: number; p95: number; maximum: number };
+    };
+    expect(output.executionCount).toBe(12);
+    expect(output.maximumConcurrentExecutions).toBeGreaterThan(1);
+    expect(output.submittedOperations).toBeGreaterThan(12);
+    expect(output.replayAppliedEvents).toBe(
+      output.submittedOperations + output.executionCount * 2,
+    );
+    expect(output.replayExecutions).toBe(12);
+    expect(output.assumptions).toContain(
+      "physical allocation ids remain shared across executions; conflicting writes are lease-serialized",
+    );
+    expect(output.latencyNs.minimum).toBeLessThanOrEqual(
+      output.latencyNs.p95,
+    );
+    expect(output.latencyNs.p95).toBeLessThanOrEqual(
+      output.latencyNs.maximum,
+    );
+  });
 });
 
 function calibrationConfig(scenarioIds: readonly string[]) {
