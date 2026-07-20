@@ -95,7 +95,13 @@ function buildCpuOnly(): SimulationScenario {
       ]),
     ],
     groups: [group("world", [[0, cpu.id]])],
-    parallelism: { tensor: 1, pipeline: 1, expert: 1, data: 1 },
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 1,
+      expert: 1,
+      data: 1,
+    },
   });
 }
 
@@ -181,7 +187,13 @@ function buildSingleGpu(): SimulationScenario {
       transfer("offload-to-gpu", "node0:host", "node0:gpu0:vram", 4 * GiB),
     ],
     groups: [group("world", [[0, gpu.id]])],
-    parallelism: { tensor: 1, pipeline: 1, expert: 1, data: 1 },
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 1,
+      expert: 1,
+      data: 1,
+    },
   });
 }
 
@@ -312,7 +324,13 @@ function buildMultiGpu(): SimulationScenario {
       ),
     ],
     groups: [group("tp", [[0, gpu0.id], [1, gpu1.id]])],
-    parallelism: { tensor: 2, pipeline: 1, expert: 1, data: 1 },
+    parallelism: {
+      composition: "overlap_by_capability",
+      tensor: 2,
+      pipeline: 1,
+      expert: 2,
+      data: 1,
+    },
   });
 }
 
@@ -455,7 +473,13 @@ function buildGpuNpu(): SimulationScenario {
       ),
     ],
     groups: [group("pipeline", [[0, npu.id], [1, gpu.id]])],
-    parallelism: { tensor: 1, pipeline: 2, expert: 1, data: 1 },
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 2,
+      expert: 1,
+      data: 1,
+    },
   });
 }
 
@@ -513,7 +537,13 @@ function buildUnified(): SimulationScenario {
       ]),
     ],
     groups: [group("world", [[0, gpu.id]])],
-    parallelism: { tensor: 1, pipeline: 1, expert: 1, data: 1 },
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 1,
+      expert: 1,
+      data: 1,
+    },
   });
 }
 
@@ -659,7 +689,13 @@ function buildMultiNode(): SimulationScenario {
       ),
     ],
     groups: [group("tp", [[0, gpu0.id], [1, gpu1.id]])],
-    parallelism: { tensor: 2, pipeline: 1, expert: 1, data: 1 },
+    parallelism: {
+      composition: "overlap_by_capability",
+      tensor: 2,
+      pipeline: 1,
+      expert: 2,
+      data: 1,
+    },
   });
 }
 

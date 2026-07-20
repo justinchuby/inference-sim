@@ -27,7 +27,8 @@ Phase 2 is complete:
 - independent plan-trace replay with rank-local success/failure/abort
   quiescence; and
 - workload-to-FrozenPlan compilation with device compute, directed transfers,
-  tensor collectives, and topology-aware heuristic timing; and
+  algorithm-labeled bidirectional tensor collectives, capability-overlap
+  expert dispatch/gather, and topology-aware heuristic timing; and
 - time-anchored device/link/topology-epoch fault injection, submission closure,
   quiescence, independent replay, and deterministic per-resource campaigns.
 - seeded multi-execution FrozenPlan campaigns with arrival-ordered admission,
@@ -63,6 +64,9 @@ Phase 3 has an initial speculative workload slice:
   replacement, deterministic LRU eviction, asynchronous initial plus
   history-driven adaptive warm prefetch, physical cold-storage link
   contention, and independent trace replay; and
+- routed expert execution with TP attention, `all_reduce_ring`,
+  `all_to_all_v` dispatch/gather, and EP-only FFN sharding on multi-rank
+  topologies; and
 - speculative and expert-cache traces compiled onto all six topology families
   with replay-verified resource utilization and relative comparisons; and
 - a six-proposer by six-device-topology execution/replay matrix with

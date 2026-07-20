@@ -1287,9 +1287,16 @@ function countTopologyOperations(
     compute: 0,
     transfer: 0,
     collective: 0,
+    allReduce: 0,
+    allToAll: 0,
   };
   for (const event of result.execution.trace.operations) {
     counts[event.kind]++;
+    if (event.collectiveAlgorithm === "all_reduce_ring") {
+      counts.allReduce++;
+    } else if (event.collectiveAlgorithm === "all_to_all_v") {
+      counts.allToAll++;
+    }
   }
   return counts;
 }

@@ -1098,6 +1098,16 @@ function validateOperation(
           "must be a non-negative safe integer",
         );
       }
+      if (
+        step.operation.algorithm !== "all_reduce_ring"
+        && step.operation.algorithm !== "all_to_all_v"
+      ) {
+        add(
+          "collective_algorithm",
+          `${path}.operation.algorithm`,
+          `unsupported collective algorithm ${String(step.operation.algorithm)}`,
+        );
+      }
       validateUniqueStrings(
         step.operation.linkIds,
         `${path}.operation.linkIds`,
@@ -1593,6 +1603,7 @@ function traceEvent(
       ? {
           groupId: step.operation.groupId,
           commSequenceId: step.operation.commSequenceId,
+          collectiveAlgorithm: step.operation.algorithm,
         }
       : {}),
   };
@@ -1894,10 +1905,15 @@ function assertEventMatchesStep(step: PlanStep, event: PlanTraceEvent): void {
     if (
       event.groupId !== step.operation.groupId
       || event.commSequenceId !== step.operation.commSequenceId
+      || event.collectiveAlgorithm !== step.operation.algorithm
     ) {
       replayFail(`collective metadata does not match step ${step.id}`);
     }
-  } else if (event.groupId !== undefined || event.commSequenceId !== undefined) {
+  } else if (
+    event.groupId !== undefined
+    || event.commSequenceId !== undefined
+    || event.collectiveAlgorithm !== undefined
+  ) {
     replayFail(`non-collective step ${step.id} carries collective metadata`);
   }
 }

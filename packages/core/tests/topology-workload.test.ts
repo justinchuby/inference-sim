@@ -94,6 +94,99 @@ describe("topology-aware workload execution", () => {
     expect(tensor.metrics.collectiveServiceNs).toBeGreaterThan(0);
   });
 
+  it("orders TP attention around EP dispatch and gather without double sharding FFN", () => {
+    const profile = {
+      id: "routed-moe",
+      batchSize: 1,
+      units: [{
+        id: "moe-0",
+        targetTokenWidth: 3,
+        committedTokens: 3,
+        draftTokens: 0,
+        activeExperts: 2,
+        expertRouted: true,
+        warmLoadBytes: 0,
+        coldLoadBytes: 0,
+      }],
+    };
+    for (const name of ["multi-gpu", "multi-node"] as const) {
+      const result = simulateTopologyWorkload(
+        buildScenarioPreset(name),
+        profile,
+      );
+      const collectives = result.plan.steps.filter((step) => (
+        step.operation.kind === "collective"
+      ));
+      expect(collectives.map((step) => (
+        step.operation.kind === "collective"
+          ? step.operation.algorithm
+          : "invalid"
+      ))).toEqual([
+        "all_reduce_ring",
+        "all_to_all_v",
+        "all_to_all_v",
+      ]);
+      expect(collectives.map((step) => (
+        step.operation.kind === "collective"
+          ? step.operation.commSequenceId
+          : -1
+      ))).toEqual([0, 1, 2]);
+      expect(collectives.every((step) => (
+        step.operation.kind === "collective"
+        && step.operation.linkIds.length === (name === "multi-node" ? 6 : 2)
+      ))).toBe(true);
+      const ffn = result.plan.steps.filter((step) => (
+        step.operation.kind === "compute"
+        && step.operation.capability === "ffn"
+      ));
+      expect(ffn).toHaveLength(2);
+      expect(ffn.every((step) => (
+        step.operation.kind === "compute"
+        && step.operation.durationNs === 234_000
+      ))).toBe(true);
+      expect(ffn.every((step) => (
+        step.dependencies.includes(collectives[1].id)
+      ))).toBe(true);
+      expect(collectives[2].dependencies).toEqual(ffn.map((step) => step.id));
+      expect(result.execution.status).toBe("succeeded");
+    }
+  });
+
+  it("does not emit expert collectives for dense target-only work", () => {
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      targetOnlyTopologyProfile(2),
+    );
+    const algorithms = result.plan.steps.flatMap((step) => (
+      step.operation.kind === "collective"
+        ? [step.operation.algorithm]
+        : []
+    ));
+
+    expect(algorithms).toEqual(["all_reduce_ring", "all_reduce_ring"]);
+  });
+
+  it("rejects ambiguous communicator ownership for the same placements", () => {
+    const base = buildScenarioPreset("multi-gpu");
+    const scenario = {
+      ...base,
+      groups: [
+        ...base.groups,
+        {
+          ...base.groups[0],
+          id: "duplicate-membership",
+        },
+      ],
+    };
+
+    expect(() => simulateTopologyWorkload(
+      scenario,
+      targetOnlyTopologyProfile(1),
+    )).toThrow(
+      "requires exactly one communicator for tensor placements; found 2",
+    );
+  });
+
   it("turns speculative iterations into draft and multi-token target work", () => {
     const speculative = simulateSpeculativeWorkload({
       family: "mtp",

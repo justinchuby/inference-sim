@@ -225,7 +225,7 @@ describe("simulateDashboard", () => {
       fitConfidence: "heuristic",
     });
     expect(result.calibration?.diagnostics).toHaveLength(15);
-    expect(result.calibration?.transportDiagnostics).toHaveLength(16);
+    expect(result.calibration?.transportDiagnostics).toHaveLength(18);
     expect(result.topology.assumptions[0]).toContain(
       calibration.fit.datasetFingerprint,
     );
@@ -276,6 +276,8 @@ describe("simulateDashboard", () => {
     expect(result.topology.topResources.some(
       (resource) => resource.resourceId === "link:node0:storage-read",
     )).toBe(true);
+    expect(result.topology.operationCounts.allReduce).toBeGreaterThan(0);
+    expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
     expect(result.topology.assumptions).toContain(
       "transport timing uses exact-path calibration curves without extrapolation",
     );
@@ -304,6 +306,31 @@ describe("simulateDashboard", () => {
           ),
       },
     })).toThrow("no calibrated transport curve");
+  });
+
+  it("rejects routed experts when AllToAllV calibration is missing", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+
+    expect(() => simulateDashboard({
+      ...base,
+      mode: "expert-cache",
+      calibration: {
+        ...calibration.dataset,
+        transportObservations:
+          calibration.dataset.transportObservations?.filter(
+            (observation) => observation.algorithm !== "all_to_all_v",
+          ),
+      },
+    })).toThrow(
+      "no calibrated transport curve for multi-gpu/collective/all_to_all_v",
+    );
   });
 
   it("rejects dashboard work outside imported interpolation ranges", async () => {

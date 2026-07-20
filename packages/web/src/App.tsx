@@ -1134,6 +1134,14 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
           {result.topology.operationCounts.compute.toLocaleString()} compute ·{" "}
           {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
           {result.topology.operationCounts.collective.toLocaleString()} collective
+          {result.topology.operationCounts.collective > 0
+            ? (
+                <>
+                  {" "}({result.topology.operationCounts.allReduce.toLocaleString()} all-reduce ·{" "}
+                  {result.topology.operationCounts.allToAll.toLocaleString()} all-to-all)
+                </>
+              )
+            : null}
         </div>
         <div className="flex items-center gap-2">
           {result.comparison

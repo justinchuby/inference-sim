@@ -34,6 +34,8 @@ export interface TopologyServingMetrics {
   readonly computeOperations: number;
   readonly transferOperations: number;
   readonly collectiveOperations: number;
+  readonly allReduceOperations: number;
+  readonly allToAllOperations: number;
   readonly computeServiceNs: number;
   readonly transferServiceNs: number;
   readonly collectiveServiceNs: number;
@@ -127,6 +129,8 @@ export function simulateTopologyServingWorkload(
   let computeOperations = 0;
   let transferOperations = 0;
   let collectiveOperations = 0;
+  let allReduceOperations = 0;
+  let allToAllOperations = 0;
   let computeServiceNs = 0;
   let transferServiceNs = 0;
   let collectiveServiceNs = 0;
@@ -143,6 +147,11 @@ export function simulateTopologyServingWorkload(
         transferOperations++;
       } else {
         collectiveOperations++;
+        if (event.collectiveAlgorithm === "all_reduce_ring") {
+          allReduceOperations++;
+        } else if (event.collectiveAlgorithm === "all_to_all_v") {
+          allToAllOperations++;
+        }
       }
     }
     for (const resource of [
@@ -186,6 +195,8 @@ export function simulateTopologyServingWorkload(
       computeOperations,
       transferOperations,
       collectiveOperations,
+      allReduceOperations,
+      allToAllOperations,
       computeServiceNs,
       transferServiceNs,
       collectiveServiceNs,

@@ -1,6 +1,8 @@
 import type { ComputeCapability } from "./scenario-types.js";
 
-export const PLAN_CONTRACT_REVISION = 3;
+export const PLAN_CONTRACT_REVISION = 4;
+
+export type CollectiveAlgorithm = "all_reduce_ring" | "all_to_all_v";
 
 export type PlanOperation =
   | {
@@ -18,6 +20,7 @@ export type PlanOperation =
       readonly kind: "collective";
       readonly groupId: string;
       readonly commSequenceId: number;
+      readonly algorithm: CollectiveAlgorithm;
       readonly linkIds: readonly string[];
       readonly durationNs: number;
     };
@@ -67,6 +70,7 @@ export interface PlanTraceEvent {
   readonly writes: readonly string[];
   readonly groupId?: string;
   readonly commSequenceId?: number;
+  readonly collectiveAlgorithm?: CollectiveAlgorithm;
 }
 
 export interface PlanResourceReservation {

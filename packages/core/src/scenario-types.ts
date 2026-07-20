@@ -1,4 +1,4 @@
-export const SCENARIO_SCHEMA_VERSION = 2;
+export const SCENARIO_SCHEMA_VERSION = 3;
 
 export type ConfidenceClass = "exact" | "bounded" | "calibrated" | "heuristic";
 export type SimDeviceKind = "cpu" | "gpu" | "npu";
@@ -138,6 +138,7 @@ export interface ScenarioExecutionPolicy {
   readonly seed: number;
   readonly maxEvents: number;
   readonly parallelism: {
+    readonly composition: "cartesian" | "overlap_by_capability";
     readonly tensor: number;
     readonly pipeline: number;
     readonly expert: number;

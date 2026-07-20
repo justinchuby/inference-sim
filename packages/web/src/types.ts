@@ -88,6 +88,8 @@ export interface DashboardResult {
       readonly compute: number;
       readonly transfer: number;
       readonly collective: number;
+      readonly allReduce: number;
+      readonly allToAll: number;
     };
     readonly metrics: TopologyWorkloadMetrics;
     readonly topResources: readonly TopologyResourceUtilization[];

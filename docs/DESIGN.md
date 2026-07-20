@@ -254,9 +254,12 @@ propagates abort through overlapping communicator queues. New execution
 registration remains closed until surviving old-epoch executions drain and the
 sequencer advances to a newer topology epoch.
 
-Collective steps declare both an immutable communicator group/sequence and the
-transport links they reserve. Group ordering alone is not a bandwidth model;
-collectives and point-to-point transfers contend on the same link lanes.
+Collective steps declare an immutable communicator group/sequence, algorithm,
+and the directed transport links they reserve. Plan contract revision 4 carries
+the algorithm into execution evidence, and replay rejects relabeling an
+`all_reduce_ring` as `all_to_all_v` or vice versa. Group ordering alone is not
+a bandwidth model; collectives and point-to-point transfers contend on the
+same link lanes.
 
 A node failure is a correlated fault derived from structured `nodeId`
 membership, never from resource-name prefixes. Every participating rank whose
@@ -596,9 +599,10 @@ history and rejects changed, omitted, or relabeled decisions. This policy can
 reduce future cold misses, but its copies, evictions, and bandwidth remain
 fully charged in the cache protocol's latency and byte ledger.
 
-Scenario contract revision 2 gives every preset node an explicit cold-storage
-domain, local CPU endpoint, authoritative expert-backing allocation,
-warm-cache allocation, and directed storage-read link. The topology compiler
+Current scenario contract revision 3 retains revision 2's explicit
+cold-storage domain on every preset node, local CPU endpoint, authoritative
+expert-backing allocation, warm-cache allocation, and directed storage-read
+link. The topology compiler
 extracts validated prefetch `load_start` events and emits background FrozenPlan
 transfers after their causal route. These transfers occupy storage link lanes,
 write the warm pool, overlap subsequent compute, and are independently
@@ -644,6 +648,13 @@ Device configurations are composed from memory domains, compute devices,
 access capabilities, and links. Presets are data; core simulation must not
 branch on names such as `dgx-h100`.
 
+Parallelism composition is explicit. `cartesian` means TP, PP, EP, and DP
+degrees form independent rank axes and therefore multiply. The bounded
+`overlap_by_capability` mode permits the same ordered rank group to execute TP
+attention and EP routed FFN at different phases; it currently requires equal
+TP/EP degree with PP=DP=1. Validation rejects treating that two-rank overlap as
+a four-rank Cartesian grid.
+
 ### 10.1 Required Topology Families
 
 | Family | Memory semantics | Required simulation behavior |
@@ -685,7 +696,8 @@ Validation proves:
 - every placement references a capable device;
 - every transfer has a direct or staged path;
 - every communicator group has immutable ordered world ranks;
-- parallelism degrees correspond to concrete participants;
+- Cartesian or capability-overlap parallelism semantics correspond to concrete
+  participants;
 - discrete copies use distinct physical identities until commit;
 - unified aliases preserve one physical identity; and
 - fixed workspaces, staging, checkpoint snapshots, KV, and speculative sidecars
@@ -787,9 +799,15 @@ fall back to declared bandwidth while an imported calibration is active. A
 missing exact path, changed link order, participant-count change, algorithm
 change, or out-of-range byte extent is an execution error. Point-to-point
 curves name exactly one directed link and two endpoints. The current topology
-compiler identifies tensor collectives as two-or-more-participant
-`all_reduce_ring` operations; changing that algorithm requires new
-observations.
+compiler identifies dense tensor collectives as `all_reduce_ring`. Routed
+expert units on an overlap-capable topology emit one tensor all-reduce followed
+by `all_to_all_v` dispatch, EP-sharded FFN compute, and `all_to_all_v` gather.
+Two-rank collectives reserve both directed paths. Every algorithm/path
+combination requires its own observations. The current compiler fails closed
+for larger communicator groups until the scenario schema can enumerate the
+algorithm-specific full-group route instead of approximating it from two
+endpoints. This algorithm/path and EP-sharding behavior is topology cost-model
+revision 5; revision 4 models are rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
@@ -1015,6 +1033,9 @@ Status: complete. Implemented:
 - topology-aware workload compilation into device compute, directed transfer,
   pipeline, and tensor-collective steps, followed by independent trace replay
   and resource-utilization accounting;
+- capability-overlap TP/EP plans with algorithm-labeled bidirectional
+  all-reduce plus AllToAllV dispatch/gather, without multiplying the same rank
+  group into fictitious compute shards;
 - time-anchored device, link, and topology-epoch fault injection with typed
   terminal evidence, submission closure, in-flight quiescence, and independent
   replay;
@@ -1068,7 +1089,10 @@ resources across all six required topology families. Default link duration
 uses each declared directed link's latency and bandwidth; imported revision 2
 calibration instead uses exact-path transfer and collective curves with
 fail-closed message-range checks. Compute coefficients remain
-provenance-tagged. All six proposer families use
+provenance-tagged. Routed expert profiles on multi-GPU and multi-node presets
+execute TP attention, bidirectional all-reduce, AllToAllV dispatch, EP-sharded
+FFN, and AllToAllV gather; dense profiles do not pay expert collectives. All
+six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.

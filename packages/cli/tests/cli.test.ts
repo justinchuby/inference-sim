@@ -245,6 +245,22 @@ workload:
     expect(output.routes).toHaveLength(3);
     expect(output.snapshot.metrics.routes).toBe(3);
     expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(128);
+
+    const topologyCapture = captureIo();
+    expect(await runCli(
+      ["run", "multi-gpu", path],
+      topologyCapture.io,
+    )).toBe(0);
+    const topology = JSON.parse(topologyCapture.stdout()) as {
+      operationCounts: {
+        collective: number;
+        allReduce: number;
+        allToAll: number;
+      };
+    };
+    expect(topology.operationCounts.allReduce).toBe(3);
+    expect(topology.operationCounts.allToAll).toBe(6);
+    expect(topology.operationCounts.collective).toBe(9);
   });
 
   it("runs continuous serving through a selected topology", async () => {
@@ -512,6 +528,7 @@ target_only:
       "device:node0:gpu0",
       "device:node0:gpu1",
       "link:node0:nvlink:forward",
+      "link:node0:nvlink:reverse",
       "epoch:1",
     ]);
     expect(output.cases.every((entry) => (
@@ -762,7 +779,7 @@ function calibrationConfig(scenarioIds: readonly string[]) {
           id: "multi-gpu-collective-small",
           scenario_id: "multi-gpu",
           operation: "collective",
-          link_ids: ["node0:nvlink:forward"],
+          link_ids: ["node0:nvlink:forward", "node0:nvlink:reverse"],
           participant_count: 2,
           algorithm: "all_reduce_ring",
           bytes: 524_288,
@@ -773,7 +790,7 @@ function calibrationConfig(scenarioIds: readonly string[]) {
           id: "multi-gpu-collective-large",
           scenario_id: "multi-gpu",
           operation: "collective",
-          link_ids: ["node0:nvlink:forward"],
+          link_ids: ["node0:nvlink:forward", "node0:nvlink:reverse"],
           participant_count: 2,
           algorithm: "all_reduce_ring",
           bytes: 67_108_864,

@@ -54,6 +54,7 @@ function validPlan(): FrozenPlan {
         kind: "collective",
         groupId: "tp",
         commSequenceId: 0,
+        algorithm: "all_reduce_ring",
         linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
         durationNs: 5,
       },
@@ -190,6 +191,7 @@ describe("FrozenPlan validation and execution", () => {
             kind: "collective",
             groupId: "tp",
             commSequenceId: 2,
+            algorithm: "all_reduce_ring",
             linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
             durationNs: 1,
           },
@@ -216,6 +218,7 @@ describe("FrozenPlan validation and execution", () => {
             kind: "collective",
             groupId: "tp",
             commSequenceId: 1,
+            algorithm: "all_reduce_ring",
             linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
             durationNs: 1,
           },
@@ -269,6 +272,23 @@ describe("FrozenPlan validation and execution", () => {
     expect(() => replayPlanTrace(scenario, plan, trace)).toThrowError(
       "event 3: step 3 expected deterministic start at 25ns",
     );
+  });
+
+  it("rejects a collective algorithm mutation in replay evidence", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan);
+    const operations: PlanTraceEvent[] = result.trace.operations.map(
+      (event) => event.stepId === 2
+        ? { ...event, collectiveAlgorithm: "all_to_all_v" }
+        : { ...event },
+    );
+
+    expect(() => replayPlanTrace(
+      scenario,
+      plan,
+      { ...result.trace, operations },
+    )).toThrowError("collective metadata does not match step 2");
   });
 
   it("serializes independent compute steps on a one-lane device", () => {
@@ -405,6 +425,7 @@ describe("FrozenPlan validation and execution", () => {
             kind: "collective",
             groupId: "tp",
             commSequenceId: 0,
+            algorithm: "all_reduce_ring",
             linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
             durationNs: 5,
           },

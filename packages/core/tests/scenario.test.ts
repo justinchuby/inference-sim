@@ -252,4 +252,45 @@ describe("validateScenario", () => {
     expect(issues.some((issue) => issue.code === "storage_class")).toBe(true);
     expect(issues.some((issue) => issue.code === "storage_governor")).toBe(true);
   });
+
+  it("rejects ambiguous overlap and undersized Cartesian parallelism", () => {
+    const base = buildScenarioPreset("multi-gpu");
+    const unequal: SimulationScenario = {
+      ...base,
+      execution: {
+        ...base.execution,
+        parallelism: {
+          ...base.execution.parallelism,
+          expert: 1,
+        },
+      },
+    };
+    const cartesian: SimulationScenario = {
+      ...base,
+      execution: {
+        ...base.execution,
+        parallelism: {
+          ...base.execution.parallelism,
+          composition: "cartesian",
+        },
+      },
+    };
+    const missingGroup: SimulationScenario = {
+      ...base,
+      groups: [],
+    };
+
+    expect(validateScenario(unequal).issues.some(
+      (issue) => issue.code === "parallelism_composition",
+    )).toBe(true);
+    expect(validateScenario(cartesian).issues.some(
+      (issue) => issue.code === "parallelism_participants",
+    )).toBe(true);
+    expect(validateScenario(missingGroup).issues.some(
+      (issue) => (
+        issue.code === "parallelism_composition"
+        && issue.message.includes("2-rank communicator")
+      ),
+    )).toBe(true);
+  });
 });

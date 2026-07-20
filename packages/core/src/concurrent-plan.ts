@@ -1381,6 +1381,7 @@ function buildTraceEvent(
       ? {
           groupId: step.operation.groupId,
           commSequenceId: step.operation.commSequenceId,
+          collectiveAlgorithm: step.operation.algorithm,
         }
       : {}),
   };
@@ -1406,12 +1407,17 @@ function assertEventMatchesStep(
     if (
       event.groupId !== step.operation.groupId
       || event.commSequenceId !== step.operation.commSequenceId
+      || event.collectiveAlgorithm !== step.operation.algorithm
     ) {
       replayFail(
         `collective metadata does not match ${plan.executionId}/${step.id}`,
       );
     }
-  } else if (event.groupId !== undefined || event.commSequenceId !== undefined) {
+  } else if (
+    event.groupId !== undefined
+    || event.commSequenceId !== undefined
+    || event.collectiveAlgorithm !== undefined
+  ) {
     replayFail(
       `non-collective ${plan.executionId}/${step.id} has collective metadata`,
     );

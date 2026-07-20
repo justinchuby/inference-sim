@@ -84,9 +84,8 @@ export function validateScenario(
     "execution.maxEvents",
     add,
   );
-  for (const [key, value] of Object.entries(
-    scenario.execution.parallelism,
-  )) {
+  for (const key of ["tensor", "pipeline", "expert", "data"] as const) {
+    const value = scenario.execution.parallelism[key];
     validatePositiveInteger(value, `execution.parallelism.${key}`, add);
   }
 
@@ -459,16 +458,60 @@ export function validateScenario(
 
   const rankCount = new Set(rankOwners.keys()).size;
   const parallelism = scenario.execution.parallelism;
-  const requiredRanks = checkedProductForValidation(
-    [
-      parallelism.tensor,
-      parallelism.pipeline,
-      parallelism.expert,
-      parallelism.data,
-    ],
-    "execution.parallelism",
-    add,
-  );
+  if (
+    parallelism.composition !== "cartesian"
+    && parallelism.composition !== "overlap_by_capability"
+  ) {
+    add(
+      "parallelism_composition",
+      "execution.parallelism.composition",
+      `unsupported composition ${String(parallelism.composition)}`,
+    );
+  }
+  if (
+    parallelism.composition === "overlap_by_capability"
+    && (parallelism.pipeline !== 1 || parallelism.data !== 1)
+  ) {
+    add(
+      "parallelism_composition",
+      "execution.parallelism",
+      "overlap_by_capability currently requires pipeline and data degrees of one",
+    );
+  }
+  if (
+    parallelism.composition === "overlap_by_capability"
+    && parallelism.tensor !== parallelism.expert
+  ) {
+    add(
+      "parallelism_composition",
+      "execution.parallelism",
+      "overlap_by_capability currently requires equal tensor and expert degrees",
+    );
+  }
+  if (
+    parallelism.composition === "overlap_by_capability"
+    && !scenario.groups.some(
+      (group) => group.orderedRanks.length === parallelism.tensor,
+    )
+  ) {
+    add(
+      "parallelism_composition",
+      "groups",
+      `overlap_by_capability requires a ${parallelism.tensor}-rank communicator`,
+    );
+  }
+  const requiredRanks = parallelism.composition === "overlap_by_capability"
+    ? Math.max(parallelism.tensor, parallelism.expert)
+    : checkedProductForValidation(
+        [
+          parallelism.tensor,
+          parallelism.pipeline,
+          parallelism.expert,
+          parallelism.data,
+        ],
+        "execution.parallelism",
+        add,
+      );
   if (requiredRanks !== undefined && requiredRanks > Math.max(rankCount, 1)) {
     add(
       "parallelism_participants",

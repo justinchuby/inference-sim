@@ -243,6 +243,7 @@ export {
 } from "./scenario-presets.js";
 export {
   PLAN_CONTRACT_REVISION,
+  type CollectiveAlgorithm,
   type FrozenPlan,
   type FrozenPlanExecutionResult,
   type PlanExecutionOptions,
@@ -322,6 +323,7 @@ export {
 } from "./calibration.js";
 export {
   COLLECTIVE_CALIBRATION_ALGORITHM,
+  EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
   DEFAULT_TOPOLOGY_COST_MODEL,
   TRANSFER_CALIBRATION_ALGORITHM,
   TOPOLOGY_COST_MODEL_REVISION,

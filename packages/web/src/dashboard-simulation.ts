@@ -382,9 +382,16 @@ function summarizeTopology(
     compute: 0,
     transfer: 0,
     collective: 0,
+    allReduce: 0,
+    allToAll: 0,
   };
   for (const event of result.execution.trace.operations) {
     operationCounts[event.kind]++;
+    if (event.collectiveAlgorithm === "all_reduce_ring") {
+      operationCounts.allReduce++;
+    } else if (event.collectiveAlgorithm === "all_to_all_v") {
+      operationCounts.allToAll++;
+    }
   }
   return {
     confidence: result.confidence,
@@ -421,6 +428,8 @@ function summarizeServingTopology(
       compute: result.metrics.computeOperations,
       transfer: result.metrics.transferOperations,
       collective: result.metrics.collectiveOperations,
+      allReduce: result.metrics.allReduceOperations,
+      allToAll: result.metrics.allToAllOperations,
     },
     metrics: {
       totalDurationNs: result.metrics.totalDurationNs,

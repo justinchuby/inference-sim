@@ -403,7 +403,7 @@ function transportObservation(
     id: `multi-gpu-collective-${bytes}`,
     scenarioId: "multi-gpu",
     operation: "collective",
-    linkIds: ["node0:nvlink:forward"],
+    linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
     participantCount: 2,
     algorithm: "all_reduce_ring",
     bytes,

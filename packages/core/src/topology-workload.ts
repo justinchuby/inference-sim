@@ -2,6 +2,7 @@ import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
   type FrozenPlanExecutionResult,
+  type CollectiveAlgorithm,
   type PlanStep,
 } from "./plan-types.js";
 import {
@@ -31,9 +32,10 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 4;
+export const TOPOLOGY_COST_MODEL_REVISION = 5;
 export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
 export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
+export const EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM = "all_to_all_v";
 
 export interface TopologyWorkUnit {
   readonly id: string;
@@ -43,6 +45,7 @@ export interface TopologyWorkUnit {
   readonly proposerExecution?: SpeculativeProposerExecution;
   readonly proposerCostScale?: number;
   readonly activeExperts: number;
+  readonly expertRouted?: boolean;
   readonly warmLoadBytes: number;
   readonly coldLoadBytes: number;
   readonly requiredPrefetchIds?: readonly string[];
@@ -271,6 +274,7 @@ export function topologyProfileFromExpertCache(
       committedTokens: 1,
       draftTokens: 0,
       activeExperts: route.expertIds.length,
+      expertRouted: true,
       warmLoadBytes: countTier(route.sourceTiers, "warm") * expertBytes,
       coldLoadBytes: countTier(route.sourceTiers, "cold") * expertBytes,
       requiredPrefetchIds:
@@ -423,7 +427,7 @@ class WorkloadPlanCompiler {
   private readonly rankByDevice = new Map<string, string>();
   private readonly steps: PlanStep[] = [];
   private nextStepId = 0;
-  private collectiveSequence = 0;
+  private readonly collectiveSequenceByGroup = new Map<string, number>();
   private previousTerminalStepId?: number;
   private readonly backgroundPrefetchTerminalByDomain = new Map<
     string,
@@ -598,6 +602,7 @@ class WorkloadPlanCompiler {
         capability,
         unit.draftTokens,
         1,
+        false,
       );
       const draftStep = this.addCompute(
         draftPlacement,
@@ -619,7 +624,13 @@ class WorkloadPlanCompiler {
       return;
     }
     if (
-      this.scenario.execution.parallelism.tensor > 1
+      (
+        this.scenario.execution.parallelism.tensor > 1
+        || (
+          unit.expertRouted === true
+          && this.scenario.execution.parallelism.expert > 1
+        )
+      )
       && this.placements.length > 1
     ) {
       this.previousTerminalStepId = this.compileTensorParallel(
@@ -695,6 +706,12 @@ class WorkloadPlanCompiler {
     unit: TopologyWorkUnit,
     dependencies: readonly number[],
   ): number {
+    if (
+      unit.expertRouted === true
+      && this.scenario.execution.parallelism.expert > 1
+    ) {
+      return this.compileTensorExpertParallel(unit, dependencies);
+    }
     const ffnPlacementCount = this.placements.filter((placement) => (
       placement.requiredCapabilities.includes("ffn")
     )).length;
@@ -712,21 +729,6 @@ class WorkloadPlanCompiler {
         cacheLoad.localMemoryPenaltyNs,
       );
     });
-    const group = this.scenario.groups.find((candidate) => (
-      candidate.orderedRanks.length === this.placements.length
-      && candidate.orderedRanks.every((rank) => (
-        this.placements.some((placement) => placement.deviceId === rank.deviceId)
-      ))
-    ));
-    if (!group) {
-      throw new TopologyWorkloadError(
-        `scenario ${this.scenario.id} lacks a communicator for tensor placements`,
-      );
-    }
-    const linkIds = this.collectiveLinks(
-      workspaceDomain(this.placements[0]),
-      workspaceDomain(this.placements[this.placements.length - 1]),
-    );
     const bytes = checkedMultiply(
       this.costModel.collectiveBytesPerToken,
       checkedMultiply(
@@ -736,27 +738,164 @@ class WorkloadPlanCompiler {
       ),
       "collective bytes",
     );
+    return this.addCollective(
+      this.groupForPlacements(this.placements, "tensor"),
+      COLLECTIVE_CALIBRATION_ALGORITHM,
+      bytes,
+      terminals,
+      this.placements.map((placement) => workspaceId(placement)),
+    );
+  }
+
+  private compileTensorExpertParallel(
+    unit: TopologyWorkUnit,
+    dependencies: readonly number[],
+  ): number {
+    const attentionPlacements = this.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("attention")
+    ));
+    const ffnPlacements = this.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("ffn")
+    ));
+    const expertDegree = this.scenario.execution.parallelism.expert;
+    if (
+      attentionPlacements.length !== this.scenario.execution.parallelism.tensor
+      || ffnPlacements.length !== expertDegree
+    ) {
+      throw new TopologyWorkloadError(
+        `scenario ${this.scenario.id} cannot map ${attentionPlacements.length} attention and ${ffnPlacements.length} FFN placements onto TP=${this.scenario.execution.parallelism.tensor}, EP=${expertDegree}`,
+      );
+    }
+    const group = this.groupForPlacements(this.placements, "tensor/EP");
+    const attentionTerminals = attentionPlacements.map((placement) => (
+      this.addCompute(
+        placement,
+        "attention",
+        this.computeDuration(
+          placement.deviceId,
+          "attention",
+          unit.targetTokenWidth,
+          1,
+          false,
+        ),
+        dependencies,
+      )
+    ));
+    const tensorBytes = checkedMultiply(
+      this.costModel.collectiveBytesPerToken,
+      checkedMultiply(
+        unit.targetTokenWidth,
+        this.profile.batchSize,
+        "tensor collective token batch",
+      ),
+      "tensor collective bytes",
+    );
+    const attentionReduced = this.addCollective(
+      group,
+      COLLECTIVE_CALIBRATION_ALGORITHM,
+      tensorBytes,
+      attentionTerminals,
+      attentionPlacements.map((placement) => workspaceId(placement)),
+    );
+    const routedTokens = checkedMultiply(
+      checkedMultiply(
+        unit.targetTokenWidth,
+        this.profile.batchSize,
+        "expert dispatch token batch",
+      ),
+      Math.max(1, unit.activeExperts),
+      "expert routed token copies",
+    );
+    const expertBytes = checkedMultiply(
+      this.costModel.activationBytesPerToken,
+      routedTokens,
+      "expert dispatch bytes",
+    );
+    const dispatched = this.addCollective(
+      group,
+      EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
+      expertBytes,
+      [attentionReduced],
+      attentionPlacements.map((placement) => workspaceId(placement)),
+    );
+    const expertTerminals = ffnPlacements.map((placement) => {
+      const cacheLoad = this.prepareCacheLoad(
+        placement,
+        unit,
+        [dispatched],
+        expertDegree,
+      );
+      const durationNs = checkedAdd(
+        this.computeDuration(
+          placement.deviceId,
+          "ffn",
+          unit.targetTokenWidth,
+          unit.activeExperts,
+          true,
+        ),
+        cacheLoad.localMemoryPenaltyNs,
+        "expert FFN duration",
+      );
+      return this.addCompute(
+        placement,
+        "ffn",
+        durationNs,
+        cacheLoad.dependencies,
+      );
+    });
+    return this.addCollective(
+      group,
+      EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
+      expertBytes,
+      expertTerminals,
+      ffnPlacements.map((placement) => workspaceId(placement)),
+    );
+  }
+
+  private addCollective(
+    group: SimulationScenario["groups"][number],
+    algorithm: CollectiveAlgorithm,
+    bytes: number,
+    dependencies: readonly number[],
+    reads: readonly string[],
+  ): number {
+    if (group.orderedRanks.length !== 2) {
+      throw new TopologyWorkloadError(
+        `collective path compilation currently requires exactly two ranks; ${group.id} has ${group.orderedRanks.length}`,
+      );
+    }
+    const first = this.placementForDevice(group.orderedRanks[0].deviceId);
+    const last = this.placementForDevice(
+      group.orderedRanks[group.orderedRanks.length - 1].deviceId,
+    );
+    const linkIds = this.collectiveLinks(
+      workspaceDomain(first),
+      workspaceDomain(last),
+    );
     const durationNs = this.transportDuration(
       "collective",
       linkIds,
       group.orderedRanks.length,
-      COLLECTIVE_CALIBRATION_ALGORITHM,
+      algorithm,
       bytes,
     );
-    const step = this.addStep({
+    const commSequenceId =
+      this.collectiveSequenceByGroup.get(group.id) ?? 0;
+    this.collectiveSequenceByGroup.set(group.id, commSequenceId + 1);
+    return this.addStep({
       participants: group.orderedRanks.map((rank) => rank.rankId),
-      dependencies: terminals,
-      reads: this.placements.map((placement) => workspaceId(placement)),
+      dependencies,
+      reads: unique(reads),
       writes: [],
       operation: {
         kind: "collective",
         groupId: group.id,
-        commSequenceId: this.collectiveSequence++,
+        commSequenceId,
+        algorithm,
         linkIds,
         durationNs,
       },
     });
-    return step;
   }
 
   private prepareCacheLoad(
@@ -850,6 +989,7 @@ class WorkloadPlanCompiler {
           capability,
           unit.targetTokenWidth,
           capability === "ffn" ? unit.activeExperts : 1,
+          unit.expertRouted === true,
         ),
         index === 0 ? extraDurationNs : 0,
         "placement compute duration",
@@ -982,6 +1122,7 @@ class WorkloadPlanCompiler {
     capability: TopologyComputeCapability,
     tokenWidth: number,
     activeExperts: number,
+    expertRouted: boolean,
   ): number {
     const deviceKind = this.device(deviceId).kind;
     const costs = this.costModel.deviceCosts[deviceKind];
@@ -1020,20 +1161,46 @@ class WorkloadPlanCompiler {
       workItems,
       "compute duration",
     );
-    const tensorDegree = capability === "draft" || capability === "lookup"
-      ? 1
-      : this.scenario.execution.parallelism.tensor;
-    const expertDegree = capability === "ffn"
+    const shardDegree = capability === "ffn" && expertRouted
       ? this.scenario.execution.parallelism.expert
-      : 1;
+      : capability === "attention" || capability === "ffn"
+        ? this.scenario.execution.parallelism.tensor
+        : 1;
     return checkedAdd(
       costs.invocationOverheadNs,
-      Math.ceil(
-        unshardedDuration
-        / checkedMultiply(tensorDegree, expertDegree, "compute shard degree"),
-      ),
+      Math.ceil(unshardedDuration / shardDegree),
       "compute invocation duration",
     );
+  }
+
+  private groupForPlacements(
+    placements: readonly PartitionPlacement[],
+    label: string,
+  ): SimulationScenario["groups"][number] {
+    const groups = this.scenario.groups.filter((candidate) => (
+      candidate.orderedRanks.length === placements.length
+      && candidate.orderedRanks.every((rank) => (
+        placements.some((placement) => placement.deviceId === rank.deviceId)
+      ))
+    ));
+    if (groups.length !== 1) {
+      throw new TopologyWorkloadError(
+        `scenario ${this.scenario.id} requires exactly one communicator for ${label} placements; found ${groups.length}`,
+      );
+    }
+    return groups[0];
+  }
+
+  private placementForDevice(deviceId: string): PartitionPlacement {
+    const placement = this.placements.find(
+      (candidate) => candidate.deviceId === deviceId,
+    );
+    if (!placement) {
+      throw new TopologyWorkloadError(
+        `device ${deviceId} has no target placement`,
+      );
+    }
+    return placement;
   }
 
   private hostLookupPlacement(): PartitionPlacement | undefined {
@@ -1088,22 +1255,28 @@ class WorkloadPlanCompiler {
   }
 
   private collectiveLinks(sourceDomainId: string, targetDomainId: string): string[] {
-    const domains = findTransferPath(this.scenario, {
-      id: "compiled-collective",
-      sourceDomainId,
-      targetDomainId,
-      bytes: 1,
-      requiresPinnedStaging: false,
-      stagingAllocationIds: [],
-    });
-    if (!domains || domains.length < 2) {
-      throw new TopologyWorkloadError(
-        `no collective path from ${sourceDomainId} to ${targetDomainId}`,
-      );
-    }
-    return domains.slice(0, -1).map((domain, index) => (
-      this.link(domain, domains[index + 1]).id
-    ));
+    const path = (source: string, target: string): string[] => {
+      const domains = findTransferPath(this.scenario, {
+        id: "compiled-collective",
+        sourceDomainId: source,
+        targetDomainId: target,
+        bytes: 1,
+        requiresPinnedStaging: false,
+        stagingAllocationIds: [],
+      });
+      if (!domains || domains.length < 2) {
+        throw new TopologyWorkloadError(
+          `no collective path from ${source} to ${target}`,
+        );
+      }
+      return domains.slice(0, -1).map((domain, index) => (
+        this.link(domain, domains[index + 1]).id
+      ));
+    };
+    return unique([
+      ...path(sourceDomainId, targetDomainId),
+      ...path(targetDomainId, sourceDomainId),
+    ]);
   }
 
   private pathDuration(linkIds: readonly string[], bytes: number): number {
@@ -1297,6 +1470,14 @@ function validateInputs(
     );
   }
   for (const unit of profile.units) {
+    if (
+      unit.expertRouted !== undefined
+      && typeof unit.expertRouted !== "boolean"
+    ) {
+      throw new TopologyWorkloadError(
+        `unit ${unit.id} expertRouted must be boolean`,
+      );
+    }
     const required = unit.requiredPrefetchIds ?? [];
     if (new Set(required).size !== required.length) {
       throw new TopologyWorkloadError(

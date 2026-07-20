@@ -53,6 +53,7 @@ function plan(executionId: string): FrozenPlan {
         kind: "collective",
         groupId: "tp",
         commSequenceId: 0,
+        algorithm: "all_reduce_ring",
         linkIds: ["node0:nvlink:forward", "node0:nvlink:reverse"],
         durationNs: 5,
       },
