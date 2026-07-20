@@ -93,6 +93,52 @@ export interface DashboardModelExecutionProfile {
   readonly forwardFlopsPerToken: number;
 }
 
+export type RooflinePhase =
+  | "prefill"
+  | "decode"
+  | "mixed_batch"
+  | "spec_verify"
+  | "spec_draft"
+  | "pipeline"
+  | "moe";
+
+export interface DashboardRooflineResult {
+  readonly revision: 1;
+  readonly status: "available" | "unavailable";
+  readonly confidence: ConfidenceClass;
+  readonly assumptions: readonly string[];
+  readonly unavailableReason?: string;
+  readonly computeRoof?: {
+    readonly label: string;
+    readonly flopsPerSecond: number;
+    readonly evidence: "calibrated_effective" | "heuristic_effective";
+    readonly dtype: string;
+  };
+  readonly bandwidthRoofs: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly kind: "device_memory" | "host_memory" | "interconnect" | "storage";
+    readonly bytesPerSecond: number;
+    readonly confidence: ConfidenceClass;
+  }[];
+  readonly points: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly phase: RooflinePhase;
+    readonly componentId?: string;
+    readonly deviceIds: readonly string[];
+    readonly workFlops: number;
+    readonly activeBytes: number;
+    readonly durationNs: number;
+    readonly arithmeticIntensity: number;
+    readonly predictedFlopsPerSecond: number;
+    readonly predictedTokensPerSecond?: number;
+    readonly limitingRoofId: string;
+    readonly confidence: ConfidenceClass;
+    readonly notes: readonly string[];
+  }[];
+}
+
 export interface DashboardRunConfig {
   readonly scenarioName:
     | "rtx-4090-desktop"
@@ -187,6 +233,7 @@ export interface DashboardResult {
     readonly metrics: TopologyWorkloadMetrics;
     readonly topResources: readonly TopologyResourceUtilization[];
   };
+  readonly roofline?: DashboardRooflineResult;
   readonly pipelineExecution?: {
     readonly components: readonly {
       readonly id: string;

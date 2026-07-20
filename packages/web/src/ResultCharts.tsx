@@ -3,13 +3,18 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  Legend,
+  Line,
   Pie,
   PieChart,
   ResponsiveContainer,
+  Scatter,
   Tooltip as ChartTooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { useMemo, useState } from "react";
 import type { DashboardResult } from "./types.js";
 
 export default function ResultCharts({
@@ -27,6 +32,17 @@ export default function ResultCharts({
                 detail="Same workload · lower is better"
               />
               <TopologyComparisonChart result={result} />
+            </section>
+          )
+        : null}
+      {result.roofline
+        ? (
+            <section className="panel">
+              <SectionHeading
+                title="Hierarchical roofline"
+                detail="Predicted replay rate · declared bandwidth roofs"
+              />
+              <RooflineChart result={result} />
             </section>
           )
         : null}
@@ -77,6 +93,193 @@ export default function ResultCharts({
         : null}
     </>
   );
+}
+
+function RooflineChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const roofline = result.roofline!;
+  const [roofId, setRoofId] = useState(
+    roofline.bandwidthRoofs[0]?.id ?? "",
+  );
+  const phases = useMemo(() => [
+    "all",
+    ...new Set(roofline.points.map((point) => point.phase)),
+  ], [roofline.points]);
+  const [phase, setPhase] = useState("all");
+  const selectedRoof = roofline.bandwidthRoofs.find(
+    (roof) => roof.id === roofId,
+  ) ?? roofline.bandwidthRoofs[0];
+  const points = roofline.points.filter((point) => (
+    phase === "all" || point.phase === phase
+  ));
+  if (roofline.status === "unavailable" || selectedRoof === undefined) {
+    return (
+      <div className="border-l-2 border-amber-600 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+        <strong>Roofline unavailable.</strong>{" "}
+        {roofline.unavailableReason ?? "The run has insufficient model evidence."}
+      </div>
+    );
+  }
+  const allX = points.map((point) => point.arithmeticIntensity);
+  const minX = Math.max(1e-3, Math.min(...allX) / 4);
+  const maxX = Math.max(minX * 100, Math.max(...allX) * 4);
+  const samples = logSamples(minX, maxX, 48).map((intensity) => ({
+    intensity,
+    bandwidth: selectedRoof.bytesPerSecond * intensity,
+    ...(roofline.computeRoof === undefined
+      ? {}
+      : { compute: roofline.computeRoof.flopsPerSecond }),
+  }));
+  const data = points.map((point) => ({
+    ...point,
+    rate: point.predictedFlopsPerSecond,
+    name: point.label,
+  }));
+  const yValues = [
+    ...data.map((point) => point.rate),
+    ...samples.map((sample) => Math.min(
+      sample.bandwidth,
+      sample.compute ?? Infinity,
+    )),
+  ].filter(Number.isFinite);
+  const minY = Math.max(1, Math.min(...yValues) / 4);
+  const maxY = Math.max(minY * 100, Math.max(...yValues) * 2);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="min-w-56 text-xs font-semibold text-zinc-600">
+          Resource roof
+          <select
+            className="mt-1 block h-8 w-full rounded-md border border-zinc-300 bg-white px-2 text-xs text-zinc-900"
+            value={selectedRoof.id}
+            onChange={(event) => setRoofId(event.target.value)}
+          >
+            {roofline.bandwidthRoofs.map((roof) => (
+              <option key={roof.id} value={roof.id}>
+                {roof.kind.replaceAll("_", " ")} · {roof.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Roofline phase">
+          {phases.map((candidate) => (
+            <button
+              key={candidate}
+              type="button"
+              className={`h-8 rounded-md border px-2.5 text-xs font-semibold ${phase === candidate ? "border-sky-700 bg-sky-50 text-sky-800" : "border-zinc-300 bg-white text-zinc-600"}`}
+              onClick={() => setPhase(candidate)}
+            >
+              {candidate.replaceAll("_", " ")}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p id="roofline-description" className="text-xs leading-5 text-zinc-500">
+        Each point is simulated model work. The diagonal is the selected bandwidth ceiling;
+        {roofline.computeRoof === undefined
+          ? " this dtype has no defensible compute ceiling, so none is invented."
+          : ` the horizontal line is a ${roofline.computeRoof.evidence.replaceAll("_", " ")} ceiling for ${roofline.computeRoof.dtype}.`}
+      </p>
+      <div className="roofline-frame" role="img" aria-describedby="roofline-description" aria-label="Logarithmic hierarchical roofline chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart margin={{ left: 22, right: 22, top: 10, bottom: 8 }}>
+            <CartesianGrid stroke="#e4e4e7" />
+            <XAxis
+              type="number"
+              dataKey="intensity"
+              scale="log"
+              domain={[minX, maxX]}
+              allowDataOverflow
+              tickFormatter={formatLogNumber}
+              tick={{ fill: "#71717a", fontSize: 11 }}
+              label={{ value: "Arithmetic intensity (FLOP/byte)", position: "insideBottom", offset: -4, fontSize: 11, fill: "#52525b" }}
+            />
+            <YAxis
+              type="number"
+              dataKey="rate"
+              scale="log"
+              domain={[minY, maxY]}
+              allowDataOverflow
+              tickFormatter={formatFlops}
+              tick={{ fill: "#71717a", fontSize: 11 }}
+              width={72}
+            />
+            <ChartTooltip content={<RooflineTooltip roof={selectedRoof} />} />
+            <Legend verticalAlign="top" height={28} wrapperStyle={{ fontSize: 11 }} />
+            <Line data={samples} dataKey="bandwidth" name={`${selectedRoof.label} bandwidth`} stroke="#d97706" strokeWidth={2} dot={false} isAnimationActive={false} />
+            {roofline.computeRoof
+              ? <Line data={samples} dataKey="compute" name="Effective compute" stroke="#047857" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+              : null}
+            <Scatter data={data} dataKey="rate" name="Predicted work" fill="#0369a1" isAnimationActive={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] border-collapse text-left text-xs">
+          <thead className="border-y border-zinc-200 text-zinc-500">
+            <tr><th className="py-2">Work</th><th>Phase</th><th>Intensity</th><th>Predicted rate</th><th>Predicted tokens</th><th>Modeled limit</th></tr>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.id} className="border-b border-zinc-100">
+                <td className="py-2 font-semibold">{point.label}</td>
+                <td>{point.phase.replaceAll("_", " ")}</td>
+                <td>{formatLogNumber(point.arithmeticIntensity)} FLOP/B</td>
+                <td>{formatFlops(point.predictedFlopsPerSecond)}</td>
+                <td>{point.predictedTokensPerSecond === undefined ? "n/a" : `${formatLogNumber(point.predictedTokensPerSecond)} tok/s`}</td>
+                <td>{point.limitingRoofId === "compute"
+                  ? "effective compute"
+                  : roofline.bandwidthRoofs.find((roof) => roof.id === point.limitingRoofId)?.label ?? "unresolved"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function RooflineTooltip({ active, payload, roof }: {
+  readonly active?: boolean;
+  readonly payload?: readonly { readonly payload?: Record<string, unknown> }[];
+  readonly roof: NonNullable<DashboardResult["roofline"]>["bandwidthRoofs"][number];
+}): React.JSX.Element | null {
+  const item = payload?.find((entry) => entry.payload?.phase)?.payload;
+  if (!active || item === undefined) return null;
+  return (
+    <div style={chartTooltipStyle} className="bg-white p-2.5">
+      <div className="font-bold">{String(item.label)}</div>
+      <div className="mt-1 text-zinc-600">{String(item.phase).replaceAll("_", " ")}</div>
+      <div>{formatLogNumber(Number(item.arithmeticIntensity))} FLOP/byte</div>
+      <div>{formatFlops(Number(item.predictedFlopsPerSecond))} predicted</div>
+      <div className="mt-1 text-zinc-500">Compared with {roof.label}</div>
+    </div>
+  );
+}
+
+function logSamples(minimum: number, maximum: number, count: number) {
+  const start = Math.log10(minimum);
+  const span = Math.log10(maximum) - start;
+  return Array.from({ length: count }, (_, index) => (
+    10 ** (start + span * index / (count - 1))
+  ));
+}
+
+function formatFlops(value: number): string {
+  if (value >= 1e15) return `${(value / 1e15).toFixed(1)} PFLOP/s`;
+  if (value >= 1e12) return `${(value / 1e12).toFixed(1)} TFLOP/s`;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)} GFLOP/s`;
+  return `${formatLogNumber(value)} FLOP/s`;
+}
+
+function formatLogNumber(value: number): string {
+  if (value >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (value >= 10) return value.toFixed(0);
+  if (value >= 1) return value.toFixed(1);
+  return value.toPrecision(2);
 }
 
 function TopologyComparisonChart({

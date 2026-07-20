@@ -59,6 +59,12 @@ input {
   height: 260px;
 }
 
+.roofline-frame {
+  width: 100%;
+  min-width: 0;
+  height: 380px;
+}
+
 .partition-chart {
   height: 300px;
 }

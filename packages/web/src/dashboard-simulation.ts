@@ -34,6 +34,7 @@ import type {
   WorkerRunProgressReporter,
 } from "./types.js";
 import { modelSupportsSpeculativeFamily } from "./model-binding.js";
+import { buildDashboardRoofline } from "./roofline.js";
 
 export function simulateDashboard(
   config: DashboardRunConfig,
@@ -103,6 +104,7 @@ export function simulateDashboardExecution(
         config,
         scenario,
         fastest.result,
+        costModel,
         comparison,
       )),
       evidence: {
@@ -141,6 +143,13 @@ export function simulateDashboardExecution(
           : { model: modelSummary(config)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
+        roofline: buildDashboardRoofline({
+          scenario,
+          model: config.modelBinding,
+          costModel,
+          topology,
+          mode: config.mode,
+        }),
         ...pipelineExecutionSummary([topology]),
         speculative: workload.dashboard,
       }),
@@ -160,6 +169,7 @@ export function simulateDashboardExecution(
         config,
         scenario,
         serving,
+        costModel,
       )),
       evidence: {
         kind: "serving",
@@ -192,6 +202,13 @@ export function simulateDashboardExecution(
           : { model: modelSummary(config)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
+        roofline: buildDashboardRoofline({
+          scenario,
+          model: config.modelBinding,
+          costModel,
+          topology,
+          mode: config.mode,
+        }),
         ...pipelineExecutionSummary([topology]),
       }),
       evidence: { kind: "pipeline", topology },
@@ -214,6 +231,13 @@ export function simulateDashboardExecution(
       scenario: scenarioSummary,
       mode: config.mode,
       topology: summarizeTopology(topology),
+      roofline: buildDashboardRoofline({
+        scenario,
+        model: config.modelBinding,
+        costModel,
+        topology,
+        mode: config.mode,
+      }),
       expertCache: workload.dashboard,
     }),
     evidence: {
@@ -537,6 +561,7 @@ function servingDashboardResult(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
   serving: ReturnType<typeof simulateTopologyServingWorkload>,
+  costModel: TopologyCostModel,
   comparison?: ReturnType<typeof compareTopologyServingWorkloads>,
 ): Omit<DashboardResult, "durationMs"> {
   return {
@@ -546,6 +571,13 @@ function servingDashboardResult(
       : { model: modelSummary(config)! }),
     mode: "serving",
     topology: summarizeServingTopology(serving),
+    roofline: buildDashboardRoofline({
+      scenario,
+      model: config.modelBinding,
+      costModel,
+      serving,
+      mode: "serving",
+    }),
     ...pipelineExecutionSummary(
       serving.batches.map((batch) => batch.topology),
     ),

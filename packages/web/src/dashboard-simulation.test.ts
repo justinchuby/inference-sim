@@ -58,6 +58,94 @@ const base: DashboardRunConfig = {
 };
 
 describe("simulateDashboard", () => {
+  it("emits hierarchical roofline evidence for serving phases", () => {
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "rtx-4090-desktop",
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "fp16"),
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 2,
+        promptTokens: 32,
+        outputTokens: 3,
+        maxBatchSize: 2,
+        maxBatchTokens: 16,
+        prefillChunkTokens: 16,
+      },
+    });
+
+    expect(result.roofline).toMatchObject({
+      revision: 1,
+      status: "available",
+      computeRoof: { dtype: "fp16" },
+    });
+    expect(result.roofline!.bandwidthRoofs.some(
+      (roof) => roof.kind === "device_memory",
+    )).toBe(true);
+    expect(new Set(result.roofline!.points.map((point) => point.phase)))
+      .toContain("prefill");
+    expect(result.roofline!.points.every((point) => (
+      point.arithmeticIntensity > 0
+      && point.predictedFlopsPerSecond > 0
+      && point.notes.some((note) => note.includes("simulated replay"))
+    ))).toBe(true);
+  });
+
+  it("does not invent a low-bit compute roof", () => {
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "rtx-5090-desktop",
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "int2"),
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 1,
+        promptTokens: 8,
+        outputTokens: 2,
+        maxBatchSize: 1,
+        maxBatchTokens: 8,
+        prefillChunkTokens: 8,
+      },
+    });
+
+    expect(result.roofline?.status).toBe("available");
+    expect(result.roofline?.computeRoof).toBeUndefined();
+    expect(result.roofline?.bandwidthRoofs.length).toBeGreaterThan(0);
+    expect(result.roofline?.points.every(
+      (point) => point.limitingRoofId === "unresolved",
+    )).toBe(true);
+  });
+
+  it("labels speculative verification as its own roofline phase", () => {
+    const result = simulateDashboard({
+      ...base,
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "int4"),
+      speculative: {
+        ...base.speculative,
+        family: "prompt_lookup",
+        outputTokens: 8,
+        draftWidth: 3,
+      },
+    });
+    expect(result.roofline?.points.map((point) => point.phase))
+      .toContain("spec_verify");
+    expect(result.roofline?.assumptions.some(
+      (assumption) => assumption.includes("proposer work is excluded"),
+    )).toBe(true);
+  });
+
+  it("fails closed when roofline model evidence is absent", () => {
+    const result = simulateDashboard({ ...base, mode: "expert-cache" });
+    expect(result.roofline).toMatchObject({
+      revision: 1,
+      status: "unavailable",
+    });
+    expect(result.roofline?.unavailableReason).toContain("select a model");
+  });
+
   it("runs the default bound model on every computer preset", () => {
     const modelBinding = createBuiltinModelBinding("llama-3-8b");
     for (const scenarioName of COMPUTER_PRESET_NAMES) {

@@ -29,6 +29,7 @@ import type {
   DashboardArtifactReplay,
   DashboardRunConfig,
 } from "./types.js";
+import { ROOFLINE_SUMMARY_REVISION } from "./roofline.js";
 
 export const MAX_DASHBOARD_ARTIFACT_FILE_BYTES = 128 * 1024 * 1024;
 export const PIPELINE_EXECUTION_CONTRACT_REVISION = 1;
@@ -105,6 +106,7 @@ export function dashboardArtifactContracts(
     || (config.mode === "serving" && config.serving.useExpertCache);
   return {
     ...DASHBOARD_BASE_CONTRACTS,
+    roofline_summary: ROOFLINE_SUMMARY_REVISION,
     ...(config.calibration === undefined
       ? {}
       : { calibration_dataset: CALIBRATION_DATASET_REVISION }),

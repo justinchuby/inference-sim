@@ -1167,6 +1167,42 @@ not yet fit compute roofline knees, sequence-length effects, cache-tier
 distributions, or per-product device overrides. Those require a later
 calibration revision rather than weakening revision 3 applicability.
 
+### 11.5 Hierarchical Roofline Result
+
+Dashboard runs emit a deterministic revisioned roofline summary. It is a
+diagnostic view over simulation evidence, not a replacement performance model.
+The summary separates:
+
+- device, host, interconnect/network, and storage bandwidth roofs;
+- prefill, decode, mixed continuous batches, speculative target verification,
+  pipeline components, and routed-expert work;
+- model arithmetic intensity from simulated replay rate; and
+- declared bandwidth evidence from the cost model's effective compute ceiling.
+
+The chart uses logarithmic FLOP/byte and FLOP/s axes. A point's predicted rate
+is derived from simulated replay time and must never be labeled measured or
+achieved. A compute ceiling derived from attention/FFN cost coefficients is
+labeled effective, with its calibration confidence. It is not a vendor peak.
+INT4, INT2, INT1, NF4, mixed, and unknown weight formats have no compute roof
+unless the selected device contract explicitly supplies compatible evidence.
+The UI keeps the diagonal bandwidth roofs and reports the limiting resource as
+unresolved instead of manufacturing a low-bit peak.
+
+The initial arithmetic-intensity contract accounts for architecture-derived
+forward FLOPs and active weight bytes amortized over the execution width.
+Pipeline component FLOPs are proportional estimates from component weight
+bytes. Speculative proposer work, phase-specific attention FLOPs, KV traffic,
+kernel cache reuse, and per-operation transfer bytes remain unknown until the
+model and FrozenPlan contracts carry those quantities explicitly. The result
+lists these assumptions and does not silently encode unknown values as zero.
+Interconnect and SSD roofs are counterfactual when replay did not route the
+modeled data through that tier.
+
+Future measured runtime imports may add achieved points only when the capture
+binds operation work, phase, dtype, device identity, and observation window.
+Scheduler occupancy remains separate from model-FLOP utilization and bandwidth
+utilization.
+
 ## 12. Static Analysis Requirements
 
 The current static analyzer is useful scaffolding, but production-quality

@@ -117,6 +117,7 @@ describe("dashboard result artifact import", () => {
     expect(Object.keys(dashboardArtifactContracts(config)).sort()).toEqual([
       "frozen_plan",
       "paged_kv",
+      "roofline_summary",
       "scenario_schema",
       "speculative_family",
       "speculative_iteration",
@@ -132,6 +133,7 @@ describe("dashboard result artifact import", () => {
       },
     })).sort()).toEqual([
       "frozen_plan",
+      "roofline_summary",
       "scenario_schema",
       "serving_trace",
       "topology_cost_model",
@@ -147,6 +149,7 @@ describe("dashboard result artifact import", () => {
       "concurrent_plan_trace",
       "expert_cache",
       "frozen_plan",
+      "roofline_summary",
       "scenario_schema",
       "serving_expert_cache",
       "serving_trace",
