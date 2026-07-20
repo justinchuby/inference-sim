@@ -45,6 +45,8 @@ Phase 3 has an initial speculative workload slice:
   correction/bonus, rejection, and efficiency metrics; and
 - provenance-bound token-value differential traces with independent
   token-decision/state-decision replay;
+- independently bound target-only/speculative runtime capture artifacts with
+  terminal-count, provenance, offset, and runtime-commit verification;
 - composite target/proposer state rollback on every iteration;
 - exact-capacity paged KV allocation with checkpoint-relative rollback,
   non-reused physical page identities, and independent trace replay; and
@@ -117,6 +119,7 @@ pnpm sim scenario gpu-npu
 pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim speculative-trace examples/speculative-token-trace-mtp.yaml single-gpu-cpu
+pnpm sim speculative-capture examples/runtime-capture-target-only.yaml examples/runtime-capture-speculative.yaml single-gpu-cpu
 pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
@@ -138,6 +141,8 @@ confidence among compute, device, memory, and link evidence.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.
+See [docs/ONNX_GENAI_CAPTURE.md](docs/ONNX_GENAI_CAPTURE.md) for producing and
+verifying paired runtime evidence from the onnx-genai integration branch.
 
 ## License
 

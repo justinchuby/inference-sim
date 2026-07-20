@@ -958,9 +958,11 @@ operator observations, provenance, applicability, quality diagnostics, and
 valid interpolation ranges, with fail-closed execution outside those ranges.
 Token-value traces now reconstruct correction, bonus, and accepted-tail values,
 compare them with a bound target-only run, replay the same decisions through
-composite state, and execute a 6 proposer x 6 topology matrix. Backend trace
-export, measured transport/collective calibration, and adaptive prefetch policy
-remain; self-speculative remains design-only.
+composite state, and execute a 6 proposer x 6 topology matrix. The companion
+onnx-genai integration branch now provides explicit opt-in iteration capture
+and an atomic runtime-artifact writer; merging that producer, measured
+transport/collective calibration, and adaptive prefetch policy remain.
+self-speculative remains design-only.
 The same serving workload can also execute across all six topology presets and
 produce a deterministic latency ranking with per-run replay evidence.
 
