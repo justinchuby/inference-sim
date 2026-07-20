@@ -57,12 +57,15 @@ export {
   type ServingTraceEvent,
 } from "./serving.js";
 export {
+  SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   compareTopologyServingWorkloads,
   simulateTopologyServingWorkload,
   topologyProfileFromServingBatch,
   type TopologyServingBatchResult,
   type TopologyServingComparisonResult,
   type TopologyServingComparisonRun,
+  type TopologyServingExpertCacheConfig,
+  type TopologyServingExpertCacheResult,
   type TopologyServingMetrics,
   type TopologyServingResult,
 } from "./serving-topology.js";

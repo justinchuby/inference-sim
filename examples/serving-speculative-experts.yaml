@@ -1,0 +1,41 @@
+serving:
+  max_batch_size: 4
+  max_batch_tokens: 64
+  prefill_chunk_tokens: 32
+  max_kv_tokens: 8192
+  speculative:
+    family: mtp
+    max_additional_tokens: 3
+    acceptance:
+      kind: conditional_empirical
+      match_probability_by_position: [0.82, 0.70, 0.58]
+      seed: 42
+  requests:
+    - id: interactive-0
+      arrival_ns: 0
+      prompt_tokens: 256
+      output_tokens: 48
+      priority: 1
+    - id: batch-0
+      arrival_ns: 250000
+      prompt_tokens: 512
+      output_tokens: 64
+
+expert_cache:
+  contract_revision: 1
+  top_k: 2
+  hot_capacity_bytes: 268435456
+  warm_capacity_bytes: 268435456
+  warm_to_hot_latency_ns: 400000
+  cold_to_hot_latency_ns: 2200000
+  cold_to_warm_latency_ns: 1500000
+  routing_seed: 17
+  initial_hot_expert_ids: [expert-0, expert-1]
+  initial_warm_expert_ids: [expert-2, expert-3]
+  experts:
+    - { id: expert-0, bytes: 67108864, routing_weight: 1.5 }
+    - { id: expert-1, bytes: 67108864, routing_weight: 1.4 }
+    - { id: expert-2, bytes: 67108864, routing_weight: 1.3 }
+    - { id: expert-3, bytes: 67108864, routing_weight: 1.2 }
+    - { id: expert-4, bytes: 67108864, routing_weight: 1.1 }
+    - { id: expert-5, bytes: 67108864, routing_weight: 1.0 }

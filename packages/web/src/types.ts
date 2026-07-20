@@ -40,6 +40,7 @@ export interface DashboardRunConfig {
   };
   readonly serving: {
     readonly compareTopologies: boolean;
+    readonly useExpertCache: boolean;
     readonly decodeMode: "target_only" | SpeculativeProposerFamily;
     readonly draftWidth: number;
     readonly firstPositionAcceptance: number;
@@ -135,6 +136,8 @@ export interface DashboardResult {
       readonly prefillSequences: number;
       readonly decodeSequences: number;
       readonly durationNs: number;
+      readonly cacheConstraintNs: number;
+      readonly expertRoutes: number;
     }[];
   };
   readonly comparison?: readonly {

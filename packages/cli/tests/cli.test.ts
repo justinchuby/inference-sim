@@ -317,6 +317,17 @@ serving:
   requests:
     - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 5 }
     - { id: b, arrival_ns: 10, prompt_tokens: 4, output_tokens: 5 }
+expert_cache:
+  contract_revision: 1
+  top_k: 1
+  hot_capacity_bytes: 67108864
+  warm_capacity_bytes: 67108864
+  warm_to_hot_latency_ns: 400000
+  cold_to_hot_latency_ns: 2200000
+  cold_to_warm_latency_ns: 1500000
+  routing_seed: 7
+  experts:
+    - { id: e0, bytes: 67108864 }
 `, "utf8");
     const capture = captureIo();
 
@@ -336,6 +347,12 @@ serving:
           decode: Array<{ mode: string; outcome: string }>;
         };
       }>;
+      expertCache: {
+        contractRevision: number;
+        metrics: { coldMisses: number; hotHits: number };
+        routes: number;
+        replayAppliedEvents: number;
+      };
     };
     expect(output.serving.metrics).toMatchObject({
       outputTokens: 10,
@@ -350,6 +367,11 @@ serving:
     expect(output.batches.some((batch) => (
       batch.work.decode.some((decode) => decode.mode === "speculative")
     ))).toBe(true);
+    expect(output.expertCache.contractRevision).toBe(1);
+    expect(output.expertCache.metrics.coldMisses).toBe(1);
+    expect(output.expertCache.metrics.hotHits)
+      .toBe(output.expertCache.routes - 1);
+    expect(output.expertCache.replayAppliedEvents).toBeGreaterThan(0);
   });
 
   it("compares one serving workload across all topology presets", async () => {

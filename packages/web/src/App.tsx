@@ -50,6 +50,7 @@ import {
   SelectValue,
 } from "./components/ui/select.js";
 import { Slider } from "./components/ui/slider.js";
+import { Switch } from "./components/ui/switch.js";
 import {
   Tabs,
   TabsContent,
@@ -105,6 +106,7 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
   },
   serving: {
     compareTopologies: false,
+    useExpertCache: true,
     decodeMode: "mtp",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -665,6 +667,26 @@ function ConfigurationPanel({
               </SelectContent>
             </Select>
           </Field>
+          <div className="flex min-h-9 items-center justify-between gap-3">
+            <label
+              className="text-sm font-medium text-zinc-700"
+              htmlFor="serving-expert-cache"
+            >
+              Stateful expert cache
+            </label>
+            <Switch
+              id="serving-expert-cache"
+              checked={config.serving.useExpertCache}
+              disabled={disabled}
+              onCheckedChange={(useExpertCache) => onChange({
+                ...config,
+                serving: {
+                  ...config.serving,
+                  useExpertCache,
+                },
+              })}
+            />
+          </div>
           {config.serving.decodeMode === "target_only"
             ? null
             : (
@@ -1183,6 +1205,9 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
             : null}
           {result.serving
             ? <Badge variant="neutral">continuous batch</Badge>
+            : null}
+          {result.serving && result.expertCache
+            ? <Badge variant="neutral">stateful expert cache</Badge>
             : null}
           {result.serving && result.serving.decodeMode !== "target_only"
             ? (

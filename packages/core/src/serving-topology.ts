@@ -7,6 +7,15 @@ import {
 import {
   speculativeFamilyContract,
 } from "./speculative-family.js";
+import {
+  ExpertCacheSimulator,
+  replayExpertCacheTrace,
+  type ExpertCacheConfig,
+  type ExpertCacheReplayResult,
+  type ExpertCacheSnapshot,
+  type ExpertCacheTraceEvent,
+  type ExpertRouteResult,
+} from "./expert-cache.js";
 import type {
   ConfidenceClass,
   SimulationScenario,
@@ -20,9 +29,30 @@ import {
   type TopologyWorkloadResult,
 } from "./topology-workload.js";
 
+export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 1;
+
+export interface TopologyServingExpertCacheConfig {
+  readonly contractRevision:
+    typeof SERVING_EXPERT_CACHE_CONTRACT_REVISION;
+  readonly cache: ExpertCacheConfig;
+  readonly topK: number;
+}
+
+export interface TopologyServingExpertCacheResult {
+  readonly contractRevision:
+    typeof SERVING_EXPERT_CACHE_CONTRACT_REVISION;
+  readonly routes: readonly ExpertRouteResult[];
+  readonly snapshot: ExpertCacheSnapshot;
+  readonly trace: readonly ExpertCacheTraceEvent[];
+  readonly replay: ExpertCacheReplayResult;
+}
+
 export interface TopologyServingBatchResult {
   readonly batchId: number;
   readonly startedAtNs: number;
+  readonly durationNs: number;
+  readonly cacheConstraintNs: number;
+  readonly expertRoutes: readonly ExpertRouteResult[];
   readonly work: ServingBatchWork;
   readonly topology: TopologyWorkloadResult;
 }
@@ -49,6 +79,7 @@ export interface TopologyServingResult {
   readonly assumptions: readonly string[];
   readonly serving: ServingSimulationResult;
   readonly batches: readonly TopologyServingBatchResult[];
+  readonly expertCache?: TopologyServingExpertCacheResult;
   readonly metrics: TopologyServingMetrics;
 }
 
@@ -98,8 +129,15 @@ export function simulateTopologyServingWorkload(
   scenario: SimulationScenario,
   config: ServingSchedulerConfig,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
+  expertCacheConfig?: TopologyServingExpertCacheConfig,
 ): TopologyServingResult {
+  validateExpertCacheComposition(expertCacheConfig);
   const batches = new Map<number, TopologyServingBatchResult>();
+  const expertCache = expertCacheConfig === undefined
+    ? undefined
+    : new ExpertCacheSimulator(expertCacheConfig.cache);
+  const expertRoutes: ExpertRouteResult[] = [];
+  let nextExpertTokenIndex = 0;
   const estimateDuration = (
     work: ServingBatchWork,
     startedAtNs: number,
@@ -114,20 +152,60 @@ export function simulateTopologyServingWorkload(
           `serving batch ${work.batchId} timing/work changed between simulation and replay`,
         );
       }
-      return existing.topology.metrics.totalDurationNs;
+      return existing.durationNs;
     }
+    const batchExpertRoutes: ExpertRouteResult[] = [];
+    const cacheStartedAtNs = expertCache?.snapshot().currentTimeNs
+      ?? startedAtNs;
+    if (cacheStartedAtNs > startedAtNs) {
+      throw new Error(
+        `expert cache time ${cacheStartedAtNs}ns exceeds serving batch ${work.batchId} start ${startedAtNs}ns`,
+      );
+    }
+    if (expertCache !== undefined && expertCacheConfig !== undefined) {
+      for (let index = 0; index < work.tokenWork; index++) {
+        const atNs = Math.max(
+          startedAtNs,
+          expertCache.snapshot().currentTimeNs,
+        );
+        const route = expertCache.processToken({
+          tokenIndex: nextExpertTokenIndex++,
+          topK: expertCacheConfig.topK,
+          atNs,
+        });
+        batchExpertRoutes.push(route);
+        expertRoutes.push(route);
+      }
+    }
+    const cacheConstraintNs = expertCache === undefined
+      ? 0
+      : expertCache.snapshot().currentTimeNs - startedAtNs;
     const topology = simulateTopologyWorkload(
       scenario,
-      topologyProfileFromServingBatch(work, config.speculative),
+      batchExpertRoutes.length === 0
+        ? topologyProfileFromServingBatch(work, config.speculative)
+        : topologyProfileFromExpertServingBatch(
+            work,
+            config.speculative,
+            batchExpertRoutes,
+            expertCacheConfig?.cache.experts ?? [],
+          ),
       costModel,
+    );
+    const durationNs = Math.max(
+      topology.metrics.totalDurationNs,
+      cacheConstraintNs,
     );
     batches.set(work.batchId, {
       batchId: work.batchId,
       startedAtNs,
+      durationNs,
+      cacheConstraintNs,
+      expertRoutes: batchExpertRoutes,
       work,
       topology,
     });
-    return topology.metrics.totalDurationNs;
+    return durationNs;
   };
   const serving = simulateServingWorkload(config, estimateDuration);
   const orderedBatches = [...batches.values()].sort(
@@ -180,6 +258,10 @@ export function simulateTopologyServingWorkload(
   const totalDurationNs = serving.metrics.totalDurationNs;
   const confidence = orderedBatches[0]?.topology.confidence
     ?? costModel.confidence;
+  const expertCacheResult: TopologyServingExpertCacheResult | undefined =
+    expertCache === undefined
+      ? undefined
+      : buildExpertCacheResult(expertCache, expertRoutes);
   return {
     scenarioId: scenario.id,
     confidence,
@@ -195,10 +277,19 @@ export function simulateTopologyServingWorkload(
       config.speculative
         ? `${config.speculative.family} proposals use per-request deterministic acceptance streams and transactional restore`
         : "decode uses one target-authoritative token per sequence step",
+      expertCache === undefined
+        ? "target FFN execution is dense and does not model expert residency"
+        : "expert routes preserve cache state across batches; routes within each batch are serialized conservatively",
+      expertCache === undefined
+        ? "batch duration is determined by topology execution"
+        : "composed batch duration is the maximum of topology execution and the expert-cache readiness constraint; demand transfer is not added twice",
       "batch plans execute serially while resources inside each plan retain declared concurrency",
     ],
     serving,
     batches: orderedBatches,
+    ...(expertCacheResult === undefined
+      ? {}
+      : { expertCache: expertCacheResult }),
     metrics: {
       totalDurationNs,
       batchServiceNs: serving.metrics.batchServiceNs,
@@ -233,6 +324,7 @@ export function compareTopologyServingWorkloads(
   scenarios: readonly SimulationScenario[],
   config: ServingSchedulerConfig,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
+  expertCacheConfig?: TopologyServingExpertCacheConfig,
 ): TopologyServingComparisonResult {
   if (scenarios.length === 0) {
     throw new Error("serving comparison requires at least one scenario");
@@ -251,6 +343,7 @@ export function compareTopologyServingWorkloads(
       scenario,
       config,
       costModel,
+      expertCacheConfig,
     ))
     .sort((left, right) => (
       left.metrics.totalDurationNs - right.metrics.totalDurationNs
@@ -264,5 +357,120 @@ export function compareTopologyServingWorkloads(
         result.metrics.totalDurationNs / fastestDurationNs,
       result,
     })),
+  };
+}
+
+function topologyProfileFromExpertServingBatch(
+  batch: ServingBatchWork,
+  speculative: ServingSchedulerConfig["speculative"],
+  routes: readonly ExpertRouteResult[],
+  experts: ExpertCacheConfig["experts"],
+): TopologyWorkloadProfile {
+  if (routes.length !== batch.tokenWork || routes.length === 0) {
+    throw new Error(
+      `serving batch ${batch.batchId} requires one expert route per target token`,
+    );
+  }
+  const base = topologyProfileFromServingBatch(batch, speculative);
+  const expertBytes = new Map(experts.map((expert) => [
+    expert.id,
+    expert.bytes,
+  ]));
+  const topK = routes[0].expertIds.length;
+  if (routes.some((route) => route.expertIds.length !== topK)) {
+    throw new Error(
+      `serving batch ${batch.batchId} changed expert topK within the batch`,
+    );
+  }
+  let warmLoadBytes = 0;
+  let coldLoadBytes = 0;
+  for (const route of routes) {
+    for (let index = 0; index < route.expertIds.length; index++) {
+      const bytes = expertBytes.get(route.expertIds[index]);
+      if (bytes === undefined) {
+        throw new Error(
+          `serving batch ${batch.batchId} routed unknown expert ${route.expertIds[index]}`,
+        );
+      }
+      if (route.sourceTiers[index] === "warm") {
+        warmLoadBytes = checkedByteAdd(
+          warmLoadBytes,
+          bytes,
+          `serving batch ${batch.batchId} warm expert loads`,
+        );
+      } else if (route.sourceTiers[index] === "cold") {
+        coldLoadBytes = checkedByteAdd(
+          coldLoadBytes,
+          bytes,
+          `serving batch ${batch.batchId} cold expert loads`,
+        );
+      }
+    }
+  }
+  return {
+    ...base,
+    id: `${base.id}:expert-cache`,
+    units: base.units.map((unit) => ({
+      ...unit,
+      activeExperts: topK,
+      expertRouted: true,
+      warmLoadBytes,
+      coldLoadBytes,
+    })),
+  };
+}
+
+function checkedByteAdd(left: number, right: number, label: string): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`${label} exceeds the safe integer range`);
+  }
+  return result;
+}
+
+function validateExpertCacheComposition(
+  config: TopologyServingExpertCacheConfig | undefined,
+): void {
+  if (config === undefined) {
+    return;
+  }
+  if (
+    config.contractRevision !== SERVING_EXPERT_CACHE_CONTRACT_REVISION
+  ) {
+    throw new Error(
+      `unsupported serving expert-cache contract revision ${config.contractRevision}`,
+    );
+  }
+  if (!Number.isSafeInteger(config.topK) || config.topK <= 0) {
+    throw new Error("serving expert-cache topK must be a positive safe integer");
+  }
+  if (config.topK > config.cache.experts.length) {
+    throw new Error(
+      `serving expert-cache topK ${config.topK} exceeds ${config.cache.experts.length} experts`,
+    );
+  }
+  if (config.cache.adaptivePrefetch !== undefined) {
+    throw new Error(
+      "serving expert-cache composition does not yet support adaptive background prefetch",
+    );
+  }
+}
+
+function buildExpertCacheResult(
+  cache: ExpertCacheSimulator,
+  routes: readonly ExpertRouteResult[],
+): TopologyServingExpertCacheResult {
+  const snapshot = cache.snapshot();
+  const trace = cache.trace();
+  const replay = replayExpertCacheTrace(trace);
+  if (JSON.stringify(replay.snapshot) !== JSON.stringify(snapshot)) {
+    throw new Error("serving expert-cache replay diverged from live state");
+  }
+  return {
+    contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+    routes,
+    snapshot,
+    trace,
+    replay,
   };
 }

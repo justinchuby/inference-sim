@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SCENARIO_PRESET_NAMES,
+  SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   buildScenarioPreset,
   compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
@@ -172,6 +173,171 @@ describe("topology-aware serving", () => {
     expect(speculative.metrics.totalDurationNs).toBeLessThan(
       targetOnly.metrics.totalDurationNs,
     );
+  });
+
+  it("composes speculative serving with persistent routed-expert cache state", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const result = simulateTopologyServingWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        requests: [
+          { id: "moe", arrivalNs: 0, promptTokens: 4, outputTokens: 5 },
+        ],
+        maxBatchSize: 1,
+        maxBatchTokens: 4,
+        prefillChunkTokens: 4,
+        maxKvTokens: 12,
+        speculative: {
+          family: "mtp",
+          eligibility: defaultSpeculativeEligibility("mtp"),
+          maxAdditionalTokens: 2,
+          acceptance: {
+            kind: "conditional_empirical",
+            matchProbabilityByPosition: [1, 1],
+            seed: 3,
+          },
+        },
+      },
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache: {
+          experts: [{ id: "e0", bytes: expertBytes }],
+          hotCapacityBytes: expertBytes,
+          warmCapacityBytes: expertBytes,
+          warmToHotLatencyNs: 2_000,
+          coldToHotLatencyNs: 20_000,
+          coldToWarmLatencyNs: 10_000,
+          routingSeed: 7,
+        },
+        topK: 1,
+      },
+    );
+    const expertCache = result.expertCache;
+    if (expertCache === undefined) {
+      throw new Error("missing composed expert cache");
+    }
+
+    expect(result.serving.metrics.outputTokens).toBe(5);
+    expect(result.serving.metrics.proposedDraftTokens).toBeGreaterThan(0);
+    expect(expertCache.routes).toHaveLength(
+      result.batches.reduce((sum, batch) => sum + batch.work.tokenWork, 0),
+    );
+    expect(expertCache.snapshot.metrics.coldMisses).toBe(1);
+    expect(expertCache.snapshot.metrics.hotHits)
+      .toBe(expertCache.routes.length - 1);
+    expect(expertCache.replay.snapshot).toEqual(expertCache.snapshot);
+    expect(result.batches.length).toBeGreaterThan(1);
+    expect(result.batches[0].expertRoutes[0].sourceTiers).toEqual(["cold"]);
+    expect(result.batches.slice(1).every((batch) => (
+      batch.expertRoutes.every((route) => (
+        route.sourceTiers.every((tier) => tier === "hot")
+      ))
+    ))).toBe(true);
+    expect(result.batches.every((batch) => (
+      batch.durationNs === Math.max(
+        batch.cacheConstraintNs,
+        batch.topology.metrics.totalDurationNs,
+      )
+    ))).toBe(true);
+    expect(result.metrics.allToAllOperations).toBeGreaterThan(0);
+  });
+
+  it("executes composed serving on every required device topology", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const config: ServingSchedulerConfig = {
+      requests: [
+        { id: "matrix", arrivalNs: 0, promptTokens: 2, outputTokens: 3 },
+      ],
+      maxBatchSize: 1,
+      maxBatchTokens: 2,
+      prefillChunkTokens: 2,
+      maxKvTokens: 8,
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 1,
+        acceptance: {
+          kind: "conditional_empirical",
+          matchProbabilityByPosition: [1],
+          seed: 5,
+        },
+      },
+    };
+    for (const scenarioName of SCENARIO_PRESET_NAMES) {
+      const result = simulateTopologyServingWorkload(
+        buildScenarioPreset(scenarioName),
+        config,
+        undefined,
+        {
+          contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+          cache: {
+            experts: [{ id: "e0", bytes: expertBytes }],
+            hotCapacityBytes: expertBytes,
+            warmCapacityBytes: expertBytes,
+            warmToHotLatencyNs: 2_000,
+            coldToHotLatencyNs: 20_000,
+            coldToWarmLatencyNs: 10_000,
+            routingSeed: 7,
+          },
+          topK: 1,
+        },
+      );
+
+      expect(result.serving.replay.completedRequests, scenarioName).toBe(1);
+      expect(result.expertCache?.replay.snapshot, scenarioName)
+        .toEqual(result.expertCache?.snapshot);
+      expect(result.batches.every((batch) => (
+        batch.topology.execution.status === "succeeded"
+      )), scenarioName).toBe(true);
+      expect(
+        result.metrics.allToAllOperations > 0,
+        scenarioName,
+      ).toBe(scenarioName === "multi-gpu" || scenarioName === "multi-node");
+    }
+  });
+
+  it("fails closed for unsupported composed expert-cache contracts", () => {
+    const scenario = buildScenarioPreset("single-gpu-cpu");
+    const expertBytes = 64 * 1024 ** 2;
+    const cache = {
+      experts: [{ id: "e0", bytes: expertBytes }],
+      hotCapacityBytes: expertBytes,
+      warmCapacityBytes: expertBytes,
+      warmToHotLatencyNs: 2_000,
+      coldToHotLatencyNs: 20_000,
+      coldToWarmLatencyNs: 10_000,
+      routingSeed: 7,
+    } as const;
+
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: 2 as 1,
+        cache,
+        topK: 1,
+      },
+    )).toThrow("unsupported serving expert-cache contract revision");
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache: {
+          ...cache,
+          adaptivePrefetch: {
+            targetTier: "warm",
+            minObservations: 1,
+            intervalTokens: 1,
+            maxExpertsPerDecision: 1,
+          },
+        },
+        topK: 1,
+      },
+    )).toThrow("does not yet support adaptive background prefetch");
   });
 
   it("ranks the same serving workload across every topology", () => {

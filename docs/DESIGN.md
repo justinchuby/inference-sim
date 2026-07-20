@@ -612,7 +612,7 @@ later warm demand cannot read the warm pool until its producing storage copy
 has completed on that node. Completed logical prefetches determine later
 warm-demand tiers, while the physical projection charges and enforces the copy.
 
-### 9.8 Continuous Serving and Chunked Prefill
+### 9.9 Continuous Serving and Chunked Prefill
 
 Serving workloads declare request identity, arrival time, prompt/output token
 counts, and priority. The scheduler is deterministic and decode-first:
@@ -641,6 +641,37 @@ token work with the selected topology coefficients; calibration will replace
 that fallback with shape-regime measurements. Metrics include TTFT and ITL
 average/p50/p95, request latency, throughput, sequence/token batch utilization,
 idle/service time, and KV high water.
+
+Serving may opt into revision-1 stateful expert-cache composition. One cache
+instance persists across all batches, and every target token in prefill or
+verification receives one seeded top-K route. Draft-only proposer work does
+not route through the target MoE unless a future proposer profile explicitly
+declares that architecture. Per-batch routed FFN work uses the same AllToAllV
+and expert-sharded topology path as standalone expert-cache workloads.
+
+The current bounded baseline serializes cache route decisions inside a batch,
+while the resulting target work remains batched in one topology plan. This is
+conservative about logical cache readiness but retains batched attention and
+FFN launch economics. Demand-load bytes are projected into the topology plan,
+so batch duration is:
+
+```text
+max(topology_plan_duration, serialized_cache_readiness_constraint)
+```
+
+The two terms are constraints, not additive costs; adding them would charge the
+same demand movement twice. The next batch cannot observe cache state until the
+current batch completes. Serving replay reuses the already materialized batch
+result and must match both batch work and scheduler start time, while the full
+expert-cache trace is replayed independently from initialization through final
+residency.
+
+Adaptive background prefetch is deliberately rejected in composed serving.
+Standalone expert-cache plans can overlap a bounded prefetch with later units,
+but a per-batch plan currently drains before the next batch. Claiming cross-
+batch in-flight prefetch would therefore be false until serving batches share
+one global resource event loop and the cache accepts physical transfer
+completion timestamps from that loop.
 
 ## 10. Device Configuration Coverage
 
@@ -1102,7 +1133,13 @@ execution with independent replay. Batch duration estimation receives the
 authoritative scheduler start time, and replay must reproduce both batch work
 and that time coordinate. This is the contract needed for future stateful
 cache residency, eviction, and prefetch completion across batch boundaries.
-It composes all six proposer contracts with
+Revision-1 composed serving preserves one expert-cache instance across
+batches, routes every target token through the selected top-K experts, emits
+routed AllToAllV/FFN plans, and independently replays both scheduler and cache
+traces. Its bounded baseline uses the maximum of topology execution and
+serialized cache readiness, and rejects adaptive cross-batch prefetch until a
+global physical event loop owns completion. It composes all six proposer
+contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
 topology execution matrix. Revisioned calibration import now preserves repeated
@@ -1163,7 +1200,9 @@ a pair.
 The `serving` command executes arrival-driven target-only or speculative
 continuous batching on a selected topology and reports request timing,
 scheduler trace/replay, accepted/rejected draft work, batch work, and topology
-operation summaries.
+operation summaries. An optional revisioned `expert_cache` block composes
+persistent routed-expert residency with the same serving and speculative
+timeline and reports cache replay evidence.
 The `serving-compare` command runs that same request and acceptance
 configuration across all six topology presets and reports a stable ranked
 summary without duplicating six full traces in CLI output. The `calibrate`
@@ -1192,7 +1231,9 @@ cancel, lazy-loads visualization code, and presents topology selection,
 continuous-serving/speculative-family/expert-cache controls, request TTFT/ITL,
 heuristic modeled latency and throughput, memory, acceptance, cache, and resource
 utilization charts, and recent request/iteration/route inspection. Serving
-controls select target-only or any proposer family plus width and acceptance.
+controls select target-only or any proposer family plus width and acceptance,
+and use a shadcn/Radix switch to compose the Experts-tab cache parameters into
+that serving run.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. General configuration
 search, FrozenPlan file execution/export, ONNX import, trace export, and richer

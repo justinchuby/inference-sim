@@ -2,6 +2,7 @@
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
+  SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   analyzeStatic,
   bindParsedRuntimeCaptures,
   buildSpeculativeStateGroups,
@@ -45,6 +46,7 @@ import {
   type ServingSchedulerConfig,
   type ServingSpeculativeConfig,
   type TopologyServingResult,
+  type TopologyServingExpertCacheConfig,
   type TopologyCostModel,
   type TopologyWorkloadProfile,
   type ConcurrentPlanCampaignOptions,
@@ -225,12 +227,14 @@ export async function runCli(
         }
         const config = await loadRequiredConfig(secondArgument, "serving");
         const costModel = await loadCostModel(thirdArgument);
+        const expertCache = parseServingExpertCacheConfig(config);
         printJson(
           io,
           summarizeServingRun(simulateTopologyServingWorkload(
             buildScenarioPreset(argument as ScenarioPresetName),
             parseServingConfig(config),
             costModel,
+            expertCache,
           )),
         );
         return 0;
@@ -238,12 +242,14 @@ export async function runCli(
       case "serving-compare": {
         const config = await loadRequiredConfig(argument, "serving-compare");
         const costModel = await loadCostModel(secondArgument);
+        const expertCache = parseServingExpertCacheConfig(config);
         printJson(
           io,
           summarizeServingComparison(compareTopologyServingWorkloads(
             SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
             parseServingConfig(config),
             costModel,
+            expertCache,
           )),
         );
         return 0;
@@ -865,6 +871,35 @@ function parseServingConfig(
   };
 }
 
+function parseServingExpertCacheConfig(
+  config: Record<string, unknown>,
+): TopologyServingExpertCacheConfig | undefined {
+  if (config.expert_cache === undefined) {
+    return undefined;
+  }
+  const cache = requireRecord(config.expert_cache, "expert_cache");
+  const revision = requireNumber(
+    cache,
+    "contract_revision",
+    "expert_cache",
+  );
+  const topK = requireNumber(cache, "top_k", "expert_cache");
+  const parsed = parseExpertCacheConfig({
+    expert_cache: cache,
+    workload: {
+      token_count: 1,
+      top_k: topK,
+      token_interval_ns: 0,
+    },
+  });
+  return {
+    contractRevision:
+      revision as typeof SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+    cache: parsed.cache,
+    topK,
+  };
+}
+
 function parseServingSpeculativeConfig(
   speculative: Record<string, unknown>,
 ): ServingSpeculativeConfig {
@@ -1230,10 +1265,26 @@ function summarizeServingRun(result: TopologyServingResult) {
     batches: result.batches.map((batch) => ({
       batchId: batch.batchId,
       work: batch.work,
-      durationNs: batch.topology.metrics.totalDurationNs,
+      durationNs: batch.durationNs,
+      topologyDurationNs: batch.topology.metrics.totalDurationNs,
+      cacheConstraintNs: batch.cacheConstraintNs,
+      expertRoutes: batch.expertRoutes.length,
       planSteps: batch.topology.plan.steps.length,
       operationCounts: countTopologyOperations(batch.topology),
     })),
+    ...(result.expertCache === undefined
+      ? {}
+      : {
+          expertCache: {
+            contractRevision: result.expertCache.contractRevision,
+            metrics: result.expertCache.snapshot.metrics,
+            hotExpertIds: result.expertCache.snapshot.hotExpertIds,
+            warmExpertIds: result.expertCache.snapshot.warmExpertIds,
+            routes: result.expertCache.routes.length,
+            traceEvents: result.expertCache.trace.length,
+            replayAppliedEvents: result.expertCache.replay.appliedEvents,
+          },
+        }),
   };
 }
 

@@ -1,6 +1,7 @@
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
+  SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
@@ -19,6 +20,7 @@ import {
   type ServingSchedulerConfig,
   type TopologyWorkloadResult,
   type TopologyCostModel,
+  type TopologyServingExpertCacheConfig,
 } from "@inference-sim/core";
 import type { DashboardResult, DashboardRunConfig } from "./types.js";
 
@@ -51,6 +53,7 @@ export function simulateDashboard(
       SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
       buildServingConfig(config),
       costModel,
+      buildServingExpertCacheConfig(config),
     );
     const fastest = comparison.runs[0];
     if (!fastest) {
@@ -109,6 +112,7 @@ function runServing(
     scenario,
     buildServingConfig(config),
     costModel,
+    buildServingExpertCacheConfig(config),
   );
 }
 
@@ -193,9 +197,23 @@ function servingDashboardResult(
         tokenWork: batch.work.tokenWork,
         prefillSequences: batch.work.prefill.length,
         decodeSequences: batch.work.decode.length,
-        durationNs: batch.topology.metrics.totalDurationNs,
+        durationNs: batch.durationNs,
+        cacheConstraintNs: batch.cacheConstraintNs,
+        expertRoutes: batch.expertRoutes.length,
       })),
     },
+    ...(serving.expertCache === undefined
+      ? {}
+      : {
+          expertCache: {
+            metrics: serving.expertCache.snapshot.metrics,
+            routes: serving.expertCache.routes,
+            hotResidentBytes: serving.expertCache.snapshot.hotResidentBytes,
+            warmResidentBytes: serving.expertCache.snapshot.warmResidentBytes,
+            hotCapacityBytes: serving.expertCache.snapshot.hotCapacityBytes,
+            warmCapacityBytes: serving.expertCache.snapshot.warmCapacityBytes,
+          },
+        }),
     ...(comparison
       ? {
           comparison: comparison.runs.map((run) => ({
@@ -315,6 +333,45 @@ function runSpeculative(
 function runExpertCache(
   config: DashboardRunConfig,
 ) {
+  const expert = buildDashboardExpertCache(config, true);
+  const result = simulateExpertCacheWorkload({
+    cache: expert.cache,
+    tokenCount: clampInteger(config.expertCache.tokenCount, 1, 512),
+    topK: expert.topK,
+    tokenIntervalNs: 250_000,
+  });
+  return {
+    result,
+    expertBytes: expert.expertBytes,
+    dashboard: {
+      metrics: result.snapshot.metrics,
+      routes: result.routes,
+      hotResidentBytes: result.snapshot.hotResidentBytes,
+      warmResidentBytes: result.snapshot.warmResidentBytes,
+      hotCapacityBytes: result.snapshot.hotCapacityBytes,
+      warmCapacityBytes: result.snapshot.warmCapacityBytes,
+    },
+  };
+}
+
+function buildServingExpertCacheConfig(
+  config: DashboardRunConfig,
+): TopologyServingExpertCacheConfig | undefined {
+  if (!config.serving.useExpertCache) {
+    return undefined;
+  }
+  const expert = buildDashboardExpertCache(config, false);
+  return {
+    contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+    cache: expert.cache,
+    topK: expert.topK,
+  };
+}
+
+function buildDashboardExpertCache(
+  config: DashboardRunConfig,
+  includeAdaptivePrefetch: boolean,
+) {
   const expertCount = clampInteger(config.expertCache.expertCount, 4, 64);
   const topK = clampInteger(config.expertCache.topK, 1, expertCount);
   const hotSlots = clampInteger(
@@ -333,7 +390,9 @@ function runExpertCache(
     bytes: expertBytes,
     routingWeight: Math.max(0.2, 1.5 - index / expertCount),
   }));
-  const result = simulateExpertCacheWorkload({
+  return {
+    expertBytes,
+    topK,
     cache: {
       experts,
       hotCapacityBytes: hotSlots * expertBytes,
@@ -346,7 +405,9 @@ function runExpertCache(
       initialWarmExpertIds: experts
         .slice(hotSlots, hotSlots + warmSlots)
         .map((expert) => expert.id),
-      ...(config.expertCache.adaptivePrefetch && warmSlots > 0
+      ...(includeAdaptivePrefetch
+        && config.expertCache.adaptivePrefetch
+        && warmSlots > 0
         ? {
             adaptivePrefetch: {
               targetTier: "warm" as const,
@@ -356,21 +417,6 @@ function runExpertCache(
             },
           }
         : {}),
-    },
-    tokenCount: clampInteger(config.expertCache.tokenCount, 1, 512),
-    topK,
-    tokenIntervalNs: 250_000,
-  });
-  return {
-    result,
-    expertBytes,
-    dashboard: {
-      metrics: result.snapshot.metrics,
-      routes: result.routes,
-      hotResidentBytes: result.snapshot.hotResidentBytes,
-      warmResidentBytes: result.snapshot.warmResidentBytes,
-      hotCapacityBytes: result.snapshot.hotCapacityBytes,
-      warmCapacityBytes: result.snapshot.warmCapacityBytes,
     },
   };
 }

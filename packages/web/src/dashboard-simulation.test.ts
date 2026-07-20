@@ -17,6 +17,7 @@ const base: DashboardRunConfig = {
   },
   serving: {
     compareTopologies: false,
+    useExpertCache: false,
     decodeMode: "mtp",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -140,7 +141,11 @@ describe("simulateDashboard", () => {
   });
 
   it("runs continuous serving with replayed request timing", () => {
-    const config = { ...base, mode: "serving" as const };
+    const config = {
+      ...base,
+      mode: "serving" as const,
+      serving: { ...base.serving, useExpertCache: true },
+    };
     const result = simulateDashboard(config);
 
     expect(result.serving?.requests).toHaveLength(8);
@@ -151,6 +156,11 @@ describe("simulateDashboard", () => {
     expect(result.serving?.metrics.proposedDraftTokens).toBeGreaterThan(0);
     expect(result.serving?.metrics.acceptedDraftTokens).toBeGreaterThan(0);
     expect(result.serving?.batches.length).toBeGreaterThan(1);
+    expect(result.expertCache?.routes.length).toBeGreaterThan(0);
+    expect(result.expertCache?.metrics.routes).toBe(
+      result.expertCache?.routes.length,
+    );
+    expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
     expect(result.topology.planSteps).toBeGreaterThan(0);
   });
 
@@ -158,7 +168,11 @@ describe("simulateDashboard", () => {
     const result = simulateDashboard({
       ...base,
       mode: "serving",
-      serving: { ...base.serving, decodeMode: "target_only" },
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        useExpertCache: false,
+      },
     });
 
     expect(result.serving?.support).toBe("target_only");
