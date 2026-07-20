@@ -1211,6 +1211,14 @@ cryptographic signatures, and validating one does not replace replay or
 re-execution.
 Non-finite numbers, non-JSON objects, cycles, excessive nesting, unknown
 envelope fields, and fingerprint mismatches fail closed.
+The contract map is execution-path scoped rather than a list of every feature
+the dashboard supports. For example, target-only serving does not bind
+speculative or expert-cache revisions. Import requires the exact current
+applicable contract set, validates the embedded Dashboard configuration, then
+re-executes in the Worker and compares input, output, and envelope fingerprints.
+A valid old artifact whose output differs from the current implementation is
+reported as a deterministic mismatch; a malformed, tampered, oversized, or
+contract-incompatible artifact is rejected before execution.
 
 Product views retained from the original design:
 
@@ -1518,10 +1526,15 @@ expert-cache, serving, or six-topology comparison evidence. The Worker creates
 the artifact from the same execution shown on screen. Contract revisions and
 canonical fingerprints are owned by the shared core artifact contract;
 wall-clock Worker duration is UI-only and excluded from the envelope.
+The header import action accepts a bounded revision-1 JSON artifact, restores
+its calibration and token-trace inputs when present, re-executes the selected
+mode in the Worker, and reports expected/current input, output, and envelope
+fingerprints. Invalid envelopes and stale applicable contracts fail closed;
+valid historical evidence may complete with an explicit artifact mismatch.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. General configuration
 search, standalone FrozenPlan file execution/export, ONNX import, artifact
-import/re-execution, and richer progress phases remain. Calibration YAML/JSON
+history management, and richer progress phases remain. Calibration YAML/JSON
 import shares the core parser and fit contract with the CLI, enforces a 1 MiB
 input limit, refits in the Worker, and reports the dataset fingerprint, compute
 diagnostics, and transport-curve diagnostics in the result view.

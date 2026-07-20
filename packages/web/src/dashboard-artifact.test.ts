@@ -1,0 +1,318 @@
+import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import {
+  createSimulationResultArtifact,
+  serializeSimulationResultArtifact,
+} from "@inference-sim/core";
+import {
+  compareDashboardArtifact,
+  createDashboardArtifact,
+  dashboardArtifactContracts,
+  parseDashboardArtifactFileText,
+} from "./dashboard-artifact.js";
+import { parseCalibrationFileText } from "./calibration-import.js";
+import { simulateDashboardExecution } from "./dashboard-simulation.js";
+import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
+import { parseTokenTraceFileText } from "./token-trace-import.js";
+import type { DashboardRunConfig } from "./types.js";
+
+const config: DashboardRunConfig = {
+  scenarioName: "multi-gpu",
+  multiGpuRanks: 2,
+  mode: "speculative",
+  seed: 42,
+  speculative: {
+    family: "mtp",
+    outputTokens: 8,
+    draftWidth: 2,
+    firstPositionAcceptance: 0.82,
+  },
+  serving: {
+    compareTopologies: false,
+    useExpertCache: false,
+    decodeMode: "mtp",
+    draftWidth: 2,
+    firstPositionAcceptance: 0.82,
+    requestCount: 2,
+    arrivalGapUs: 100,
+    promptTokens: 32,
+    outputTokens: 4,
+    maxBatchSize: 2,
+    maxBatchTokens: 16,
+    prefillChunkTokens: 16,
+  },
+  expertCache: {
+    placementStrategy: "contiguous",
+    tokenCount: 8,
+    topK: 2,
+    expertCount: 8,
+    hotSlots: 4,
+    warmSlots: 4,
+    adaptivePrefetch: true,
+  },
+};
+
+describe("dashboard result artifact import", () => {
+  it("binds only contracts used by the selected execution path", () => {
+    expect(Object.keys(dashboardArtifactContracts(config)).sort()).toEqual([
+      "frozen_plan",
+      "paged_kv",
+      "scenario_schema",
+      "speculative_family",
+      "speculative_iteration",
+      "topology_cost_model",
+    ]);
+    expect(Object.keys(dashboardArtifactContracts({
+      ...config,
+      mode: "serving",
+      serving: {
+        ...config.serving,
+        decodeMode: "target_only",
+        useExpertCache: false,
+      },
+    })).sort()).toEqual([
+      "frozen_plan",
+      "scenario_schema",
+      "serving_trace",
+      "topology_cost_model",
+    ]);
+    expect(Object.keys(dashboardArtifactContracts({
+      ...config,
+      mode: "serving",
+      serving: {
+        ...config.serving,
+        useExpertCache: true,
+      },
+    })).sort()).toEqual([
+      "concurrent_plan_trace",
+      "expert_cache",
+      "frozen_plan",
+      "scenario_schema",
+      "serving_expert_cache",
+      "serving_trace",
+      "speculative_family",
+      "speculative_iteration",
+      "topology_cost_model",
+    ]);
+  });
+
+  it("validates and replays a current deterministic artifact", () => {
+    const artifact = createDashboardArtifact(
+      config,
+      simulateDashboardExecution(config),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact, true),
+      "run.json",
+    );
+    const rerun = createDashboardArtifact(
+      parsed.config,
+      simulateDashboardExecution(parsed.config),
+    );
+    const replay = compareDashboardArtifact(rerun, parsed.expectation);
+
+    expect(parsed.config).toEqual(config);
+    expect(replay).toMatchObject({
+      sourceFileName: "run.json",
+      inputMatches: true,
+      outputMatches: true,
+      matches: true,
+    });
+    expect(replay.actualArtifactFingerprint).toBe(
+      artifact.artifactFingerprint,
+    );
+  });
+
+  it("replays all dashboard modes through the Worker execution boundary", async () => {
+    const configs: DashboardRunConfig[] = [
+      config,
+      { ...config, mode: "expert-cache" },
+      { ...config, mode: "serving" },
+      {
+        ...config,
+        mode: "serving",
+        serving: { ...config.serving, compareTopologies: true },
+      },
+    ];
+    for (const replayConfig of configs) {
+      const artifact = createDashboardArtifact(
+        replayConfig,
+        simulateDashboardExecution(replayConfig),
+      );
+      const parsed = parseDashboardArtifactFileText(
+        serializeSimulationResultArtifact(artifact),
+        `${replayConfig.mode}.json`,
+      );
+      const result = executeDashboardWorkerRun(
+        parsed.config,
+        parsed.expectation,
+      );
+      const exported = JSON.parse(await result.artifact.blob.text()) as {
+        artifactFingerprint: string;
+      };
+
+      expect(result.artifactReplay?.matches).toBe(true);
+      expect(result.artifact.artifactFingerprint).toBe(
+        parsed.expectation.artifactFingerprint,
+      );
+      expect(exported.artifactFingerprint).toBe(
+        parsed.expectation.artifactFingerprint,
+      );
+    }
+  });
+
+  it("restores embedded calibration and token evidence before replay", async () => {
+    const calibrationText = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const traceText = await readFile(new URL(
+      "../../../examples/speculative-token-trace-mtp.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      calibrationText,
+      "calibration.yaml",
+    );
+    const tokenTrace = await parseTokenTraceFileText(
+      traceText,
+      "trace.yaml",
+    );
+    const embeddedConfig: DashboardRunConfig = {
+      ...config,
+      calibration: calibration.dataset,
+      speculative: {
+        ...config.speculative,
+        family: tokenTrace.trace.family,
+        outputTokens: tokenTrace.trace.expectedOutputTokenIds.length,
+        draftWidth: tokenTrace.trace.maxAdditionalTokens,
+        trace: tokenTrace.trace,
+      },
+    };
+    const artifact = createDashboardArtifact(
+      embeddedConfig,
+      simulateDashboardExecution(embeddedConfig),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "evidence.json",
+    );
+
+    expect(parsed.calibration?.fit.datasetFingerprint).toBe(
+      calibration.fit.datasetFingerprint,
+    );
+    expect(parsed.tokenTrace?.preview.committedOutputTokenIds).toEqual(
+      tokenTrace.preview.committedOutputTokenIds,
+    );
+    expect(executeDashboardWorkerRun(
+      parsed.config,
+      parsed.expectation,
+    ).artifactReplay?.matches).toBe(true);
+    expect(Object.keys(dashboardArtifactContracts(parsed.config))).toContain(
+      "calibration_dataset",
+    );
+    expect(Object.keys(dashboardArtifactContracts(parsed.config))).toContain(
+      "speculative_token_trace",
+    );
+  });
+
+  it("reports a deterministic output mismatch after implementation drift", () => {
+    const artifact = createDashboardArtifact(
+      config,
+      simulateDashboardExecution(config),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "run.json",
+    );
+    const changed = {
+      ...artifact,
+      output: {
+        ...artifact.output,
+        summary: {
+          ...artifact.output.summary,
+          topology: {
+            ...artifact.output.summary.topology,
+            planSteps: artifact.output.summary.topology.planSteps + 1,
+          },
+        },
+      },
+    };
+    const rerun = createDashboardArtifact(
+      config,
+      changed.output,
+    );
+    const replay = compareDashboardArtifact(rerun, parsed.expectation);
+
+    expect(replay.inputMatches).toBe(true);
+    expect(replay.outputMatches).toBe(false);
+    expect(replay.matches).toBe(false);
+
+    const workerMismatch = executeDashboardWorkerRun(
+      { ...config, seed: config.seed + 1 },
+      parsed.expectation,
+    );
+    expect(workerMismatch.artifactReplay).toMatchObject({
+      inputMatches: false,
+      matches: false,
+    });
+  });
+
+  it("rejects tampering, stale contracts, and malformed dashboard input", () => {
+    const artifact = createDashboardArtifact(
+      config,
+      simulateDashboardExecution(config),
+    );
+    const tampered = JSON.parse(
+      serializeSimulationResultArtifact(artifact),
+    ) as Record<string, unknown>;
+    (tampered.output as {
+      summary: { topology: { planSteps: number } };
+    }).summary.topology.planSteps++;
+    expect(() => parseDashboardArtifactFileText(
+      JSON.stringify(tampered),
+      "tampered.json",
+    )).toThrow("output fingerprint mismatch");
+
+    const stale = createSimulationResultArtifact(
+      artifact.runKind,
+      {
+        ...dashboardArtifactContracts(config),
+        topology_cost_model:
+          dashboardArtifactContracts(config).topology_cost_model - 1,
+      },
+      artifact.input,
+      artifact.output,
+    );
+    expect(() => parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(stale),
+      "stale.json",
+    )).toThrow("topology_cost_model requires revision");
+
+    const malformed = createSimulationResultArtifact(
+      artifact.runKind,
+      dashboardArtifactContracts(config),
+      { ...artifact.input, multiGpuRanks: 3 },
+      artifact.output,
+    );
+    expect(() => parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(malformed),
+      "malformed.json",
+    )).toThrow("multiGpuRanks is unsupported");
+  });
+
+  it("rejects a mismatched run kind and non-JSON extension", () => {
+    const artifact = createSimulationResultArtifact(
+      "dashboard/serving",
+      dashboardArtifactContracts(config),
+      config,
+      simulateDashboardExecution(config),
+    );
+    const text = serializeSimulationResultArtifact(artifact);
+
+    expect(() => parseDashboardArtifactFileText(text, "run.json"))
+      .toThrow("run kind must be dashboard/speculative");
+    expect(() => parseDashboardArtifactFileText(text, "run.yaml"))
+      .toThrow("must use .json");
+  });
+});

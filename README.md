@@ -112,9 +112,12 @@ before execution, reruns the fit inside the Worker, and displays its stable
 fingerprint plus compute and transport NRMSE/P95 diagnostics.
 Every completed browser run can export a revision-1 deterministic result
 artifact. The artifact binds the dashboard input, summary, complete
-mode-specific core evidence, and applicable contract revisions with canonical
-fingerprints. Browser wall-clock execution time is intentionally excluded, so
-identical simulation input and evidence serialize identically.
+mode-specific core evidence, and only the contract revisions used by that run
+with canonical fingerprints. Browser wall-clock execution time is intentionally
+excluded, so identical simulation input and evidence serialize identically.
+The same JSON can be imported back into the workbench: current contracts and
+embedded inputs are validated, the Worker re-executes the run, and input,
+output, and envelope fingerprints are compared explicitly.
 The Spec view primarily imports a pair of independently emitted target-only and
 speculative runtime captures. It binds their provenance, reconstructs and
 checks every speculative commit, then derives the revisioned token trace used

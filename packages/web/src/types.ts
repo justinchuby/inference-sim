@@ -205,10 +205,31 @@ export interface DashboardArtifactDownload {
   readonly artifactFingerprint: string;
 }
 
+export interface DashboardArtifactExpectation {
+  readonly sourceFileName: string;
+  readonly inputFingerprint: string;
+  readonly outputFingerprint: string;
+  readonly artifactFingerprint: string;
+}
+
+export interface DashboardArtifactReplay {
+  readonly sourceFileName: string;
+  readonly expectedInputFingerprint: string;
+  readonly actualInputFingerprint: string;
+  readonly expectedArtifactFingerprint: string;
+  readonly actualArtifactFingerprint: string;
+  readonly expectedOutputFingerprint: string;
+  readonly actualOutputFingerprint: string;
+  readonly inputMatches: boolean;
+  readonly outputMatches: boolean;
+  readonly matches: boolean;
+}
+
 export type WorkerRequest = {
   readonly type: "run";
   readonly runId: number;
   readonly config: DashboardRunConfig;
+  readonly expectedArtifact?: DashboardArtifactExpectation;
 };
 
 export type WorkerResponse =
@@ -223,6 +244,7 @@ export type WorkerResponse =
       readonly runId: number;
       readonly summary: Omit<DashboardResult, "durationMs">;
       readonly artifact: DashboardArtifactDownload;
+      readonly artifactReplay?: DashboardArtifactReplay;
       readonly durationMs: number;
     }
   | {

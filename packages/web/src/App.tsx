@@ -31,6 +31,10 @@ import {
   type ParsedCalibrationFile,
 } from "./calibration-import.js";
 import {
+  MAX_DASHBOARD_ARTIFACT_FILE_BYTES,
+  parseDashboardArtifactFileText,
+} from "./dashboard-artifact.js";
+import {
   MAX_TOKEN_TRACE_FILE_BYTES,
   parseTokenTraceFileText,
   type ParsedTokenTraceFile,
@@ -66,6 +70,8 @@ import {
 } from "./components/ui/tooltip.js";
 import type {
   DashboardArtifactDownload,
+  DashboardArtifactExpectation,
+  DashboardArtifactReplay,
   DashboardResult,
   DashboardRunConfig,
   WorkerResponse,
@@ -145,6 +151,7 @@ type RunStatus =
   | "running"
   | "complete"
   | "mismatch"
+  | "artifact-mismatch"
   | "cancelled"
   | "error";
 
@@ -154,6 +161,7 @@ interface RunState {
   readonly phase: string;
   readonly result?: DashboardResult;
   readonly artifact?: DashboardArtifactDownload;
+  readonly artifactReplay?: DashboardArtifactReplay;
   readonly error?: string;
 }
 
@@ -180,6 +188,7 @@ export function App(): React.JSX.Element {
   const [calibration, setCalibration] = useState<CalibrationSelection>({});
   const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
   const workerRef = useRef<Worker | undefined>(undefined);
+  const artifactInputRef = useRef<HTMLInputElement | null>(null);
   const runIdRef = useRef(0);
   const initializedRef = useRef(false);
   const changeConfig = useCallback((nextConfig: DashboardRunConfig) => {
@@ -316,7 +325,10 @@ export function App(): React.JSX.Element {
     setTokenTrace({});
   }, [changeConfig]);
 
-  const run = useCallback((nextConfig: DashboardRunConfig) => {
+  const run = useCallback((
+    nextConfig: DashboardRunConfig,
+    expectedArtifact?: DashboardArtifactExpectation,
+  ) => {
     workerRef.current?.terminate();
     const worker = new Worker(new URL("./sim-worker.ts", import.meta.url), {
       type: "module",
@@ -359,12 +371,27 @@ export function App(): React.JSX.Element {
       };
       const tokenMismatch =
         result.speculative?.tokenTrace?.matchesTargetOnly === false;
+      const artifactMismatch =
+        message.artifactReplay?.matches === false;
       setRunState({
-        status: tokenMismatch ? "mismatch" : "complete",
+        status: artifactMismatch
+          ? "artifact-mismatch"
+          : tokenMismatch
+            ? "mismatch"
+            : "complete",
         progress: 100,
-        phase: tokenMismatch ? "Token mismatch" : "Replay verified",
+        phase: artifactMismatch
+          ? "Artifact mismatch"
+          : tokenMismatch
+            ? "Token mismatch"
+            : message.artifactReplay
+              ? "Artifact replay verified"
+              : "Replay verified",
         result,
         artifact: message.artifact,
+        ...(message.artifactReplay === undefined
+          ? {}
+          : { artifactReplay: message.artifactReplay }),
       });
       worker.terminate();
       workerRef.current = undefined;
@@ -379,8 +406,46 @@ export function App(): React.JSX.Element {
       worker.terminate();
       workerRef.current = undefined;
     };
-    worker.postMessage({ type: "run", runId, config: nextConfig });
+    worker.postMessage({
+      type: "run",
+      runId,
+      config: nextConfig,
+      ...(expectedArtifact === undefined ? {} : { expectedArtifact }),
+    });
   }, []);
+
+  const importArtifact = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_DASHBOARD_ARTIFACT_FILE_BYTES) {
+        throw new Error("result artifact exceeds the 128 MiB limit");
+      }
+      const parsed = parseDashboardArtifactFileText(
+        await file.text(),
+        file.name,
+      );
+      setConfig(parsed.config);
+      setCalibration(parsed.calibration
+        ? {
+            fileName: `${file.name} / embedded calibration`,
+            parsed: parsed.calibration,
+          }
+        : {});
+      setTokenTrace(parsed.tokenTrace
+        ? {
+            fileName: `${file.name} / embedded token trace`,
+            parsed: parsed.tokenTrace,
+          }
+        : {});
+      run(parsed.config, parsed.expectation);
+    } catch (error) {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "Artifact import failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [run]);
 
   useEffect(() => {
     if (!initializedRef.current) {
@@ -408,6 +473,34 @@ export function App(): React.JSX.Element {
           </div>
           <div className="flex items-center gap-2">
             <RunBadge status={runState.status} />
+            <input
+              ref={artifactInputRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              disabled={runState.status === "running"}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) {
+                  void importArtifact(file);
+                }
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Import and replay result"
+                  onClick={() => artifactInputRef.current?.click()}
+                  disabled={runState.status === "running"}
+                >
+                  <Upload className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Import and replay result</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -447,7 +540,13 @@ export function App(): React.JSX.Element {
           <main className="min-w-0 overflow-y-auto p-4 sm:p-5">
             <RunProgress state={runState} />
             {result
-              ? <Results result={result} artifact={runState.artifact} />
+              ? (
+                  <Results
+                    result={result}
+                    artifact={runState.artifact}
+                    artifactReplay={runState.artifactReplay}
+                  />
+                )
               : <EmptyState state={runState} />}
           </main>
 
@@ -1222,9 +1321,11 @@ function ConfigurationPanel({
 function Results({
   result,
   artifact,
+  artifactReplay,
 }: {
   readonly result: DashboardResult;
   readonly artifact?: DashboardArtifactDownload;
+  readonly artifactReplay?: DashboardArtifactReplay;
 }): React.JSX.Element {
   const metrics = result.mode === "speculative"
     ? speculativeMetrics(result)
@@ -1264,6 +1365,15 @@ function Results({
                   </TooltipTrigger>
                   <TooltipContent>Export verified result</TooltipContent>
                 </Tooltip>
+              )
+            : null}
+          {artifactReplay
+            ? (
+                <Badge variant={artifactReplay.matches ? "success" : "danger"}>
+                  {artifactReplay.matches
+                    ? "artifact parity"
+                    : "artifact mismatch"}
+                </Badge>
               )
             : null}
           {result.comparison
@@ -1340,6 +1450,9 @@ function Results({
           </Tooltip>
         </div>
       </div>
+      {artifactReplay
+        ? <ArtifactReplaySummary replay={artifactReplay} />
+        : null}
       {result.speculative?.tokenTrace
         ? <TokenTraceSummary result={result} />
         : null}
@@ -1366,6 +1479,59 @@ function Results({
       </Suspense>
     </div>
   );
+}
+
+function ArtifactReplaySummary({
+  replay,
+}: {
+  readonly replay: DashboardArtifactReplay;
+}): React.JSX.Element {
+  return (
+    <section className="grid gap-3 border-y border-zinc-200 bg-white px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
+      <div className="flex min-w-0 items-center gap-3">
+        {replay.matches
+          ? <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+          : <FileDiff className="size-4 shrink-0 text-rose-700" />}
+        <div className="min-w-0">
+          <div className="truncate text-xs font-bold text-zinc-800">
+            {replay.sourceFileName}
+          </div>
+          <div className="truncate text-[11px] text-zinc-500">
+            deterministic re-execution · current contracts
+          </div>
+        </div>
+      </div>
+      <DiagnosticValue
+        label="Input"
+        value={fingerprintComparison(
+          replay.expectedInputFingerprint,
+          replay.actualInputFingerprint,
+        )}
+      />
+      <DiagnosticValue
+        label="Output"
+        value={fingerprintComparison(
+          replay.expectedOutputFingerprint,
+          replay.actualOutputFingerprint,
+        )}
+      />
+      <DiagnosticValue
+        label="Envelope"
+        value={fingerprintComparison(
+          replay.expectedArtifactFingerprint,
+          replay.actualArtifactFingerprint,
+        )}
+      />
+    </section>
+  );
+}
+
+function fingerprintComparison(expected: string, actual: string): string {
+  const expectedShort = expected.slice("fnv1a32:".length);
+  const actualShort = actual.slice("fnv1a32:".length);
+  return expected === actual
+    ? `${actualShort} matched`
+    : `${expectedShort} -> ${actualShort}`;
 }
 
 function TokenTraceSummary({
@@ -1666,6 +1832,14 @@ function RunBadge({ status }: { readonly status: RunStatus }): React.JSX.Element
       <Badge variant="danger">
         <TriangleAlert className="mr-1 size-3.5" />
         Mismatch
+      </Badge>
+    );
+  }
+  if (status === "artifact-mismatch") {
+    return (
+      <Badge variant="danger">
+        <FileDiff className="mr-1 size-3.5" />
+        Artifact mismatch
       </Badge>
     );
   }

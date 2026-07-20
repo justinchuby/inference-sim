@@ -1,11 +1,6 @@
 /// <reference lib="webworker" />
 
-import { serializeSimulationResultArtifact } from "@inference-sim/core";
-import {
-  createDashboardArtifact,
-  dashboardArtifactFileName,
-} from "./dashboard-artifact.js";
-import { simulateDashboardExecution } from "./dashboard-simulation.js";
+import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
 import type { WorkerRequest, WorkerResponse } from "./types.js";
 
 const worker = self as DedicatedWorkerGlobalScope;
@@ -14,7 +9,7 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
   if (event.data.type !== "run") {
     return;
   }
-  const { runId, config } = event.data;
+  const { runId, config, expectedArtifact } = event.data;
   try {
     post({
       type: "progress",
@@ -27,35 +22,30 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
       type: "progress",
       runId,
       progress: config.calibration === undefined ? 34 : 22,
-      phase: config.mode === "speculative" && config.speculative.trace
-        ? "Verifying token trace"
-        : config.calibration === undefined
-          ? "Running workload"
-          : "Fitting calibration and running workload",
+      phase: expectedArtifact
+        ? "Re-executing imported artifact"
+        : config.mode === "speculative" && config.speculative.trace
+          ? "Verifying token trace"
+          : config.calibration === undefined
+            ? "Running workload"
+            : "Fitting calibration and running workload",
     });
 
-    const output = simulateDashboardExecution(config);
+    const result = executeDashboardWorkerRun(config, expectedArtifact);
     post({
       type: "progress",
       runId,
       progress: 92,
-      phase: config.mode === "speculative" && config.speculative.trace
-        ? "Checking token and state parity"
-        : "Checking replay",
+      phase: expectedArtifact
+        ? "Comparing artifact fingerprints"
+        : config.mode === "speculative" && config.speculative.trace
+          ? "Checking token and state parity"
+          : "Checking replay",
     });
-    const artifact = createDashboardArtifact(config, output);
     post({
       type: "result",
       runId,
-      summary: output.summary,
-      artifact: {
-        blob: new Blob(
-          [serializeSimulationResultArtifact(artifact, true)],
-          { type: "application/json" },
-        ),
-        fileName: dashboardArtifactFileName(artifact),
-        artifactFingerprint: artifact.artifactFingerprint,
-      },
+      ...result,
       durationMs: performance.now() - startedAt,
     });
   } catch (error) {
