@@ -110,10 +110,10 @@ export default function TopologyGraph({
       </ReactFlow>
 
       <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
-        <Legend color="bg-zinc-800" label="System" />
-        <Legend color="bg-sky-700" label="Compute" />
-        <Legend color="bg-emerald-700" label="Memory" />
-        <Legend color="bg-rose-700" label="NIC / fabric" />
+        <Legend color="border-zinc-400 bg-zinc-100" label="System" />
+        <Legend color="border-sky-300 bg-sky-100" label="Compute" />
+        <Legend color="border-emerald-300 bg-emerald-100" label="Memory" />
+        <Legend color="border-rose-300 bg-rose-100" label="NIC / fabric" />
         <Legend color="bg-zinc-400" label="Access" dashed />
         <Legend color="bg-zinc-700" label="Directed link" />
       </div>
@@ -197,8 +197,9 @@ function TopologyNode({
   return (
     <div
       className={[
-        "w-[210px] rounded-md border bg-white px-3 py-2 shadow-sm",
-        selected ? "border-sky-600 ring-2 ring-sky-100" : "border-zinc-300",
+        "w-[210px] rounded-md border px-3 py-2 shadow-sm",
+        nodeSurfaceColor(data.category),
+        nodeSelectionColor(data.category, selected),
       ].join(" ")}
     >
       <Handle
@@ -270,11 +271,54 @@ function Legend({
     <span className="flex items-center gap-1.5 border border-zinc-200 bg-white/90 px-2 py-1 text-[10px] font-semibold text-zinc-600">
       <span className={dashed
         ? "h-0 w-3 border-t border-dashed border-zinc-500"
-        : `size-2 rounded-sm ${color}`}
+        : `size-3 rounded-sm border ${color}`}
       />
       {label}
     </span>
   );
+}
+
+function nodeSurfaceColor(
+  category: TopologyGraphNodeData["category"],
+): string {
+  switch (category) {
+    case "device":
+      return "bg-sky-50/95";
+    case "memory":
+      return "bg-emerald-50/95";
+    case "network":
+      return "bg-rose-50/95";
+    case "system":
+      return "bg-zinc-50/95";
+  }
+}
+
+function nodeSelectionColor(
+  category: TopologyGraphNodeData["category"],
+  selected: boolean,
+): string {
+  if (selected) {
+    switch (category) {
+      case "device":
+        return "border-sky-700 ring-2 ring-sky-200";
+      case "memory":
+        return "border-emerald-700 ring-2 ring-emerald-200";
+      case "network":
+        return "border-rose-700 ring-2 ring-rose-200";
+      case "system":
+        return "border-zinc-700 ring-2 ring-zinc-200";
+    }
+  }
+  switch (category) {
+    case "device":
+      return "border-sky-300";
+    case "memory":
+      return "border-emerald-300";
+    case "network":
+      return "border-rose-300";
+    case "system":
+      return "border-zinc-300";
+  }
 }
 
 function accentColor(accent: TopologyGraphNodeData["accent"]): string {
