@@ -555,13 +555,17 @@ const chartTooltipStyle = {
 };
 
 function shortDomain(id: string): string {
-  return id.replace(/^node\d+:/, "").replaceAll("-", " ");
+  return id
+    .replace(/^node(\d+):/, "n$1/")
+    .replaceAll("-", " ");
 }
 
 function shortResource(id: string): string {
   return id
     .replace(/^compute:/, "")
     .replace(/^link:/, "")
-    .replace(/^node\d+:/, "")
+    .replace(/^network:/, "")
+    .replace(/^node(\d+):/, "n$1/")
+    .replace(/node(\d+)/g, "n$1")
     .replaceAll("-", " ");
 }
