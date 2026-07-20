@@ -68,7 +68,8 @@ Phase 3 has an initial speculative workload slice:
 - routed expert execution with TP attention, `all_reduce_ring`,
   `all_to_all_v` dispatch/gather, explicit contiguous/round-robin expert
   ownership, owner-only demand/prefetch transfers, and route-skewed owner-local
-  FFN work on multi-rank topologies; and
+  FFN work on arbitrary-rank topologies, with phase-aware ring/pairwise
+  collective fallback timing; and
 - speculative and expert-cache traces compiled onto all six topology families
   with replay-verified resource utilization and relative comparisons; and
 - a six-proposer by six-device-topology execution/replay matrix with

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SCENARIO_PRESET_NAMES,
+  assertValidScenario,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   compareTopologyWorkloads,
@@ -8,12 +9,14 @@ import {
   defaultSpeculativeEligibility,
   executeFrozenPlan,
   replayPlanTrace,
+  runPlanFaultCampaign,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyWorkload,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
+  type SimulationScenario,
 } from "../src/index.js";
 
 function expertPlacement(
@@ -21,6 +24,153 @@ function expertPlacement(
   expertIds: readonly string[] = ["e0", "e1", "e2", "e3"],
 ) {
   return { strategy, expertIds };
+}
+
+function gpuRingScenario(gpuCount: number): SimulationScenario {
+  if (!Number.isSafeInteger(gpuCount) || gpuCount < 2) {
+    throw new Error(`invalid test GPU count ${gpuCount}`);
+  }
+  const base = buildScenarioPreset("multi-gpu");
+  const gpuTemplate = base.devices.find(
+    (device) => device.id === "node0:gpu0",
+  )!;
+  const domainTemplate = base.memoryDomains.find(
+    (domain) => domain.id === "node0:gpu0:vram",
+  )!;
+  const placementTemplate = base.placements.find(
+    (placement) => placement.partitionId === "target-shard-0",
+  )!;
+  const pcieTemplate = base.links.find((link) => link.kind === "pcie")!;
+  const nvlinkTemplate = base.links.find((link) => link.kind === "nvlink")!;
+  const newGpuIndexes = Array.from(
+    { length: gpuCount - 2 },
+    (_, index) => index + 2,
+  );
+  const newGpuIds = newGpuIndexes.map((index) => `node0:gpu${index}`);
+  const newDomains = newGpuIndexes.map((index) => ({
+    ...domainTemplate,
+    id: `node0:gpu${index}:vram`,
+    accessibleBy: [`node0:gpu${index}`],
+    governor: {
+      kind: "device" as const,
+      deviceId: `node0:gpu${index}`,
+    },
+  }));
+  const newDevices = newGpuIndexes.map((index) => ({
+    ...gpuTemplate,
+    id: `node0:gpu${index}`,
+    memoryDomainIds: [`node0:gpu${index}:vram`, "node0:host"],
+  }));
+  const allocationId = (
+    purpose: (typeof placementTemplate.allocations)[number]["purpose"],
+    index: number,
+  ): string => {
+    switch (purpose) {
+      case "weights":
+        return `weights-${index}`;
+      case "kv":
+        return `kv-${index}`;
+      case "workspace":
+        return `workspace-${index}`;
+      case "cache":
+        return `expert-hot-cache:target-shard-${index}`;
+      default:
+        throw new Error(`unsupported cloned allocation purpose ${purpose}`);
+    }
+  };
+  const newPlacements = newGpuIndexes.map((index) => ({
+    ...placementTemplate,
+    partitionId: `target-shard-${index}`,
+    deviceId: `node0:gpu${index}`,
+    allocations: placementTemplate.allocations
+      .filter((allocation) => allocation.domainId === "node0:gpu0:vram")
+      .map((allocation) => ({
+        ...allocation,
+        physicalAllocationId: allocationId(allocation.purpose, index),
+        domainId: `node0:gpu${index}:vram`,
+      })),
+  }));
+  const linkPair = (
+    id: string,
+    sourceDomainId: string,
+    targetDomainId: string,
+    template: typeof pcieTemplate,
+  ) => [
+    {
+      ...template,
+      id: `${id}:forward`,
+      sourceDomainId,
+      targetDomainId,
+    },
+    {
+      ...template,
+      id: `${id}:reverse`,
+      sourceDomainId: targetDomainId,
+      targetDomainId: sourceDomainId,
+    },
+  ];
+  const scenario: SimulationScenario = {
+    ...base,
+    id: `${gpuCount}-gpu-ring`,
+    family: "custom",
+    memoryDomains: [
+      ...base.memoryDomains.map((domain) => (
+        domain.id === "node0:host"
+          ? {
+              ...domain,
+              accessibleBy: [...domain.accessibleBy, ...newGpuIds],
+            }
+          : domain
+      )),
+      ...newDomains,
+    ],
+    devices: [...base.devices, ...newDevices],
+    links: [
+      ...base.links,
+      ...newGpuIndexes.flatMap((index) => linkPair(
+        `node0:pcie${index}`,
+        "node0:host",
+        `node0:gpu${index}:vram`,
+        pcieTemplate,
+      )),
+      ...Array.from(
+        { length: gpuCount - 1 },
+        (_, index) => index + 1,
+      ).flatMap((sourceIndex) => {
+        const targetIndex = (sourceIndex + 1) % gpuCount;
+        return linkPair(
+          `node0:nvlink${sourceIndex}${targetIndex}`,
+          `node0:gpu${sourceIndex}:vram`,
+          `node0:gpu${targetIndex}:vram`,
+          nvlinkTemplate,
+        );
+      }),
+    ],
+    placements: [...base.placements, ...newPlacements],
+    groups: base.groups.map((group) => (
+      group.id === "tp"
+        ? {
+            id: `tp${gpuCount}`,
+            orderedRanks: Array.from({ length: gpuCount }, (_, index) => ({
+              rankId: `rank-${index}`,
+              deviceId: `node0:gpu${index}`,
+            })),
+          }
+        : group
+    )),
+    execution: {
+      ...base.execution,
+      parallelism: {
+        composition: "overlap_by_capability",
+        tensor: gpuCount,
+        pipeline: 1,
+        expert: gpuCount,
+        data: 1,
+      },
+    },
+  };
+  assertValidScenario(scenario);
+  return scenario;
 }
 
 describe("topology-aware workload execution", () => {
@@ -200,6 +350,189 @@ describe("topology-aware workload execution", () => {
       (event) => event.kind === "collective",
     )).toBe(true);
     expect(tensor.metrics.collectiveServiceNs).toBeGreaterThan(0);
+  });
+
+  it("executes and deterministically replays a four-rank ring", () => {
+    const scenario = gpuRingScenario(4);
+    const profile = targetOnlyTopologyProfile(4);
+    const first = simulateTopologyWorkload(scenario, profile);
+    const second = simulateTopologyWorkload(scenario, profile);
+    const collectives = first.plan.steps.filter((step) => (
+      step.operation.kind === "collective"
+    ));
+    const forwardRing = [
+      "node0:nvlink:forward",
+      "node0:nvlink12:forward",
+      "node0:nvlink23:forward",
+      "node0:nvlink30:forward",
+    ];
+
+    expect(first.execution.status).toBe("succeeded");
+    expect(first.assumptions.some((assumption) => (
+      assumption.includes("all-reduce derives a logical ring")
+    ))).toBe(true);
+    expect(collectives).toHaveLength(4);
+    expect(collectives.every((step) => (
+      step.operation.kind === "collective"
+      && step.operation.algorithm === "all_reduce_ring"
+      && step.participants.join(",") === "rank-0,rank-1,rank-2,rank-3"
+      && JSON.stringify(step.operation.linkIds) === JSON.stringify(forwardRing)
+    ))).toBe(true);
+    expect(replayPlanTrace(
+      scenario,
+      first.plan,
+      first.execution.trace,
+    ).status).toBe("succeeded");
+    expect(second.plan).toEqual(first.plan);
+    expect(second.execution.trace).toEqual(first.execution.trace);
+  });
+
+  it("scales the same collective contract to an eight-rank ring", () => {
+    const scenario = gpuRingScenario(8);
+    const result = simulateTopologyWorkload(
+      scenario,
+      targetOnlyTopologyProfile(2),
+    );
+    const collectives = result.plan.steps.filter((step) => (
+      step.operation.kind === "collective"
+    ));
+
+    expect(result.execution.status).toBe("succeeded");
+    expect(collectives).toHaveLength(2);
+    expect(collectives.every((step) => (
+      step.operation.kind === "collective"
+      && step.participants.length === 8
+      && step.operation.linkIds.length === 8
+      && step.operation.durationNs > 0
+    ))).toBe(true);
+    expect(replayPlanTrace(
+      scenario,
+      result.plan,
+      result.execution.trace,
+    ).rankStates).toHaveLength(8);
+  });
+
+  it("routes four-rank AllToAllV phases across both ring directions", () => {
+    const scenario = gpuRingScenario(4);
+    const result = simulateTopologyWorkload(scenario, {
+      id: "four-rank-routed-moe",
+      batchSize: 1,
+      expertPlacement: expertPlacement(
+        "round_robin",
+        ["e0", "e1", "e2", "e3"],
+      ),
+      units: [{
+        id: "route-0",
+        targetTokenWidth: 1,
+        committedTokens: 1,
+        draftTokens: 0,
+        activeExperts: 4,
+        expertRouted: true,
+        routedExperts: ["e0", "e1", "e2", "e3"].map((expertId) => ({
+          expertId,
+          sourceTier: "hot" as const,
+          loadBytes: 0,
+        })),
+        warmLoadBytes: 0,
+        coldLoadBytes: 0,
+      }],
+    });
+    const allToAll = result.plan.steps.filter((step) => (
+      step.operation.kind === "collective"
+      && step.operation.algorithm === "all_to_all_v"
+    ));
+    const expectedLinks = [
+      "node0:nvlink:forward",
+      "node0:nvlink:reverse",
+      "node0:nvlink12:forward",
+      "node0:nvlink12:reverse",
+      "node0:nvlink23:forward",
+      "node0:nvlink23:reverse",
+      "node0:nvlink30:forward",
+      "node0:nvlink30:reverse",
+    ].sort();
+
+    expect(result.execution.status).toBe("succeeded");
+    expect(result.assumptions.some((assumption) => (
+      assumption.includes("AllToAllV uses N-1 balanced pairwise-exchange")
+    ))).toBe(true);
+    expect(allToAll).toHaveLength(2);
+    expect(allToAll.every((step) => (
+      step.operation.kind === "collective"
+      && step.participants.length === 4
+      && [...step.operation.linkIds].sort().join(",")
+        === expectedLinks.join(",")
+    ))).toBe(true);
+    expect(result.plan.steps.filter((step) => (
+      step.operation.kind === "compute"
+      && step.operation.capability === "ffn"
+    )).map((step) => step.participants[0])).toEqual([
+      "rank-0",
+      "rank-1",
+      "rank-2",
+      "rank-3",
+    ]);
+  });
+
+  it("executes speculative verification and faults across four ranks", () => {
+    const scenario = gpuRingScenario(4);
+    const speculative = simulateSpeculativeWorkload({
+      family: "mtp",
+      eligibility: defaultSpeculativeEligibility("mtp"),
+      initialTokenLength: 16,
+      outputTokenCount: 8,
+      maxAdditionalTokens: 2,
+      acceptance: {
+        kind: "replay",
+        acceptedDraftTokens: [2, 1, 2],
+      },
+      stateGroups: buildSpeculativeStateGroups("mtp", 32, 2),
+    });
+    const result = simulateTopologyWorkload(
+      scenario,
+      topologyProfileFromSpeculative(speculative),
+    );
+    const firstCampaign = runPlanFaultCampaign(scenario, result.plan);
+    const secondCampaign = runPlanFaultCampaign(scenario, result.plan);
+
+    expect(result.execution.status).toBe("succeeded");
+    expect(result.metrics.committedTokens).toBe(8);
+    expect(firstCampaign).toEqual(secondCampaign);
+    expect(firstCampaign.baselineReplay.status).toBe("succeeded");
+    expect(firstCampaign.cases.filter((entry) => (
+      entry.fault.kind === "device_failure"
+    )).map((entry) => entry.fault.kind === "device_failure"
+      ? entry.fault.deviceId
+      : "invalid"
+    )).toEqual([
+      "node0:gpu0",
+      "node0:gpu1",
+      "node0:gpu2",
+      "node0:gpu3",
+    ]);
+    expect(firstCampaign.cases.every((entry) => (
+      entry.execution.status !== "succeeded"
+      && entry.replay.status === entry.execution.status
+      && entry.execution.trace.terminal.rankStates.length === 4
+    ))).toBe(true);
+  });
+
+  it("fails closed when a four-rank collective has no return path", () => {
+    const base = gpuRingScenario(4);
+    const disconnected = {
+      ...base,
+      links: base.links.filter(
+        (link) => link.sourceDomainId !== "node0:gpu3:vram",
+      ),
+    };
+    assertValidScenario(disconnected);
+
+    expect(() => simulateTopologyWorkload(
+      disconnected,
+      targetOnlyTopologyProfile(1),
+    )).toThrow(
+      "no collective path from node0:gpu3:vram to node0:gpu0:vram",
+    );
   });
 
   it("orders TP attention around EP dispatch and gather without double sharding FFN", () => {

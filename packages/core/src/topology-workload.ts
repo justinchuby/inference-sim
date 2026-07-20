@@ -32,7 +32,7 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 5;
+export const TOPOLOGY_COST_MODEL_REVISION = 6;
 export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
 export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
 export const EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM = "all_to_all_v";
@@ -575,6 +575,11 @@ export function simulateTopologyWorkload(
   const transferServiceNs = serviceTime(execution, "transfer");
   const collectiveServiceNs = serviceTime(execution, "collective");
   const confidence = topologyPerformanceConfidence(scenario, costModel);
+  const collectiveAlgorithms = new Set(plan.steps.flatMap((step) => (
+    step.operation.kind === "collective"
+      ? [step.operation.algorithm]
+      : []
+  )));
   return {
     scenarioId: scenario.id,
     profileId: profile.id,
@@ -590,6 +595,24 @@ export function simulateTopologyWorkload(
       costModel.transportCurves === undefined
         ? "transport timing uses declared directed-link bandwidth and latency"
         : "transport timing uses exact-path calibration curves without extrapolation",
+      ...(costModel.transportCurves === undefined
+        && collectiveAlgorithms.size > 0
+        ? [
+            ...(collectiveAlgorithms.has(COLLECTIVE_CALIBRATION_ALGORITHM)
+              ? [
+                  "uncalibrated all-reduce derives a logical ring from immutable communicator order and uses 2(N-1) neighbor phases",
+                ]
+              : []),
+            ...(collectiveAlgorithms.has(
+              EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
+            )
+              ? [
+                  "uncalibrated AllToAllV uses N-1 balanced pairwise-exchange phases; aggregate bytes do not encode route skew",
+                ]
+              : []),
+            "each uncalibrated collective phase charges its critical path and shared-link service; the plan conservatively reserves the union of phase links",
+          ]
+        : []),
       scenario.execution.parallelism.expert > 1
         ? `routed experts use the profile's explicit ${profile.expertPlacement?.strategy ?? "unavailable"} owner mapping; demand loads, prefetches, and FFN work execute only on the owning EP rank`
         : "tensor-sharded FFN expert-load bytes are evenly divided across participating FFN placements",
@@ -1286,25 +1309,20 @@ class WorkloadPlanCompiler {
     dependencies: readonly number[],
     reads: readonly string[],
   ): number {
-    if (group.orderedRanks.length !== 2) {
+    if (group.orderedRanks.length < 2) {
       throw new TopologyWorkloadError(
-        `collective path compilation currently requires exactly two ranks; ${group.id} has ${group.orderedRanks.length}`,
+        `collective path compilation requires at least two ranks; ${group.id} has ${group.orderedRanks.length}`,
       );
     }
-    const first = this.placementForDevice(group.orderedRanks[0].deviceId);
-    const last = this.placementForDevice(
-      group.orderedRanks[group.orderedRanks.length - 1].deviceId,
-    );
-    const linkIds = this.collectiveLinks(
-      workspaceDomain(first),
-      workspaceDomain(last),
-    );
+    const phases = this.collectivePhases(group, algorithm);
+    const linkIds = unique(phases.flat(2));
     const durationNs = this.transportDuration(
       "collective",
       linkIds,
       group.orderedRanks.length,
       algorithm,
       bytes,
+      phases,
     );
     const commSequenceId =
       this.collectiveSequenceByGroup.get(group.id) ?? 0;
@@ -1989,29 +2007,67 @@ class WorkloadPlanCompiler {
     return localHost.id;
   }
 
-  private collectiveLinks(sourceDomainId: string, targetDomainId: string): string[] {
-    const path = (source: string, target: string): string[] => {
-      const domains = findTransferPath(this.scenario, {
-        id: "compiled-collective",
-        sourceDomainId: source,
-        targetDomainId: target,
-        bytes: 1,
-        requiresPinnedStaging: false,
-        stagingAllocationIds: [],
-      });
-      if (!domains || domains.length < 2) {
-        throw new TopologyWorkloadError(
-          `no collective path from ${source} to ${target}`,
-        );
-      }
-      return domains.slice(0, -1).map((domain, index) => (
-        this.link(domain, domains[index + 1]).id
+  private collectivePhases(
+    group: SimulationScenario["groups"][number],
+    algorithm: CollectiveAlgorithm,
+  ): string[][][] {
+    const domains = group.orderedRanks.map((rank) => (
+      workspaceDomain(this.placementForDevice(rank.deviceId))
+    ));
+    if (algorithm === COLLECTIVE_CALIBRATION_ALGORITHM) {
+      const ring = domains.map((sourceDomainId, index) => (
+        this.collectivePath(
+          sourceDomainId,
+          domains[(index + 1) % domains.length],
+        )
       ));
-    };
-    return unique([
-      ...path(sourceDomainId, targetDomainId),
-      ...path(targetDomainId, sourceDomainId),
-    ]);
+      return Array.from(
+        {
+          length: checkedMultiply(
+            2,
+            domains.length - 1,
+            "all-reduce ring phases",
+          ),
+        },
+        () => ring,
+      );
+    }
+    if (algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM) {
+      return Array.from(
+        { length: domains.length - 1 },
+        (_, phaseIndex) => domains.map((sourceDomainId, rankIndex) => (
+          this.collectivePath(
+            sourceDomainId,
+            domains[
+              (rankIndex + phaseIndex + 1) % domains.length
+            ],
+          )
+        )),
+      );
+    }
+    return fail(`unsupported collective algorithm ${algorithm}`);
+  }
+
+  private collectivePath(
+    sourceDomainId: string,
+    targetDomainId: string,
+  ): string[] {
+    const domains = findTransferPath(this.scenario, {
+      id: "compiled-collective",
+      sourceDomainId,
+      targetDomainId,
+      bytes: 1,
+      requiresPinnedStaging: false,
+      stagingAllocationIds: [],
+    });
+    if (!domains || domains.length < 2) {
+      throw new TopologyWorkloadError(
+        `no collective path from ${sourceDomainId} to ${targetDomainId}`,
+      );
+    }
+    return domains.slice(0, -1).map((domain, index) => (
+      this.link(domain, domains[index + 1]).id
+    ));
   }
 
   private pathDuration(linkIds: readonly string[], bytes: number): number {
@@ -2034,6 +2090,9 @@ class WorkloadPlanCompiler {
     participantCount: number,
     algorithm: string,
     bytes: number,
+    collectivePhases?: readonly (
+      readonly (readonly string[])[]
+    )[],
   ): number {
     const curves = this.costModel.transportCurves;
     if (curves === undefined) {
@@ -2043,7 +2102,12 @@ class WorkloadPlanCompiler {
               ?? fail(`unknown link ${linkIds[0]}`),
             bytes,
           )
-        : this.pathDuration(linkIds, bytes);
+        : this.heuristicCollectiveDuration(
+            collectivePhases ?? [[linkIds]],
+            participantCount,
+            algorithm,
+            bytes,
+          );
     }
     const curve = curves.find((candidate) => (
       candidate.scenarioId === this.scenario.id
@@ -2087,6 +2151,75 @@ class WorkloadPlanCompiler {
       );
     }
     return durationNs;
+  }
+
+  private heuristicCollectiveDuration(
+    phases: readonly (readonly (readonly string[])[])[],
+    participantCount: number,
+    algorithm: string,
+    bytes: number,
+  ): number {
+    const expectedPhaseCount = algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
+      ? checkedMultiply(
+          2,
+          participantCount - 1,
+          "all-reduce ring phases",
+        )
+      : algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+        ? participantCount - 1
+        : fail(`unsupported collective algorithm ${algorithm}`);
+    if (
+      participantCount < 2
+      || phases.length !== expectedPhaseCount
+      || phases.some((paths) => (
+        paths.length !== participantCount
+        || paths.some((path) => path.length === 0)
+      ))
+    ) {
+      throw new TopologyWorkloadError(
+        `invalid ${participantCount}-participant ${algorithm} phase set`,
+      );
+    }
+    const phaseDivisor = algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
+      ? participantCount
+      : checkedMultiply(
+          participantCount,
+          participantCount - 1,
+          "all-to-all pairwise phase divisor",
+        );
+    const phaseBytes = Math.max(1, Math.ceil(bytes / phaseDivisor));
+    let totalDurationNs = 0;
+    for (const paths of phases) {
+      const longestPathNs = Math.max(...paths.map((path) => (
+        this.pathDuration(path, phaseBytes)
+      )));
+      const serviceByLink = new Map<string, number>();
+      for (const path of paths) {
+        for (const linkId of path) {
+          const link = this.scenario.links.find(
+            (candidate) => candidate.id === linkId,
+          ) ?? fail(`unknown link ${linkId}`);
+          serviceByLink.set(
+            linkId,
+            checkedAdd(
+              serviceByLink.get(linkId) ?? 0,
+              linkDuration(link, phaseBytes),
+              `${algorithm} phase service on ${linkId}`,
+            ),
+          );
+        }
+      }
+      const phaseDurationNs = Math.max(
+        longestPathNs,
+        ...serviceByLink.values(),
+      );
+      totalDurationNs = checkedAdd(
+        totalDurationNs,
+        phaseDurationNs,
+        `${algorithm} duration`,
+      );
+    }
+    return totalDurationNs;
   }
 
   private domainDuration(domainId: string, bytes: number): number {

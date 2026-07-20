@@ -844,8 +844,10 @@ Parallelism composition is explicit. `cartesian` means TP, PP, EP, and DP
 degrees form independent rank axes and therefore multiply. The bounded
 `overlap_by_capability` mode permits the same ordered rank group to execute TP
 attention and EP routed FFN at different phases; it currently requires equal
-TP/EP degree with PP=DP=1. Validation rejects treating that two-rank overlap as
-a four-rank Cartesian grid.
+TP/EP degree with PP=DP=1. Validation rejects treating that shared-rank overlap
+as an independent Cartesian product. The overlap degree is not restricted to
+two: compiler, execution, fault, and replay paths cover arbitrary communicator
+sizes.
 
 ### 10.1 Required Topology Families
 
@@ -910,6 +912,23 @@ base_time    = max(compute_time, memory_time) + launch_overhead
 Collective cost depends on algorithm, participants, topology path, message
 extent, contention, and calibrated efficiency. A single ring formula is only a
 heuristic fallback.
+
+For an uncalibrated `N`-rank communicator, immutable communicator order defines
+the logical ring. `all_reduce_ring` executes `2(N-1)` neighbor phases with
+`ceil(per_rank_extent/N)` bytes per rank and phase. `all_to_all_v` executes
+`N-1` pairwise-exchange phases; because the current workload profile carries
+only aggregate routed bytes rather than a source/destination byte matrix, the
+fallback assumes balanced traffic and charges
+`ceil(aggregate_extent/[N(N-1)])` bytes per rank and phase. This assumption is
+heuristic and must not be presented as route-skew-accurate AllToAllV timing.
+
+Every logical edge resolves to a directed physical path. Per-phase duration is
+the greater of the longest path duration and accumulated service on any shared
+directed link. The FrozenPlan collective reserves the union of all phase links
+for its full duration, which is conservative for contention with other
+operations. A missing directed path fails compilation. Imported end-to-end
+collective calibration replaces this duration fallback but not the declared
+resource reservation.
 
 ### 11.2 Provenance
 
@@ -1004,12 +1023,12 @@ curves name exactly one directed link and two endpoints. The current topology
 compiler identifies dense tensor collectives as `all_reduce_ring`. Routed
 expert units on an overlap-capable topology emit one tensor all-reduce followed
 by `all_to_all_v` dispatch, owner-local FFN compute, and `all_to_all_v` gather.
-Two-rank collectives reserve both directed paths. Every algorithm/path
-combination requires its own observations. The current compiler fails closed
-for larger communicator groups until the scenario schema can enumerate the
-algorithm-specific full-group route instead of approximating it from two
-endpoints. This algorithm/path and EP-owner behavior is topology cost-model
-revision 5; revision 4 models are rejected.
+For every communicator size, all-reduce uses the ordered neighbor ring and
+AllToAllV enumerates every pairwise phase offset; the plan reserves the stable
+union of their directed physical paths. Every
+algorithm/path/participant-count combination requires its own observations.
+This arbitrary-rank phase model and EP-owner behavior is topology cost-model
+revision 6; revision 5 models are rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
@@ -1298,8 +1317,11 @@ fail-closed message-range checks. Compute coefficients remain
 provenance-tagged. Routed expert profiles on multi-GPU and multi-node presets
 execute TP attention, bidirectional all-reduce, AllToAllV dispatch, owner-local
 FFN, and AllToAllV gather; demand loads and prefetches target the same explicit
-owner, and dense profiles do not pay expert collectives. All
-six proposer families use
+owner, and dense profiles do not pay expert collectives. Arbitrary-rank custom
+topologies use the same compiler, execution, fault, and replay path; a
+four-GPU ring fixture covers dense TP, routed EP, MTP speculative verification,
+every participating device, and every used collective link, while an eight-GPU
+fixture guards scale independence. All six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.
