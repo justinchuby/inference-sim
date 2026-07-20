@@ -1,9 +1,14 @@
-export const SCENARIO_SCHEMA_VERSION = 1;
+export const SCENARIO_SCHEMA_VERSION = 2;
 
 export type ConfidenceClass = "exact" | "bounded" | "calibrated" | "heuristic";
 export type SimDeviceKind = "cpu" | "gpu" | "npu";
-export type MemoryDomainKind = "host" | "device" | "unified";
-export type AllocationClass = "pageable" | "pinned" | "device" | "unified";
+export type MemoryDomainKind = "host" | "device" | "unified" | "storage";
+export type AllocationClass =
+  | "pageable"
+  | "pinned"
+  | "device"
+  | "unified"
+  | "storage";
 export type ComputeCapability =
   | "attention"
   | "ffn"
@@ -61,7 +66,8 @@ export interface SimLinkSpec {
     | "nvlink"
     | "ethernet"
     | "infiniband"
-    | "thunderbolt";
+    | "thunderbolt"
+    | "storage";
   readonly bandwidthBytesPerSec: number;
   readonly latencyNs: number;
   readonly concurrencyLanes: number;
@@ -78,6 +84,8 @@ export interface AllocationReservation {
     | "kv"
     | "workspace"
     | "staging"
+    | "cache"
+    | "backing"
     | "checkpoint"
     | "sidecar";
 }

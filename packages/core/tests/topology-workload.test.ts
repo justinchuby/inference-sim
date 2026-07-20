@@ -180,6 +180,128 @@ describe("topology-aware workload execution", () => {
     expect(result.metrics.linkUtilization.length).toBeGreaterThan(0);
   });
 
+  it("projects adaptive warm prefetch onto storage links across all topologies", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const cache = simulateExpertCacheWorkload({
+      cache: {
+        experts: Array.from({ length: 4 }, (_, index) => ({
+          id: `e${index}`,
+          bytes: expertBytes,
+        })),
+        hotCapacityBytes: 2 * expertBytes,
+        warmCapacityBytes: 2 * expertBytes,
+        warmToHotLatencyNs: 5,
+        coldToHotLatencyNs: 20,
+        coldToWarmLatencyNs: 12,
+        routingSeed: 7,
+        adaptivePrefetch: {
+          targetTier: "warm",
+          minObservations: 1,
+          intervalTokens: 1,
+          maxExpertsPerDecision: 2,
+        },
+      },
+      tokenCount: 4,
+      topK: 2,
+      tokenIntervalNs: 1,
+    });
+    const profile = topologyProfileFromExpertCache(cache, expertBytes);
+    expect(profile.backgroundPrefetches?.length).toBeGreaterThan(0);
+
+    for (const name of SCENARIO_PRESET_NAMES) {
+      const result = simulateTopologyWorkload(
+        buildScenarioPreset(name),
+        profile,
+      );
+      const storageTransfers = result.execution.trace.operations.filter(
+        (event) => (
+          event.kind === "transfer"
+          && result.plan.steps[event.stepId].operation.kind === "transfer"
+          && result.plan.steps[event.stepId].operation.linkId.endsWith(
+            ":storage-read",
+          )
+        ),
+      );
+      expect(storageTransfers.length).toBeGreaterThan(0);
+      expect(storageTransfers.every((event) => event.writes.some(
+        (allocation) => allocation.startsWith("expert-warm-cache:"),
+      ))).toBe(true);
+      const compute = result.execution.trace.operations.filter(
+        (event) => event.kind === "compute",
+      );
+      expect(storageTransfers.some((transfer) => compute.some((event) => (
+        transfer.startNs < event.finishNs
+        && event.startNs < transfer.finishNs
+      )))).toBe(true);
+      if (name === "multi-node") {
+        const node0 = storageTransfers.find((event) => (
+          result.plan.steps[event.stepId].operation.kind === "transfer"
+          && result.plan.steps[event.stepId].operation.linkId
+            === "node0:storage-read"
+        ));
+        const node1 = storageTransfers.find((event) => (
+          result.plan.steps[event.stepId].operation.kind === "transfer"
+          && result.plan.steps[event.stepId].operation.linkId
+            === "node1:storage-read"
+        ));
+        expect(node0?.startNs).toBe(node1?.startNs);
+      }
+      expect(result.execution.status).toBe("succeeded");
+    }
+  });
+
+  it("blocks a warm consumer on its physical prefetch producer", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const expertIds = ["e0", "e1", "e2", "e3"];
+    const cache = simulateExpertCacheWorkload({
+      cache: {
+        experts: expertIds.map((id) => ({ id, bytes: expertBytes })),
+        hotCapacityBytes: 2 * expertBytes,
+        warmCapacityBytes: 4 * expertBytes,
+        warmToHotLatencyNs: 5,
+        coldToHotLatencyNs: 20,
+        coldToWarmLatencyNs: 12,
+        routingSeed: 7,
+      },
+      tokenCount: 1,
+      topK: 2,
+      tokenIntervalNs: 1,
+      initialPrefetch: {
+        expertIds,
+        targetTier: "warm",
+        leadTimeNs: 12,
+      },
+    });
+    const profile = topologyProfileFromExpertCache(cache, expertBytes);
+    const required = profile.units[0].requiredPrefetchIds ?? [];
+    expect(required).toHaveLength(2);
+
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("single-gpu-cpu"),
+      profile,
+    );
+    const storageSteps = result.plan.steps.filter((step) => (
+      step.operation.kind === "transfer"
+      && step.operation.linkId === "node0:storage-read"
+    ));
+    const storageStepByPrefetch = new Map(
+      profile.backgroundPrefetches?.map((prefetch, index) => (
+        [prefetch.id, storageSteps[index].id] as const
+      )),
+    );
+    const warmDemand = result.plan.steps.find((step) => (
+      step.operation.kind === "transfer"
+      && step.operation.linkId === "node0:pcie0:forward"
+    ));
+
+    expect(warmDemand).toBeDefined();
+    expect(required.every((prefetchId) => (
+      warmDemand?.dependencies.includes(
+        storageStepByPrefetch.get(prefetchId) ?? -1,
+      )
+    ))).toBe(true);
+  });
+
   it("loads sharded expert bytes into every FFN placement", () => {
     const profile = {
       id: "expert-placement",

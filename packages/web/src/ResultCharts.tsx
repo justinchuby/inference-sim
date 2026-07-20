@@ -178,7 +178,11 @@ function ResourceChart({
   return (
     <div className="chart-frame">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} layout="vertical" margin={{ left: 8, right: 14 }}>
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ left: 8, right: 14 }}
+        >
           <CartesianGrid stroke="#e4e4e7" horizontal={false} />
           <XAxis
             type="number"
@@ -221,8 +225,8 @@ function MemoryChart({
 }): React.JSX.Element {
   const data = result.scenario.memoryLedger.map((entry) => ({
     name: shortDomain(entry.domainId),
-    used: entry.reservedBytes / 1024 ** 3,
-    free: entry.freeBytes / 1024 ** 3,
+    used: entry.reservedBytes / entry.capacityBytes * 100,
+    free: entry.freeBytes / entry.capacityBytes * 100,
   }));
   return (
     <div className="chart-frame">
@@ -231,7 +235,8 @@ function MemoryChart({
           <CartesianGrid stroke="#e4e4e7" horizontal={false} />
           <XAxis
             type="number"
-            tickFormatter={(value: number) => `${Math.round(value)}G`}
+            domain={[0, 100]}
+            tickFormatter={(value: number) => `${Math.round(value)}%`}
             tick={{ fill: "#71717a", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
@@ -245,7 +250,7 @@ function MemoryChart({
             tickLine={false}
           />
           <ChartTooltip
-            formatter={(value) => `${Number(value).toFixed(1)} GiB`}
+            formatter={(value) => `${Number(value).toFixed(1)}%`}
             contentStyle={chartTooltipStyle}
           />
           <Bar dataKey="used" name="Reserved" stackId="memory" fill="#0369a1" />

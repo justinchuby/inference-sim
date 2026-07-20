@@ -28,25 +28,41 @@ describe("scenario presets", () => {
     ]);
   });
 
-  it("uses one physical domain for unified host and device access", () => {
+  it("keeps unified compute memory distinct from cold storage", () => {
     const scenario = buildScenarioPreset("unified-memory");
+    const unified = scenario.memoryDomains.filter(
+      (domain) => domain.kind === "unified",
+    );
+    const storage = scenario.memoryDomains.filter(
+      (domain) => domain.kind === "storage",
+    );
 
-    expect(scenario.memoryDomains).toHaveLength(1);
-    expect(scenario.memoryDomains[0].kind).toBe("unified");
-    expect(scenario.memoryDomains[0].accessibleBy).toEqual([
+    expect(unified).toHaveLength(1);
+    expect(storage).toHaveLength(1);
+    expect(unified[0].accessibleBy).toEqual([
       "node0:cpu0",
       "node0:gpu0",
     ]);
     expect(
-      scenario.placements.flatMap((placement) => placement.allocations)
+      scenario.placements
+        .filter((placement) => placement.partitionId === "target")
+        .flatMap((placement) => placement.allocations)
         .every((allocation) => allocation.domainId === "node0:unified"),
     ).toBe(true);
-    expect(calculateScenarioMemoryLedger(scenario)).toEqual([{
-      domainId: "node0:unified",
-      capacityBytes: 128 * 1024 ** 3,
-      reservedBytes: 76 * 1024 ** 3 + 256 * 1024 ** 2,
-      freeBytes: 52 * 1024 ** 3 - 256 * 1024 ** 2,
-    }]);
+    expect(calculateScenarioMemoryLedger(scenario)).toEqual([
+      {
+        domainId: "node0:storage",
+        capacityBytes: 2 * 1024 ** 4,
+        reservedBytes: 512 * 1024 ** 3,
+        freeBytes: 1536 * 1024 ** 3,
+      },
+      {
+        domainId: "node0:unified",
+        capacityBytes: 128 * 1024 ** 3,
+        reservedBytes: 84 * 1024 ** 3 + 256 * 1024 ** 2,
+        freeBytes: 44 * 1024 ** 3 - 256 * 1024 ** 2,
+      },
+    ]);
   });
 
   it("finds mandatory pinned staging for GPU/NPU and multi-node transfers", () => {
@@ -89,8 +105,10 @@ describe("validateScenario", () => {
     };
 
     expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
-    expect(calculateScenarioMemoryLedger(scenario)[0].reservedBytes).toBe(
-      76 * 1024 ** 3 + 256 * 1024 ** 2,
+    expect(calculateScenarioMemoryLedger(scenario).find(
+      (entry) => entry.domainId === "node0:unified",
+    )?.reservedBytes).toBe(
+      84 * 1024 ** 3 + 256 * 1024 ** 2,
     );
   });
 
@@ -213,5 +231,25 @@ describe("validateScenario", () => {
         (issue) => issue.code === "asymmetric_access",
       ),
     ).toBe(true);
+  });
+
+  it("rejects storage domains with memory governors or non-storage classes", () => {
+    const base = buildScenarioPreset("cpu-only");
+    const scenario: SimulationScenario = {
+      ...base,
+      memoryDomains: base.memoryDomains.map((domain) => (
+        domain.kind === "storage"
+          ? {
+              ...domain,
+              allocationClasses: ["pinned"],
+              governor: { kind: "host", nodeId: "node0" },
+            }
+          : domain
+      )),
+    };
+    const issues = validateScenario(scenario).issues;
+
+    expect(issues.some((issue) => issue.code === "storage_class")).toBe(true);
+    expect(issues.some((issue) => issue.code === "storage_governor")).toBe(true);
   });
 });

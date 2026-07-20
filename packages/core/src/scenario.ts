@@ -139,6 +139,51 @@ export function validateScenario(
         "unified domains must use the unified allocation class",
       );
     }
+    if (domain.kind === "storage") {
+      if (
+        domain.allocationClasses.length !== 1
+        || domain.allocationClasses[0] !== "storage"
+      ) {
+        add(
+          "storage_class",
+          `${path}.allocationClasses`,
+          "storage domains must exclusively use the storage allocation class",
+        );
+      }
+      if (domain.governor.kind !== "none") {
+        add(
+          "storage_governor",
+          `${path}.governor`,
+          "storage domains must not use host or device memory governors",
+        );
+      }
+      if (domain.accessibleBy.length === 0) {
+        add(
+          "storage_access",
+          `${path}.accessibleBy`,
+          "storage domains require at least one local CPU endpoint",
+        );
+      }
+      for (const deviceId of domain.accessibleBy) {
+        const device = devices.get(deviceId);
+        if (
+          device !== undefined
+          && (device.kind !== "cpu" || device.nodeId !== domain.nodeId)
+        ) {
+          add(
+            "storage_access",
+            `${path}.accessibleBy`,
+            `${deviceId} must be a CPU on storage node ${domain.nodeId}`,
+          );
+        }
+      }
+    } else if (domain.allocationClasses.includes("storage")) {
+      add(
+        "storage_class",
+        `${path}.allocationClasses`,
+        "non-storage domains cannot use the storage allocation class",
+      );
+    }
   }
 
   for (const [index, device] of scenario.devices.entries()) {

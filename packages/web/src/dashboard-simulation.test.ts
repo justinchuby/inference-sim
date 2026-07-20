@@ -225,7 +225,7 @@ describe("simulateDashboard", () => {
       fitConfidence: "heuristic",
     });
     expect(result.calibration?.diagnostics).toHaveLength(15);
-    expect(result.calibration?.transportDiagnostics).toHaveLength(9);
+    expect(result.calibration?.transportDiagnostics).toHaveLength(16);
     expect(result.topology.assumptions[0]).toContain(
       calibration.fit.datasetFingerprint,
     );
@@ -254,6 +254,56 @@ describe("simulateDashboard", () => {
     expect(result.topology.assumptions).toContain(
       "transport timing uses exact-path calibration curves without extrapolation",
     );
+  });
+
+  it("runs adaptive expert prefetch with imported storage curves", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+    const result = simulateDashboard({
+      ...base,
+      mode: "expert-cache",
+      calibration: calibration.dataset,
+    });
+
+    expect(result.expertCache?.metrics.adaptivePrefetchSelections)
+      .toBeGreaterThan(0);
+    expect(result.topology.topResources.some(
+      (resource) => resource.resourceId === "link:node0:storage-read",
+    )).toBe(true);
+    expect(result.topology.assumptions).toContain(
+      "transport timing uses exact-path calibration curves without extrapolation",
+    );
+  });
+
+  it("rejects adaptive prefetch when storage calibration is missing", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+
+    expect(() => simulateDashboard({
+      ...base,
+      mode: "expert-cache",
+      calibration: {
+        ...calibration.dataset,
+        transportObservations:
+          calibration.dataset.transportObservations?.filter(
+            (observation) => !observation.linkIds.some(
+              (linkId) => linkId.endsWith(":storage-read"),
+            ),
+          ),
+      },
+    })).toThrow("no calibrated transport curve");
   });
 
   it("rejects dashboard work outside imported interpolation ranges", async () => {

@@ -334,6 +334,7 @@ export {
   topologyProfileFromSpeculative,
   type DeviceCapabilityCost,
   type TopologyComparisonEntry,
+  type TopologyBackgroundPrefetch,
   type TopologyCostModel,
   type TopologyComputeCapability,
   type CalibratedWorkItemRange,

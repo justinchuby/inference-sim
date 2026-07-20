@@ -596,12 +596,17 @@ history and rejects changed, omitted, or relabeled decisions. This policy can
 reduce future cold misses, but its copies, evictions, and bandwidth remain
 fully charged in the cache protocol's latency and byte ledger.
 
-The current FrozenPlan projection reflects the demand-tier changes caused by
-completed prefetches. It does not yet assign cold-to-warm copies to a physical
-link because the scenario schema has no cold-storage domain; mapping them to a
-host-to-device link would be false. Storage-domain topology and background
-prefetch contention remain required before interpreting those copies as
-device-link utilization.
+Scenario contract revision 2 gives every preset node an explicit cold-storage
+domain, local CPU endpoint, authoritative expert-backing allocation,
+warm-cache allocation, and directed storage-read link. The topology compiler
+extracts validated prefetch `load_start` events and emits background FrozenPlan
+transfers after their causal route. These transfers occupy storage link lanes,
+write the warm pool, overlap subsequent compute, and are independently
+replayed. Writes are ordered per warm domain, while independent nodes prefetch
+concurrently. The projection preserves expert-to-prefetch provenance, so a
+later warm demand cannot read the warm pool until its producing storage copy
+has completed on that node. Completed logical prefetches determine later
+warm-demand tiers, while the physical projection charges and enforces the copy.
 
 ### 9.8 Continuous Serving and Chunked Prefill
 
@@ -643,12 +648,12 @@ branch on names such as `dgx-h100`.
 
 | Family | Memory semantics | Required simulation behavior |
 |---|---|---|
-| CPU-only | Host RAM is the hot/warm domain | No DeviceGovernor or fake host-device copy |
-| Single discrete GPU + CPU | Separate VRAM and host RAM | Ticketed offload, copy fence, source release after publish |
-| Multi-GPU discrete | Per-GPU VRAM plus node-shared host RAM | One HostGovernor, multiple DeviceGovernors, inter-GPU groups |
-| GPU + NPU | Separate accelerator domains plus pinned host DMA | Pinned/pageable classes; NPU requests cannot silently degrade |
-| Unified memory | One coherent physical ledger | Residency reclassification without copy or double charge |
-| Multi-node | Per-node topology plus inter-node links | Cluster execution IDs, communicator groups, topology epoch/failure |
+| CPU-only | Host RAM is the hot/warm domain; storage is distinct | No DeviceGovernor or fake host-device copy |
+| Single discrete GPU + CPU | Separate VRAM, host RAM, and storage | Ticketed offload, copy fence, source release after publish |
+| Multi-GPU discrete | Per-GPU VRAM plus node-shared host/storage | One HostGovernor, multiple DeviceGovernors, inter-GPU groups |
+| GPU + NPU | Separate accelerator domains plus pinned host DMA and storage | Pinned/pageable classes; NPU requests cannot silently degrade |
+| Unified memory | One coherent compute ledger plus non-coherent storage | Residency reclassification without copy or double charge |
+| Multi-node | Per-node storage/host/device topology plus inter-node links | Cluster execution IDs, communicator groups, topology epoch/failure |
 
 The same composition also covers heterogeneous scenarios listed by onnx-genai:
 CUDA+MLX overflow, NPU attention with GPU FFN, multi-vendor GPU via host/RDMA,
@@ -985,6 +990,8 @@ tests.
 - independent collective/buffer replay checks;
 - composable CPU, discrete, unified, heterogeneous, and multi-node memory
   domains; and
+- explicit per-node cold-storage domains, backing/warm allocations, and
+  directed storage-read links; and
 - capability/path validation for every placement and transfer.
 
 Status: complete. Implemented:
@@ -1053,7 +1060,9 @@ checks that its final KV length matches committed target state. Expert-cache
 workloads now model seeded weighted routing without replacement, exact
 hot/warm byte capacities and reservations, deterministic LRU eviction,
 asynchronous initial prefetch, history-driven adaptive warm prefetch, stalls,
-metrics, and independent replay.
+metrics, and independent replay. Validated prefetch loads compile into
+background storage transfers that overlap compute and serialize only within
+the same warm domain.
 Speculative and expert-cache logical traces now compile into FrozenPlan
 resources across all six required topology families. Default link duration
 uses each declared directed link's latency and bandwidth; imported revision 2

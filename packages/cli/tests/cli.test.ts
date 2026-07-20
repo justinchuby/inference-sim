@@ -44,11 +44,18 @@ describe("CLI", () => {
     expect(await runCli(["scenario", "unified-memory"], capture.io)).toBe(0);
     const output = JSON.parse(capture.stdout()) as {
       scenario: { family: string };
-      memoryLedger: Array<{ reservedBytes: number }>;
+      memoryLedger: Array<{ domainId: string; reservedBytes: number }>;
     };
     expect(output.scenario.family).toBe("unified");
-    expect(output.memoryLedger[0].reservedBytes).toBe(
-      76 * 1024 ** 3 + 256 * 1024 ** 2,
+    expect(output.memoryLedger.find(
+      (entry) => entry.domainId === "node0:unified",
+    )?.reservedBytes).toBe(
+      84 * 1024 ** 3 + 256 * 1024 ** 2,
+    );
+    expect(output.memoryLedger.find(
+      (entry) => entry.domainId === "node0:storage",
+    )?.reservedBytes).toBe(
+      512 * 1024 ** 3,
     );
   });
 

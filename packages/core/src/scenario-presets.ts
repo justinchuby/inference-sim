@@ -14,6 +14,7 @@ import { assertValidScenario } from "./scenario.js";
 
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
+const TiB = 1024 ** 4;
 const GBps = 1_000_000_000;
 
 const HEURISTIC: EvidenceProvenance = {
@@ -675,12 +676,13 @@ interface ScenarioParts {
 }
 
 function scenario(parts: ScenarioParts): SimulationScenario {
+  const storage = storageTiers(parts);
   const rankedDevices = new Set(
     parts.groups.flatMap((entry) => (
       entry.orderedRanks.map((rank) => rank.deviceId)
     )),
   );
-  const hostGroups = parts.devices
+  const hostGroups = storage.devices
     .filter((candidate) => (
       candidate.kind === "cpu" && !rankedDevices.has(candidate.id)
     ))
@@ -695,10 +697,10 @@ function scenario(parts: ScenarioParts): SimulationScenario {
     schemaVersion: SCENARIO_SCHEMA_VERSION,
     id: parts.id,
     family: parts.family,
-    memoryDomains: parts.domains,
-    devices: parts.devices,
-    links: parts.links ?? [],
-    placements: parts.placements,
+    memoryDomains: storage.domains,
+    devices: storage.devices,
+    links: storage.links,
+    placements: storage.placements,
     transfers: parts.transfers ?? [],
     groups: [...parts.groups, ...hostGroups],
     workload: {
@@ -714,6 +716,82 @@ function scenario(parts: ScenarioParts): SimulationScenario {
     },
     calibration: { coefficients: [] },
   };
+}
+
+function storageTiers(parts: ScenarioParts): {
+  readonly domains: readonly MemoryDomainSpec[];
+  readonly devices: readonly SimDeviceSpec[];
+  readonly links: readonly SimLinkSpec[];
+  readonly placements: readonly PartitionPlacement[];
+} {
+  const nodes = [...new Set(parts.devices.map((entry) => entry.nodeId))].sort();
+  const domains = [...parts.domains];
+  const devices = [...parts.devices];
+  const links = [...(parts.links ?? [])];
+  const placements = [...parts.placements];
+  for (const nodeId of nodes) {
+    const cpuIndex = devices.findIndex((candidate) => (
+      candidate.nodeId === nodeId && candidate.kind === "cpu"
+    ));
+    const warmDomain = domains.find((candidate) => (
+      candidate.nodeId === nodeId
+      && (candidate.kind === "host" || candidate.kind === "unified")
+    ));
+    if (cpuIndex < 0 || warmDomain === undefined) {
+      throw new Error(
+        `preset node ${nodeId} requires a CPU and host/unified warm domain`,
+      );
+    }
+    const cpu = devices[cpuIndex];
+    const storageDomainId = `${nodeId}:storage`;
+    domains.push({
+      id: storageDomainId,
+      nodeId,
+      kind: "storage",
+      capacityBytes: 2 * TiB,
+      bandwidthBytesPerSec: 7 * GBps,
+      latencyNs: 50_000,
+      coherent: false,
+      allocationClasses: ["storage"],
+      accessibleBy: [cpu.id],
+      governor: { kind: "none" },
+      provenance: HEURISTIC,
+    });
+    devices[cpuIndex] = {
+      ...cpu,
+      memoryDomainIds: [...cpu.memoryDomainIds, storageDomainId],
+    };
+    links.push(link(
+      `${nodeId}:storage-read`,
+      storageDomainId,
+      warmDomain.id,
+      "storage",
+      7 * GBps,
+      50_000,
+    ));
+    placements.push(placement(
+      `expert-tier:${nodeId}`,
+      cpu.id,
+      [],
+      [
+        allocation(
+          `expert-backing:${nodeId}`,
+          storageDomainId,
+          512 * GiB,
+          "storage",
+          "backing",
+        ),
+        allocation(
+          `expert-warm-cache:${nodeId}`,
+          warmDomain.id,
+          8 * GiB,
+          warmDomain.kind === "unified" ? "unified" : "pinned",
+          "cache",
+        ),
+      ],
+    ));
+  }
+  return { domains, devices, links, placements };
 }
 
 function domain(

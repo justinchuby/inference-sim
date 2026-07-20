@@ -45,12 +45,20 @@ export interface TopologyWorkUnit {
   readonly activeExperts: number;
   readonly warmLoadBytes: number;
   readonly coldLoadBytes: number;
+  readonly requiredPrefetchIds?: readonly string[];
 }
 
 export interface TopologyWorkloadProfile {
   readonly id: string;
   readonly batchSize: number;
   readonly units: readonly TopologyWorkUnit[];
+  readonly backgroundPrefetches?: readonly TopologyBackgroundPrefetch[];
+}
+
+export interface TopologyBackgroundPrefetch {
+  readonly id: string;
+  readonly afterUnitIndex: number;
+  readonly bytes: number;
 }
 
 export interface DeviceCapabilityCost {
@@ -215,6 +223,45 @@ export function topologyProfileFromExpertCache(
   expertBytes: number,
 ): TopologyWorkloadProfile {
   assertPositiveSafeInteger(expertBytes, "expert bytes");
+  let completedRoutes = 0;
+  const backgroundPrefetches: TopologyBackgroundPrefetch[] = [];
+  const warmPrefetchByExpert = new Map<string, string>();
+  const warmPrefetchLoads = new Set<string>();
+  const requiredPrefetchIdsByRequest = new Map<string, readonly string[]>();
+  for (const event of result.trace) {
+    if (
+      event.kind === "load_start"
+      && event.load.kind === "prefetch"
+      && event.load.targetTier === "warm"
+    ) {
+      warmPrefetchLoads.add(event.load.loadId);
+      backgroundPrefetches.push({
+        id: event.load.loadId,
+        afterUnitIndex: completedRoutes - 1,
+        bytes: event.load.bytes,
+      });
+    } else if (
+      event.kind === "load_complete"
+      && event.targetTier === "warm"
+      && warmPrefetchLoads.has(event.loadId)
+    ) {
+      warmPrefetchByExpert.set(event.expertId, event.loadId);
+    } else if (event.kind === "evict" && event.tier === "warm") {
+      warmPrefetchByExpert.delete(event.expertId);
+    } else if (event.kind === "access") {
+      requiredPrefetchIdsByRequest.set(
+        event.requestId,
+        unique(event.expertIds.flatMap((expertId, index) => {
+          const producer = warmPrefetchByExpert.get(expertId);
+          return event.sourceTiers[index] === "warm"
+            && producer !== undefined
+            ? [producer]
+            : [];
+        })),
+      );
+      completedRoutes++;
+    }
+  }
   return {
     id: "expert-cache",
     batchSize: 1,
@@ -226,7 +273,10 @@ export function topologyProfileFromExpertCache(
       activeExperts: route.expertIds.length,
       warmLoadBytes: countTier(route.sourceTiers, "warm") * expertBytes,
       coldLoadBytes: countTier(route.sourceTiers, "cold") * expertBytes,
+      requiredPrefetchIds:
+        requiredPrefetchIdsByRequest.get(route.requestId) ?? [],
     })),
+    backgroundPrefetches,
   };
 }
 
@@ -375,6 +425,14 @@ class WorkloadPlanCompiler {
   private nextStepId = 0;
   private collectiveSequence = 0;
   private previousTerminalStepId?: number;
+  private readonly backgroundPrefetchTerminalByDomain = new Map<
+    string,
+    number
+  >();
+  private readonly backgroundPrefetchTerminalByIdAndDomain = new Map<
+    string,
+    number
+  >();
 
   constructor(
     private readonly scenario: SimulationScenario,
@@ -407,8 +465,13 @@ class WorkloadPlanCompiler {
         `scenario ${this.scenario.id} has no target placement`,
       );
     }
-    for (const unit of this.profile.units) {
+    this.compileBackgroundPrefetches(-1, undefined);
+    for (const [unitIndex, unit] of this.profile.units.entries()) {
       this.compileUnit(unit);
+      this.compileBackgroundPrefetches(
+        unitIndex,
+        this.previousTerminalStepId,
+      );
     }
     return {
       contractRevision: PLAN_CONTRACT_REVISION,
@@ -417,6 +480,89 @@ class WorkloadPlanCompiler {
       topologyEpoch: this.scenario.execution.topologyEpoch,
       steps: this.steps,
     };
+  }
+
+  private compileBackgroundPrefetches(
+    afterUnitIndex: number,
+    triggerStepId: number | undefined,
+  ): void {
+    const prefetches = (this.profile.backgroundPrefetches ?? []).filter(
+      (prefetch) => prefetch.afterUnitIndex === afterUnitIndex,
+    );
+    if (prefetches.length === 0) {
+      return;
+    }
+    const ffnPlacements = this.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("ffn")
+    ));
+    const targets = unique(ffnPlacements.map((placement) => (
+      this.cacheSourceDomain(workspaceDomain(placement))
+    )));
+    for (const prefetch of prefetches) {
+      for (const targetDomainId of targets) {
+        const localPlacementCount = ffnPlacements.filter((placement) => (
+          this.cacheSourceDomain(workspaceDomain(placement)) === targetDomainId
+        )).length;
+        const shardBytes = Math.ceil(
+          checkedMultiply(
+            prefetch.bytes,
+            localPlacementCount,
+            "background prefetch node bytes",
+          )
+          / Math.max(1, ffnPlacements.length),
+        );
+        const target = this.scenario.memoryDomains.find(
+          (domain) => domain.id === targetDomainId,
+        );
+        const storage = this.scenario.memoryDomains.find((domain) => (
+          domain.nodeId === target?.nodeId && domain.kind === "storage"
+        ));
+        if (!target || !storage) {
+          throw new TopologyWorkloadError(
+            `background prefetch ${prefetch.id} lacks storage/warm domains for ${targetDomainId}`,
+          );
+        }
+        const placement = ffnPlacements.find((candidate) => (
+          this.cacheSourceDomain(workspaceDomain(candidate)) === targetDomainId
+        ));
+        if (!placement) {
+          throw new TopologyWorkloadError(
+            `background prefetch ${prefetch.id} lacks an FFN placement for ${targetDomainId}`,
+          );
+        }
+        const previousBackground = this.backgroundPrefetchTerminalByDomain.get(
+          targetDomainId,
+        );
+        const dependencies = uniqueNumbers([
+          ...(triggerStepId === undefined ? [] : [triggerStepId]),
+          ...(previousBackground === undefined ? [] : [previousBackground]),
+        ]);
+        const stepIds = this.addTransferPath(
+          storage.id,
+          targetDomainId,
+          shardBytes,
+          dependencies,
+          [this.rank(placement.deviceId)],
+          {
+            sourceAllocationId: `expert-backing:${target.nodeId}`,
+            targetAllocationId: `expert-warm-cache:${target.nodeId}`,
+          },
+        );
+        if (stepIds.length === 0) {
+          throw new TopologyWorkloadError(
+            `background prefetch ${prefetch.id} produced no transfer`,
+          );
+        }
+        this.backgroundPrefetchTerminalByDomain.set(
+          targetDomainId,
+          stepIds[stepIds.length - 1],
+        );
+        this.backgroundPrefetchTerminalByIdAndDomain.set(
+          prefetchDomainKey(prefetch.id, targetDomainId),
+          stepIds[stepIds.length - 1],
+        );
+      }
+    }
   }
 
   private compileUnit(unit: TopologyWorkUnit): void {
@@ -640,9 +786,26 @@ class WorkloadPlanCompiler {
     const shardBytes = Math.ceil(effectiveBytes / shardCount);
     const targetDomain = workspaceDomain(placement);
     const sourceDomain = this.cacheSourceDomain(targetDomain);
+    const prefetchDependencies = (unit.requiredPrefetchIds ?? []).map(
+      (prefetchId) => {
+        const terminal = this.backgroundPrefetchTerminalByIdAndDomain.get(
+          prefetchDomainKey(prefetchId, sourceDomain),
+        );
+        if (terminal === undefined) {
+          throw new TopologyWorkloadError(
+            `unit ${unit.id} requires unresolved background prefetch ${prefetchId} for ${sourceDomain}`,
+          );
+        }
+        return terminal;
+      },
+    );
+    const cacheDependencies = uniqueNumbers([
+      ...dependencies,
+      ...prefetchDependencies,
+    ]);
     if (sourceDomain === targetDomain) {
       return {
-        dependencies,
+        dependencies: cacheDependencies,
         localMemoryPenaltyNs: this.domainDuration(targetDomain, shardBytes),
       };
     }
@@ -650,12 +813,12 @@ class WorkloadPlanCompiler {
       sourceDomain,
       targetDomain,
       shardBytes,
-      dependencies,
+      cacheDependencies,
       [this.rank(placement.deviceId)],
     );
     return {
       dependencies: transferSteps.length === 0
-        ? dependencies
+        ? cacheDependencies
         : [transferSteps[transferSteps.length - 1]],
       localMemoryPenaltyNs: 0,
     };
@@ -743,6 +906,10 @@ class WorkloadPlanCompiler {
     bytes: number,
     dependencies: readonly number[],
     participants: readonly string[],
+    endpointAllocations?: {
+      readonly sourceAllocationId: string;
+      readonly targetAllocationId: string;
+    },
   ): number[] {
     const domains = findTransferPath(this.scenario, {
       id: "compiled-transfer",
@@ -769,8 +936,16 @@ class WorkloadPlanCompiler {
       const stepId = this.addStep({
         participants: unique(participants),
         dependencies: currentDependencies,
-        reads: [this.buffer(source, sourceDomainId, targetDomainId)],
-        writes: [this.buffer(target, sourceDomainId, targetDomainId)],
+        reads: [
+          index === 0 && endpointAllocations !== undefined
+            ? endpointAllocations.sourceAllocationId
+            : this.buffer(source, sourceDomainId, targetDomainId),
+        ],
+        writes: [
+          index === domains.length - 2 && endpointAllocations !== undefined
+            ? endpointAllocations.targetAllocationId
+            : this.buffer(target, sourceDomainId, targetDomainId),
+        ],
         operation: {
           kind: "transfer",
           linkId: link.id,
@@ -1099,6 +1274,43 @@ function validateInputs(
   if (profile.units.length === 0) {
     throw new TopologyWorkloadError("profile must contain at least one work unit");
   }
+  const prefetchIds = new Set<string>();
+  for (const prefetch of profile.backgroundPrefetches ?? []) {
+    if (prefetch.id.length === 0 || prefetchIds.has(prefetch.id)) {
+      throw new TopologyWorkloadError(
+        `background prefetch id ${JSON.stringify(prefetch.id)} must be non-empty and unique`,
+      );
+    }
+    prefetchIds.add(prefetch.id);
+    if (
+      !Number.isSafeInteger(prefetch.afterUnitIndex)
+      || prefetch.afterUnitIndex < -1
+      || prefetch.afterUnitIndex >= profile.units.length
+    ) {
+      throw new TopologyWorkloadError(
+        `background prefetch ${prefetch.id} has invalid trigger unit ${prefetch.afterUnitIndex}`,
+      );
+    }
+    assertPositiveSafeInteger(
+      prefetch.bytes,
+      `background prefetch ${prefetch.id} bytes`,
+    );
+  }
+  for (const unit of profile.units) {
+    const required = unit.requiredPrefetchIds ?? [];
+    if (new Set(required).size !== required.length) {
+      throw new TopologyWorkloadError(
+        `unit ${unit.id} has duplicate required background prefetch ids`,
+      );
+    }
+    for (const prefetchId of required) {
+      if (!prefetchIds.has(prefetchId)) {
+        throw new TopologyWorkloadError(
+          `unit ${unit.id} requires unknown background prefetch ${prefetchId}`,
+        );
+      }
+    }
+  }
   if (costModel.revision !== TOPOLOGY_COST_MODEL_REVISION) {
     throw new TopologyWorkloadError(
       `unsupported topology cost revision ${costModel.revision}`,
@@ -1405,6 +1617,14 @@ function countTier(
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function uniqueNumbers(values: readonly number[]): number[] {
+  return [...new Set(values)];
+}
+
+function prefetchDomainKey(prefetchId: string, domainId: string): string {
+  return `${prefetchId}\0${domainId}`;
 }
 
 function scaledDuration(
