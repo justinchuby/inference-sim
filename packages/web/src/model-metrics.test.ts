@@ -43,6 +43,7 @@ describe("model UI metrics", () => {
     expect(int4.targetModelFingerprint).not.toBe(
       fp16.targetModelFingerprint,
     );
+    expect(fp16.speculativeFamilies).toEqual(["prompt_lookup"]);
   });
 
   it("keeps exact inventory separate from heuristic work and bandwidth bounds", () => {

@@ -84,6 +84,7 @@ import {
   createBuiltinModelBinding,
   createImportedModelBinding,
   DASHBOARD_MODEL_PRESETS,
+  modelSupportsSpeculativeFamily,
   type DashboardModelPreset,
 } from "./model-binding.js";
 import {
@@ -206,7 +207,7 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
   mode: "serving",
   seed: 42,
   speculative: {
-    family: "mtp",
+    family: "prompt_lookup",
     outputTokens: 128,
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -431,7 +432,10 @@ export function App(): React.JSX.Element {
       );
       if (
         config.modelBinding !== undefined
-        && !config.modelBinding.speculativeFamilies.includes(parsed.trace.family)
+        && !modelSupportsSpeculativeFamily(
+          config.modelBinding,
+          parsed.trace.family,
+        )
       ) {
         throw new Error(
           `model package does not declare ${parsed.trace.family}`,
@@ -480,7 +484,10 @@ export function App(): React.JSX.Element {
       };
       if (
         config.modelBinding !== undefined
-        && !config.modelBinding.speculativeFamilies.includes(parsed.trace.family)
+        && !modelSupportsSpeculativeFamily(
+          config.modelBinding,
+          parsed.trace.family,
+        )
       ) {
         throw new Error(
           `model package does not declare ${parsed.trace.family}`,
@@ -637,10 +644,15 @@ export function App(): React.JSX.Element {
     const selectedWeightDtype = weightDtype
       ?? BUILTIN_WEIGHT_DTYPES.find((dtype) => dtype === currentWeightDtype)
       ?? "fp16";
+    const { trace: _trace, ...speculative } = config.speculative;
     changeConfig({
       ...config,
       modelBinding: createBuiltinModelBinding(preset, selectedWeightDtype),
       mode: "serving",
+      speculative: {
+        ...speculative,
+        family: "prompt_lookup",
+      },
       serving: {
         ...config.serving,
         decodeMode: "target_only",
@@ -2087,18 +2099,50 @@ function ConfigurationPanel({
   const scenarioInput = useRef<HTMLInputElement | null>(null);
   const tokenTraceInput = useRef<HTMLInputElement | null>(null);
   const runtimeCaptureInput = useRef<HTMLInputElement | null>(null);
-  const availableSpeculativeFamilies = config.modelBinding
-    ?.speculativeFamilies ?? SPECULATIVE_FAMILIES.map((family) => family.value);
+  const availableSpeculativeFamilies = config.modelBinding === undefined
+    ? SPECULATIVE_FAMILIES.map((family) => family.value)
+    : SPECULATIVE_FAMILIES
+      .map((family) => family.value)
+      .filter((family) => modelSupportsSpeculativeFamily(
+        config.modelBinding!,
+        family,
+      ));
   const speculativeOptions = SPECULATIVE_FAMILIES.filter((family) => (
     availableSpeculativeFamilies.includes(family.value)
   ));
+  const pipelineAvailable =
+    config.modelBinding?.pipelineExecution?.replacesTarget === true;
+  const pipelineUnavailableReason =
+    config.modelBinding?.pipelineExecution === undefined
+      ? "Standalone Pipeline mode requires an imported multi-component ONNX package whose inference metadata declares components, dataflow, and an executable pipeline strategy."
+      : "This autoregressive component pipeline is already scheduled inside Serving mode. Standalone Pipeline is reserved for pipelines that replace target-token decoding, such as single-pass or iterative workflows.";
+  const speculativeAvailable = config.modelBinding === undefined
+    || speculativeOptions.length > 0;
+  const speculativeUnavailableReason =
+    "This model package does not declare a compatible speculative proposer. Prompt Lookup is available for built-in autoregressive models; MTP, EAGLE, Shared KV, and draft-model modes require matching model-package metadata.";
   const selectedScenario = useMemo(() => resolveSelectedScenario(config), [
     config.customScenario,
     config.multiGpuRanks,
     config.multiNodeCount,
     config.scenarioName,
   ]);
-  const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
+  const setMode = (mode: WorkloadMode) => {
+    const selectedFamily = speculativeOptions.find(
+      (family) => family.value === config.speculative.family,
+    )?.value ?? speculativeOptions[0]?.value;
+    onChange({
+      ...config,
+      mode,
+      ...(mode !== "speculative" || selectedFamily === undefined
+        ? {}
+        : {
+            speculative: {
+              ...config.speculative,
+              family: selectedFamily,
+            },
+          }),
+    });
+  };
   const selectedModelValue = config.modelBinding?.source === "builtin_model"
     ? config.modelBinding.executionProfile.modelId
     : "local";
@@ -2703,21 +2747,19 @@ function ConfigurationPanel({
         >
         <TabsList className="mb-4 w-full grid-cols-4">
           <TabsTrigger value="serving">Serving</TabsTrigger>
-          <TabsTrigger
+          <ModeTab
             value="pipeline"
-            disabled={config.modelBinding?.pipelineExecution?.replacesTarget
-              !== true}
-          >
-            Pipeline
-          </TabsTrigger>
-          <TabsTrigger
+            label="Pipeline"
+            available={pipelineAvailable}
+            unavailableReason={pipelineUnavailableReason}
+          />
+          <ModeTab
             value="speculative"
-            aria-label="Speculative"
-            disabled={config.modelBinding !== undefined
-              && speculativeOptions.length === 0}
-          >
-            Spec
-          </TabsTrigger>
+            label="Spec"
+            accessibleLabel="Speculative"
+            available={speculativeAvailable}
+            unavailableReason={speculativeUnavailableReason}
+          />
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
         <TabsContent value="pipeline" className="space-y-4">
@@ -4979,6 +5021,51 @@ function ParameterHelp({
         className="max-w-72 text-xs leading-5"
       >
         {description}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ModeTab({
+  value,
+  label,
+  accessibleLabel = label,
+  available,
+  unavailableReason,
+}: {
+  readonly value: WorkloadMode;
+  readonly label: string;
+  readonly accessibleLabel?: string;
+  readonly available: boolean;
+  readonly unavailableReason: string;
+}): React.JSX.Element {
+  if (available) {
+    return (
+      <TabsTrigger value={value} aria-label={accessibleLabel}>
+        {label}
+      </TabsTrigger>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className="grid h-full cursor-help rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600"
+          tabIndex={0}
+          aria-label={`${accessibleLabel} unavailable`}
+        >
+          <TabsTrigger
+            value={value}
+            disabled
+            aria-label={accessibleLabel}
+            className="pointer-events-none w-full opacity-45"
+          >
+            {label}
+          </TabsTrigger>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72 text-xs leading-5">
+        {unavailableReason}
       </TooltipContent>
     </Tooltip>
   );

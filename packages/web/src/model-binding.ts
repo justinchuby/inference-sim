@@ -3,6 +3,7 @@ import {
   resolveOnnxModelProfile,
   type ModelProfile,
   type QuantType,
+  type SpeculativeProposerFamily,
   type TopologyPipelinePhase,
   type TopologyPipelineWork,
 } from "@inference-sim/core";
@@ -22,6 +23,14 @@ export const DASHBOARD_MODEL_PRESETS = [
 ] as const;
 
 export type DashboardModelPreset = typeof DASHBOARD_MODEL_PRESETS[number];
+
+export function modelSupportsSpeculativeFamily(
+  binding: DashboardModelBinding,
+  family: SpeculativeProposerFamily,
+): boolean {
+  return binding.speculativeFamilies.includes(family)
+    || (binding.source === "builtin_model" && family === "prompt_lookup");
+}
 
 export function createBuiltinModelBinding(
   preset: DashboardModelPreset,
@@ -57,7 +66,7 @@ export function createBuiltinModelBinding(
       unmodeledComponentIds: [],
       limitations: moeLimitations,
     },
-    speculativeFamilies: [],
+    speculativeFamilies: ["prompt_lookup"],
   };
 }
 

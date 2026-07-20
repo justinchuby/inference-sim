@@ -105,6 +105,25 @@ describe("simulateDashboard", () => {
     );
   });
 
+  it("keeps prompt lookup available for legacy built-in bindings", () => {
+    const result = simulateDashboard({
+      ...base,
+      modelBinding: {
+        ...createBuiltinModelBinding("llama-3-8b"),
+        speculativeFamilies: [],
+      },
+      speculative: {
+        ...base.speculative,
+        family: "prompt_lookup",
+        outputTokens: 8,
+        draftWidth: 2,
+      },
+    });
+
+    expect(result.speculative?.family).toBe("prompt_lookup");
+    expect(result.speculative?.metrics.committedTokens).toBe(8);
+  });
+
   it("binds model weight traffic into CPU serving throughput", () => {
     const modelBinding = createBuiltinModelBinding("llama-3-8b");
     const result = simulateDashboard({

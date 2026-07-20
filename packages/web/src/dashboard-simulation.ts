@@ -33,6 +33,7 @@ import type {
   DashboardRunConfig,
   WorkerRunProgressReporter,
 } from "./types.js";
+import { modelSupportsSpeculativeFamily } from "./model-binding.js";
 
 export function simulateDashboard(
   config: DashboardRunConfig,
@@ -413,7 +414,7 @@ function validateModelCapabilityBinding(config: DashboardRunConfig): void {
       : undefined;
   if (
     selectedFamily !== undefined
-    && !binding.speculativeFamilies.includes(selectedFamily)
+    && !modelSupportsSpeculativeFamily(binding, selectedFamily)
   ) {
     throw new Error(
       `model package does not declare speculative family ${selectedFamily}`,
