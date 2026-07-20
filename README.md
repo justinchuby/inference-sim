@@ -33,6 +33,8 @@ Phase 2 is in progress:
 - seeded multi-execution FrozenPlan campaigns with arrival-ordered admission,
   shared compute/link/collective lanes, communicator ownership, physical
   allocation leases, and independent global replay.
+- structured node failures and explicit quiesce-before-admit failover to a
+  failed-node-free scenario and replanned workload at a newer topology epoch.
 
 Phase 3 has an initial speculative workload slice:
 
@@ -137,6 +139,7 @@ pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
+pnpm sim node-failover multi-node single-gpu-cpu examples/node-failover.yaml
 pnpm dev:web
 ```
 

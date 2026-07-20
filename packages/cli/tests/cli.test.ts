@@ -501,6 +501,7 @@ target_only:
     expect(output.baseline.status).toBe("succeeded");
     expect(output.baseline.submittedSteps).toBeGreaterThan(0);
     expect(output.cases.map((entry) => entry.id)).toEqual([
+      "node:node0",
       "device:node0:gpu0",
       "device:node0:gpu1",
       "link:node0:nvlink:forward",
@@ -563,6 +564,60 @@ target_only:
     expect(output.latencyNs.p95).toBeLessThanOrEqual(
       output.latencyNs.maximum,
     );
+  });
+
+  it("fails over a node only after old-epoch quiescence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "node-failover.yaml");
+    await writeFile(path, `
+node_failover:
+  failed_node_id: node1
+  fault_at_ns: 1
+  reason: node1 heartbeat expired
+target_only:
+  token_count: 2
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli([
+      "node-failover",
+      "multi-node",
+      "single-gpu-cpu",
+      path,
+    ], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      completedAtNs: number;
+      handoff: {
+        oldTopologyEpoch: number;
+        newTopologyEpoch: number;
+        oldExecutionQuiescedAtNs: number;
+        recoveryAdmittedAtNs: number;
+      };
+      failedExecution: {
+        status: string;
+        completedAtNs: number;
+        replayAppliedEvents: number;
+      };
+      recoveryExecution: {
+        status: string;
+        completedAtNs: number;
+        replayAppliedEvents: number;
+      };
+    };
+    expect(output.failedExecution.status).toBe("failed");
+    expect(output.recoveryExecution.status).toBe("succeeded");
+    expect(output.handoff).toMatchObject({
+      oldTopologyEpoch: 0,
+      newTopologyEpoch: 1,
+      oldExecutionQuiescedAtNs: output.failedExecution.completedAtNs,
+      recoveryAdmittedAtNs: output.failedExecution.completedAtNs,
+    });
+    expect(output.completedAtNs).toBe(
+      output.failedExecution.completedAtNs
+        + output.recoveryExecution.completedAtNs,
+    );
+    expect(output.failedExecution.replayAppliedEvents).toBeGreaterThan(0);
+    expect(output.recoveryExecution.replayAppliedEvents).toBeGreaterThan(0);
   });
 });
 

@@ -258,6 +258,13 @@ Collective steps declare both an immutable communicator group/sequence and the
 transport links they reserve. Group ordering alone is not a bandwidth model;
 collectives and point-to-point transfers contend on the same link lanes.
 
+A node failure is a correlated fault derived from structured `nodeId`
+membership, never from resource-name prefixes. Every participating rank whose
+device belongs to the failed node becomes failed at observation time. Surviving
+participants abort, new plan submission closes, and already submitted
+device/transport work quiesces before terminalization. Replay independently
+re-derives failed ranks from scenario membership.
+
 ### 8.3 Buffer Ownership
 
 Every operation registers complete read and write `PhysicalAllocationId` lease
@@ -301,6 +308,22 @@ collective overtaking, resource reassignment, lease overlap, and terminal
 mutation.
 Admissions, operations, and terminals all consume the scenario `maxEvents`
 budget; manual admission cannot bypass the event/trace-size guard.
+
+### 8.5 Node Failover and Replan
+
+Failover is an explicit two-epoch transaction. A node fault must interrupt the
+old plan, and the complete old execution must quiesce before recovery
+admission. Recovery requires a separately validated scenario and `FrozenPlan`
+with a strictly newer matching topology epoch and a new execution identity.
+The failover policy requires the failed node's devices and memory domains to be
+absent from that recovery scenario; it never edits or resumes the old plan.
+
+The handoff records the failed node and execution, old/new epochs, fault time,
+old-execution quiescence, and recovery admission. Independent replay validates
+both plan traces and reconstructs the handoff and total wall-clock completion.
+The current executable campaign handles one old-epoch execution. Coordinated
+node-fault fanout across every execution in a concurrent campaign remains
+required before Phase 2 is complete.
 
 ## 9. Speculative Decoding
 
@@ -940,11 +963,14 @@ Status: in progress. Implemented:
   admission closure, and explicit epoch advance; and
 - seeded multi-execution campaigns with arrival-ordered admission, shared
   device/link/collective lanes, shared physical-allocation leases, per-group
-  communicator ownership, and independent global trace replay.
+  communicator ownership, and independent global trace replay; and
+- structured node-wide rank failure plus explicit quiesce-before-admit failover
+  to a separately validated newer-epoch scenario and replanned execution.
 
 Remaining Phase 2 work:
 
-- node-wide correlated failure and recovery/replan policy.
+- coordinated node-failure propagation and communicator abort across every
+  old-epoch execution in a concurrent campaign.
 
 ### Phase 3: Speculative, Workload, and Cache Dynamics
 
@@ -1059,6 +1085,10 @@ arrival-ordered execution envelopes, runs them through shared resources and
 communicator sequencers, and independently replays the global trace. Its output
 explicitly reports that repeated physical allocation IDs remain shared and
 lease-serialized.
+The `node-failover` command injects a structured node fault into an old-epoch
+plan, waits for terminal quiescence, then admits a separately compiled workload
+on a failed-node-free preset at the next topology epoch. Both execution traces
+and the handoff are independently replayed.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,

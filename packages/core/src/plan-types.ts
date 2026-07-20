@@ -136,6 +136,12 @@ export interface PlanExecutionOptions {
 
 export type PlanFault =
   | {
+      readonly kind: "node_failure";
+      readonly atNs: number;
+      readonly nodeId: string;
+      readonly reason: string;
+    }
+  | {
       readonly kind: "device_failure";
       readonly atNs: number;
       readonly deviceId: string;

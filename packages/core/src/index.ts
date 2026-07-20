@@ -287,6 +287,15 @@ export {
   type ConcurrentPlanRequest,
 } from "./concurrent-plan.js";
 export {
+  NODE_RECOVERY_CONTRACT_REVISION,
+  replayNodeFailoverCampaign,
+  runNodeFailoverCampaign,
+  type NodeFailoverHandoff,
+  type NodeFailoverReplayResult,
+  type NodeFailoverRequest,
+  type NodeFailoverResult,
+} from "./node-recovery.js";
+export {
   CALIBRATION_DATASET_REVISION,
   CalibrationError,
   fitTopologyCostModel,

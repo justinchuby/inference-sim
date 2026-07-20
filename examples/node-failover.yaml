@@ -1,0 +1,7 @@
+node_failover:
+  failed_node_id: node1
+  fault_at_ns: 1
+  reason: node1 heartbeat expired
+
+target_only:
+  token_count: 8

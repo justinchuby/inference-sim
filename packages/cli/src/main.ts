@@ -24,6 +24,7 @@ import {
   simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   runPlanFaultCampaign,
+  runNodeFailoverCampaign,
   runSeededConcurrentPlanCampaign,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
@@ -333,6 +334,84 @@ export async function runCli(
             scenario,
             plan,
             parseConcurrentCampaignOptions(config, scenario.execution.seed),
+          )),
+        );
+        return 0;
+      }
+      case "node-failover": {
+        if (
+          !argument
+          || !SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)
+        ) {
+          throw new Error(
+            `unknown failed scenario preset ${String(argument)}`,
+          );
+        }
+        if (
+          !secondArgument
+          || !SCENARIO_PRESET_NAMES.includes(
+            secondArgument as ScenarioPresetName,
+          )
+        ) {
+          throw new Error(
+            `unknown recovery scenario preset ${String(secondArgument)}`,
+          );
+        }
+        const config = await loadRequiredConfig(thirdArgument, "node-failover");
+        const failover = requireRecord(
+          config.node_failover,
+          "node_failover",
+        );
+        const failedScenario = buildScenarioPreset(
+          argument as ScenarioPresetName,
+        );
+        const recoveryBase = buildScenarioPreset(
+          secondArgument as ScenarioPresetName,
+        );
+        const recoveryScenario = {
+          ...recoveryBase,
+          execution: {
+            ...recoveryBase.execution,
+            topologyEpoch: failedScenario.execution.topologyEpoch + 1,
+          },
+        };
+        const costModel = await loadCostModel(fourthArgument);
+        const profile = buildTopologyProfile(config);
+        const failedPlan = compileTopologyWorkloadPlan(
+          failedScenario,
+          profile,
+          costModel,
+        );
+        const replannedPlan = compileTopologyWorkloadPlan(
+          recoveryScenario,
+          profile,
+          costModel,
+        );
+        printJson(
+          io,
+          summarizeNodeFailover(runNodeFailoverCampaign(
+            failedScenario,
+            failedPlan,
+            {
+              failedNodeId: requireString(
+                failover,
+                "failed_node_id",
+                "node_failover",
+              ),
+              faultAtNs: requireNumber(
+                failover,
+                "fault_at_ns",
+                "node_failover",
+              ),
+              reason: optionalString(
+                failover,
+                "reason",
+                "node heartbeat expired",
+                "node_failover",
+              ),
+              recoveryScenario,
+              replannedPlan,
+            },
           )),
         );
         return 0;
@@ -981,6 +1060,29 @@ function summarizeConcurrentCampaign(
   };
 }
 
+function summarizeNodeFailover(
+  result: ReturnType<typeof runNodeFailoverCampaign>,
+) {
+  return {
+    handoff: result.handoff,
+    completedAtNs: result.completedAtNs,
+    failedExecution: {
+      status: result.failedExecution.status,
+      completedAtNs: result.failedExecution.completedAtNs,
+      submittedOperations: result.failedExecution.trace.operations.length,
+      rankStates: result.failedExecution.rankStates,
+      replayAppliedEvents: result.failedReplay.appliedEvents,
+    },
+    recoveryExecution: {
+      status: result.recoveryExecution.status,
+      completedAtNs: result.recoveryExecution.completedAtNs,
+      submittedOperations: result.recoveryExecution.trace.operations.length,
+      rankStates: result.recoveryExecution.rankStates,
+      replayAppliedEvents: result.recoveryReplay.appliedEvents,
+    },
+  };
+}
+
 function percentile(values: readonly number[], quantile: number): number {
   if (values.length === 0) {
     return 0;
@@ -1155,6 +1257,7 @@ Usage:
   inference-sim compare <workload.yaml|json> [calibration.yaml|json]
   inference-sim fault-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
   inference-sim concurrent-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim node-failover <failed-preset> <recovery-preset> <workload.yaml|json> [calibration.yaml|json]
 `;
 }
 

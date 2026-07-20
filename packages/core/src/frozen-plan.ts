@@ -669,6 +669,33 @@ export function runPlanFaultCampaign(
       .map((rankId) => rankDevices.get(rankId))
       .filter((deviceId): deviceId is string => deviceId !== undefined),
   )].sort();
+  const deviceNodes = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId]),
+  );
+  const participatingNodes = [...new Set(
+    participatingDevices
+      .map((deviceId) => deviceNodes.get(deviceId))
+      .filter((nodeId): nodeId is string => nodeId !== undefined),
+  )].sort();
+  for (const nodeId of participatingNodes) {
+    const event = baseline.trace.operations.find((candidate) => (
+      candidate.finishNs > candidate.startNs
+      && candidate.participants.some((rankId) => (
+        deviceNodes.get(rankDevices.get(rankId) ?? "") === nodeId
+      ))
+    ));
+    if (event) {
+      faults.push({
+        id: `node:${nodeId}`,
+        fault: {
+          kind: "node_failure",
+          atNs: eventMidpoint(event),
+          nodeId,
+          reason: `campaign node failure ${nodeId}`,
+        },
+      });
+    }
+  }
   for (const deviceId of participatingDevices) {
     const event = baseline.trace.operations.find((candidate) => (
       candidate.finishNs > candidate.startNs
@@ -1358,6 +1385,30 @@ function validatePlanFault(
     );
   }
   switch (fault.kind) {
+    case "node_failure": {
+      if (
+        typeof fault.nodeId !== "string"
+        || !scenario.devices.some((device) => device.nodeId === fault.nodeId)
+      ) {
+        throw new FrozenPlanExecutionError(
+          `fault references unknown node ${fault.nodeId}`,
+        );
+      }
+      const rankDevices = buildRankDeviceMap(scenario.groups);
+      const deviceNodes = new Map(
+        scenario.devices.map((device) => [device.id, device.nodeId]),
+      );
+      if (!plan.steps.some((step) => step.participants.some(
+        (rankId) => (
+          deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
+        ),
+      ))) {
+        throw new FrozenPlanExecutionError(
+          `node ${fault.nodeId} does not participate in the plan`,
+        );
+      }
+      return;
+    }
     case "device_failure": {
       if (
         typeof fault.deviceId !== "string"
@@ -1424,6 +1475,17 @@ function failedRanksForFault(
 ): string[] {
   if (fault.kind === "topology_epoch_change") {
     return [];
+  }
+  if (fault.kind === "node_failure") {
+    const rankDevices = buildRankDeviceMap(scenario.groups);
+    const deviceNodes = new Map(
+      scenario.devices.map((device) => [device.id, device.nodeId]),
+    );
+    return planRanks(plan).filter(
+      (rankId) => (
+        deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
+      ),
+    );
   }
   if (fault.kind === "device_failure") {
     const rankDevices = buildRankDeviceMap(scenario.groups);

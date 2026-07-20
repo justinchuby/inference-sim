@@ -526,6 +526,37 @@ describe("FrozenPlan validation and execution", () => {
     });
   });
 
+  it("correlates a node failure across every rank on that node", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "node_failure",
+        atNs: 5,
+        nodeId: "node0",
+        reason: "node heartbeat expired",
+      },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.terminal).toMatchObject({
+      failureAtNs: 5,
+      timestampNs: 20,
+      unsubmittedStepIds: [2, 3],
+      fault: {
+        kind: "node_failure",
+        nodeId: "node0",
+      },
+    });
+    expect(result.rankStates).toEqual([
+      { rankId: "rank-0", status: "failed", terminalAtNs: 5 },
+      { rankId: "rank-1", status: "failed", terminalAtNs: 5 },
+    ]);
+    expect(replayPlanTrace(scenario, plan, result.trace).rankStates).toEqual(
+      result.rankStates,
+    );
+  });
+
   it("preserves rank-local success completed before a later device fault", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const base = validPlan();
@@ -763,6 +794,7 @@ describe("FrozenPlan validation and execution", () => {
     expect(first.baseline.status).toBe("succeeded");
     expect(first.baselineReplay.status).toBe("succeeded");
     expect(first.cases.map((entry) => entry.id)).toEqual([
+      "node:node0",
       "device:node0:gpu0",
       "device:node0:gpu1",
       "link:node0:nvlink:forward",
