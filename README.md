@@ -41,8 +41,10 @@ Phase 3 has an initial speculative workload slice:
   replacement, deterministic LRU eviction, asynchronous prefetch, and
   independent trace replay.
 
-The initial CLI is implemented. The browser dashboard described in the design
-is not yet implemented.
+The initial CLI and browser dashboard are implemented. The dashboard runs core
+simulation in a cancellable Web Worker and exposes topology selection,
+speculative and expert-cache controls, memory/caching charts, and a recent
+event inspector.
 
 ## Direction
 
@@ -73,6 +75,7 @@ pnpm sim scenario gpu-npu
 pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
+pnpm dev:web
 ```
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,

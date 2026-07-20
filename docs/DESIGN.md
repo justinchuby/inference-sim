@@ -655,7 +655,7 @@ Exit criteria:
 
 Status: complete. The initial slice had 21 tests across static analysis, event
 ordering, pressure protocol/replay, trace mutation, and speculative
-checkpoint/restore boundaries. The total suite has since grown to 74 tests.
+checkpoint/restore boundaries. The total suite has since grown to 76 tests.
 
 ### Phase 2: FrozenPlan, Communicator, and Topology Composition
 
@@ -736,8 +736,12 @@ Status: in progress. The initial CLI lists presets, materializes built-in
 scenarios and exact memory ledgers, validates scenario YAML/JSON, runs the
 legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs.
-Compare/search, FrozenPlan file execution/export, ONNX import, progress/abort
-control, and the browser worker/UI remain.
+The initial React browser workbench uses shadcn/Radix controls and Recharts,
+runs bounded core simulations in a dedicated Worker, terminates that Worker on
+cancel, lazy-loads visualization code, and presents topology selection,
+speculative/expert-cache controls, memory/acceptance/cache charts, and recent
+iteration/route inspection. Compare/search, FrozenPlan file execution/export,
+ONNX import, trace export, and richer progress phases remain.
 
 ## 16. Testing and Delivery Gates
 
