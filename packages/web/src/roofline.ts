@@ -1,5 +1,6 @@
 import type {
   SimulationScenario,
+  SpeculativeWorkloadResult,
   TopologyCostModel,
   TopologyServingResult,
   TopologyWorkloadResult,
@@ -18,6 +19,7 @@ interface RooflineInput {
   readonly costModel: TopologyCostModel;
   readonly topology?: TopologyWorkloadResult;
   readonly serving?: TopologyServingResult;
+  readonly speculative?: SpeculativeWorkloadResult;
   readonly mode: "serving" | "pipeline" | "speculative" | "expert-cache";
 }
 
@@ -28,6 +30,7 @@ interface PointSeed {
   readonly width: number;
   readonly tokens?: number;
   readonly durationNs: number;
+  readonly invocations?: number;
   readonly componentId?: string;
   readonly weightBytes?: number;
 }
@@ -68,7 +71,8 @@ export function buildDashboardRoofline(
   const defaultWeightBytes = profile.attentionWeightBytesPerToken
     + profile.ffnWeightBytesPerToken;
   const points = seeds.flatMap((seed) => {
-    const activeBytes = seed.weightBytes ?? defaultWeightBytes;
+    const invocations = Math.max(1, seed.invocations ?? 1);
+    const activeBytes = (seed.weightBytes ?? defaultWeightBytes) * invocations;
     const flopsPerByte = profile.forwardFlopsPerToken / defaultWeightBytes;
     const workFlops = seed.weightBytes === undefined
       ? profile.forwardFlopsPerToken * Math.max(1, seed.width)
@@ -107,7 +111,7 @@ export function buildDashboardRoofline(
         ?? input.serving?.confidence
         ?? "heuristic",
       notes: [
-        `Active weights are amortized across ${Math.max(1, seed.width)} token${seed.width === 1 ? "" : "s"} in this execution step.`,
+        `${Math.max(1, seed.width)} token-work items are spread across ${invocations} model invocation${invocations === 1 ? "" : "s"}; active weights are charged once per invocation.`,
         "Predicted throughput uses simulated replay wall time; diagonal roofs use declared resource bandwidth.",
       ],
     }];
@@ -155,6 +159,7 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
         width: (current?.width ?? 0) + Math.max(1, batch.work.tokenWork),
         tokens: (current?.tokens ?? 0) + Math.max(1, batch.work.expectedOutputTokens),
         durationNs: (current?.durationNs ?? 0) + Math.max(1, batch.durationNs),
+        invocations: (current?.invocations ?? 0) + 1,
       });
     }
     const routed = input.serving.batches.filter(
@@ -178,6 +183,7 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
             (sum, batch) => sum + Math.max(1, batch.durationNs),
             0,
           ),
+          invocations: routed.length,
           weightBytes: input.model.executionProfile.ffnWeightBytesPerToken,
         }];
     return [...aggregates.values(), ...moe];
@@ -196,7 +202,14 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
       label: component.role,
       phase: "pipeline",
       componentId: component.id,
-      width: Math.max(1, component.invocationMultiplier),
+      width: Math.max(1, topology.plan.steps.filter((step) => (
+        step.operation.kind === "compute"
+        && step.operation.componentId === component.id
+      )).length),
+      invocations: Math.max(1, topology.plan.steps.filter((step) => (
+        step.operation.kind === "compute"
+        && step.operation.componentId === component.id
+      )).length),
       weightBytes: component.weightBytes,
       durationNs: Math.max(
         1,
@@ -210,15 +223,21 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
       ? "moe"
       : "decode";
   const tokens = Math.max(1, topology.metrics.committedTokens);
+  const speculativeWidth = input.speculative?.iterations.reduce(
+    (sum, iteration) => sum + iteration.proposedDraftTokens + 1,
+    0,
+  );
+  const speculativeInvocations = input.speculative?.iterations.length;
   return [{
     id: phase,
     label: phaseLabel(phase),
     phase,
     width: input.mode === "speculative"
-      ? Math.max(1, topology.plan.steps.filter(
-          (step) => step.operation.kind === "compute",
-        ).length)
+      ? Math.max(1, speculativeWidth ?? tokens)
       : 1,
+    ...(input.mode === "speculative"
+      ? { invocations: Math.max(1, speculativeInvocations ?? tokens) }
+      : {}),
     tokens,
     durationNs: Math.max(1, topology.metrics.foregroundDurationNs),
   }];
@@ -287,7 +306,24 @@ function buildBandwidthRoofs(
     bytesPerSecond: resource.bandwidthBytesPerSec,
     confidence: resource.provenance.confidence,
   }));
-  return [...domains, ...links, ...network]
+  const deviceMemory = domains.filter(
+    (roof) => roof.kind === "device_memory",
+  );
+  const aggregate = deviceMemory.length <= 1
+    ? []
+    : [{
+        id: "aggregate:device-memory",
+        label: "All device memory",
+        kind: "device_memory" as const,
+        bytesPerSecond: deviceMemory.reduce(
+          (sum, roof) => sum + roof.bytesPerSecond,
+          0,
+        ),
+        confidence: leastConfidence(deviceMemory.map(
+          (roof) => roof.confidence,
+        )),
+      }];
+  return [...aggregate, ...domains, ...links, ...network]
     .filter((roof) => roof.bytesPerSecond > 0)
     .sort((left, right) => right.bytesPerSecond - left.bytesPerSecond);
 }
@@ -299,10 +335,28 @@ function preferredLocalRoof(
   const domains = new Set(deviceIds.flatMap((id) => (
     scenario.devices.find((device) => device.id === id)?.memoryDomainIds ?? []
   )));
-  return buildBandwidthRoofs(scenario).find((roof) => (
+  const roofs = buildBandwidthRoofs(scenario);
+  if (deviceIds.length > 1) {
+    const aggregate = roofs.find(
+      (roof) => roof.id === "aggregate:device-memory",
+    );
+    if (aggregate !== undefined) {
+      return aggregate;
+    }
+  }
+  return roofs.find((roof) => (
     roof.kind === "device_memory"
     && domains.has(roof.id.replace(/^memory:/, ""))
   ));
+}
+
+function leastConfidence(
+  values: readonly DashboardRooflineResult["confidence"][],
+): DashboardRooflineResult["confidence"] {
+  for (const value of ["heuristic", "bounded", "calibrated", "exact"] as const) {
+    if (values.includes(value)) return value;
+  }
+  return "heuristic";
 }
 
 function targetDeviceIds(scenario: SimulationScenario): readonly string[] {

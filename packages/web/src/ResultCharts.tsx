@@ -8,6 +8,7 @@ import {
   Line,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   Tooltip as ChartTooltip,
@@ -16,6 +17,7 @@ import {
 } from "recharts";
 import { useMemo, useState } from "react";
 import type { DashboardResult } from "./types.js";
+import { interpretRoofline } from "./roofline-interpretation.js";
 
 export default function ResultCharts({
   result,
@@ -147,6 +149,12 @@ function RooflineChart({
   ].filter(Number.isFinite);
   const minY = Math.max(1, Math.min(...yValues) / 4);
   const maxY = Math.max(minY * 100, Math.max(...yValues) * 2);
+  const interpretation = interpretRoofline(roofline, selectedRoof, points);
+  const interpretationTone = interpretation.tone === "danger"
+    ? "border-rose-600 bg-rose-50 text-rose-950"
+    : interpretation.tone === "warning"
+      ? "border-amber-600 bg-amber-50 text-amber-950"
+      : "border-sky-700 bg-sky-50 text-sky-950";
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
@@ -159,7 +167,7 @@ function RooflineChart({
           >
             {roofline.bandwidthRoofs.map((roof) => (
               <option key={roof.id} value={roof.id}>
-                {roof.kind.replaceAll("_", " ")} · {roof.label}
+                {roof.kind.replaceAll("_", " ")} · {roof.label} · {formatBytesPerSecond(roof.bytesPerSecond)}
               </option>
             ))}
           </select>
@@ -183,6 +191,21 @@ function RooflineChart({
           ? " this dtype has no defensible compute ceiling, so none is invented."
           : ` the horizontal line is a ${roofline.computeRoof.evidence.replaceAll("_", " ")} ceiling for ${roofline.computeRoof.dtype}.`}
       </p>
+      <div className={`grid gap-3 border-l-2 px-3 py-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] ${interpretationTone}`} role="status">
+        <div>
+          <div className="text-[11px] font-bold uppercase text-current opacity-70">
+            What this run suggests
+          </div>
+          <div className="mt-1 text-sm font-bold">{interpretation.verdict}</div>
+          <p className="mt-1 text-xs leading-5">{interpretation.explanation}</p>
+        </div>
+        <div className="border-t border-current/15 pt-3 lg:border-l lg:border-t-0 lg:pl-3 lg:pt-0">
+          <div className="text-[11px] font-bold uppercase text-current opacity-70">
+            Next useful experiment
+          </div>
+          <p className="mt-1 text-xs leading-5">{interpretation.nextStep}</p>
+        </div>
+      </div>
       <div className="roofline-frame" role="img" aria-describedby="roofline-description" aria-label="Logarithmic hierarchical roofline chart">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart margin={{ left: 22, right: 22, top: 10, bottom: 8 }}>
@@ -209,6 +232,16 @@ function RooflineChart({
             />
             <ChartTooltip content={<RooflineTooltip roof={selectedRoof} />} />
             <Legend verticalAlign="top" height={28} wrapperStyle={{ fontSize: 11 }} />
+            {interpretation.knee !== undefined
+              ? (
+                  <ReferenceLine
+                    x={interpretation.knee}
+                    stroke="#71717a"
+                    strokeDasharray="2 4"
+                    label={{ value: "knee", position: "insideTopRight", fontSize: 10, fill: "#71717a" }}
+                  />
+                )
+              : null}
             <Line data={samples} dataKey="bandwidth" name={`${selectedRoof.label} bandwidth`} stroke="#d97706" strokeWidth={2} dot={false} isAnimationActive={false} />
             {roofline.computeRoof
               ? <Line data={samples} dataKey="compute" name="Effective compute" stroke="#047857" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
@@ -220,7 +253,7 @@ function RooflineChart({
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] border-collapse text-left text-xs">
           <thead className="border-y border-zinc-200 text-zinc-500">
-            <tr><th className="py-2">Work</th><th>Phase</th><th>Intensity</th><th>Predicted rate</th><th>Predicted tokens</th><th>Modeled limit</th></tr>
+            <tr><th className="py-2">Work</th><th>Phase</th><th>Intensity</th><th>Predicted rate</th><th>Predicted tokens</th><th>Interpretation</th></tr>
           </thead>
           <tbody>
             {points.map((point) => (
@@ -230,14 +263,25 @@ function RooflineChart({
                 <td>{formatLogNumber(point.arithmeticIntensity)} FLOP/B</td>
                 <td>{formatFlops(point.predictedFlopsPerSecond)}</td>
                 <td>{point.predictedTokensPerSecond === undefined ? "n/a" : `${formatLogNumber(point.predictedTokensPerSecond)} tok/s`}</td>
-                <td>{point.limitingRoofId === "compute"
-                  ? "effective compute"
-                  : roofline.bandwidthRoofs.find((roof) => roof.id === point.limitingRoofId)?.label ?? "unresolved"}</td>
+                <td className="max-w-72 py-2 leading-4 text-zinc-600">
+                  {interpretation.pointLabels[point.id] ?? "No interpretation available."}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <details className="border-t border-zinc-200 pt-2 text-xs text-zinc-600">
+        <summary className="cursor-pointer font-semibold text-zinc-700">
+          Terms and evidence limits
+        </summary>
+        <div className="mt-2 grid gap-2 leading-5 md:grid-cols-2">
+          <p><strong>Intensity:</strong> useful arithmetic per byte moved. Farther right means more weight reuse or more computation per byte.</p>
+          <p><strong>Knee:</strong> where the selected bandwidth roof meets effective compute. Left is bandwidth-sensitive; right is compute-sensitive.</p>
+          <p><strong>Predicted:</strong> produced by the simulator replay. It is not measured hardware throughput.</p>
+          <p><strong>Counterfactual tiers:</strong> PCIe, network, and SSD lines show what that tier could sustain if the modeled bytes crossed it.</p>
+        </div>
+      </details>
     </div>
   );
 }
@@ -280,6 +324,13 @@ function formatLogNumber(value: number): string {
   if (value >= 10) return value.toFixed(0);
   if (value >= 1) return value.toFixed(1);
   return value.toPrecision(2);
+}
+
+function formatBytesPerSecond(value: number): string {
+  if (value >= 1e12) return `${(value / 1e12).toFixed(2)} TB/s`;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(0)} GB/s`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(0)} MB/s`;
+  return `${formatLogNumber(value)} B/s`;
 }
 
 function TopologyComparisonChart({

@@ -148,6 +148,7 @@ export function simulateDashboardExecution(
           model: config.modelBinding,
           costModel,
           topology,
+          speculative: workload.result,
           mode: config.mode,
         }),
         ...pipelineExecutionSummary([topology]),

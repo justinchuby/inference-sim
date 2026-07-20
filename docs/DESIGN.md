@@ -1188,6 +1188,14 @@ unless the selected device contract explicitly supplies compatible evidence.
 The UI keeps the diagonal bandwidth roofs and reports the limiting resource as
 unresolved instead of manufacturing a low-bit peak.
 
+The result view interprets the selected resource and visible phases. It reports
+the arithmetic-intensity knee, classifies each point as bandwidth- or
+compute-sensitive only when both roofs are comparable, proposes a bounded next
+experiment, and flags predicted rates above the selected roof as an evidence
+conflict rather than impossible utilization. Aggregate multi-device work uses
+an aggregate device-memory roof by default. Selecting one device's memory for
+aggregate work produces a scope-mismatch diagnostic, not a bottleneck claim.
+
 The initial arithmetic-intensity contract accounts for architecture-derived
 forward FLOPs and active weight bytes amortized over the execution width.
 Pipeline component FLOPs are proportional estimates from component weight
