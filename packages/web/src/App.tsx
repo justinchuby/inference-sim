@@ -19,6 +19,7 @@ import {
 } from "react";
 import {
   CheckCircle2,
+  CircleHelp,
   Clock3,
   Cpu,
   Database,
@@ -2843,8 +2844,16 @@ function ConfigurationPanel({
                   />
                 </>
               )}
+          <div className="flex items-center gap-1.5 border-t border-zinc-200 pt-3 text-xs font-semibold text-zinc-700">
+            <span>Continuous batching</span>
+            <ParameterHelp
+              label="Continuous batching"
+              description="Requests enter at their arrival time. Each non-preemptive scheduler batch selects decode work first, then fills remaining sequence and token capacity with chunked prefill. Completed requests release their KV allocation before the next batch."
+            />
+          </div>
           <SliderField
             label="Requests"
+            description="Total independent requests in this run. Requests share the prompt and output lengths below, but arrive separately according to Arrival gap."
             value={config.serving.requestCount}
             minimum={1}
             maximum={32}
@@ -2857,6 +2866,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Arrival gap"
+            description="Time between consecutive request arrivals. Zero queues every request at once; a smaller gap increases overlap and queue pressure."
             value={config.serving.arrivalGapUs}
             suffix=" us"
             minimum={0}
@@ -2870,6 +2880,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Prompt tokens"
+            description="Input tokens per request. The scheduler processes these through chunked prefill before that request can decode."
             value={config.serving.promptTokens}
             minimum={64}
             maximum={2048}
@@ -2882,6 +2893,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Output tokens"
+            description="Tokens generated per request. When a request reaches this count, it completes and releases its KV cache allocation."
             value={config.serving.outputTokens}
             minimum={8}
             maximum={256}
@@ -2894,6 +2906,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Batch sequences"
+            description="Maximum request slices selected for one scheduler batch across decode and prefill. This limits per-batch sequence width, not the number of requests that may be queued or retain KV state."
             value={config.serving.maxBatchSize}
             minimum={1}
             maximum={16}
@@ -2906,6 +2919,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Batch token budget"
+            description="Maximum token work in one scheduler batch: prefill tokens plus target decode or verification width. In target-only decoding, each selected decode request normally consumes one token of this budget."
             value={config.serving.maxBatchTokens}
             minimum={16}
             maximum={512}
@@ -2918,6 +2932,7 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Prefill chunk"
+            description="Maximum prompt tokens taken from one request in one batch. Smaller chunks let long prompts interleave more often with decode, but require more scheduler batches."
             value={config.serving.prefillChunkTokens}
             minimum={16}
             maximum={512}
@@ -4891,6 +4906,7 @@ function Field({
 
 function SliderField({
   label,
+  description,
   value,
   suffix = "",
   minimum,
@@ -4900,6 +4916,7 @@ function SliderField({
   onChange,
 }: {
   readonly label: string;
+  readonly description?: string;
   readonly value: number;
   readonly suffix?: string;
   readonly minimum: number;
@@ -4911,7 +4928,17 @@ function SliderField({
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3 text-xs">
-        <span className="font-semibold text-zinc-600">{label}</span>
+        <span className="flex min-w-0 items-center gap-1.5 font-semibold text-zinc-600">
+          <span>{label}</span>
+          {description === undefined
+            ? null
+            : (
+                <ParameterHelp
+                  label={label}
+                  description={description}
+                />
+              )}
+        </span>
         <span className="font-bold tabular-nums text-zinc-900">
           {value}{suffix}
         </span>
@@ -4926,6 +4953,34 @@ function SliderField({
         aria-label={label}
       />
     </div>
+  );
+}
+
+function ParameterHelp({
+  label,
+  description,
+}: {
+  readonly label: string;
+  readonly description: string;
+}): React.JSX.Element {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="grid size-5 shrink-0 place-items-center text-zinc-400 transition-colors hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600"
+          aria-label={`Explain ${label}`}
+        >
+          <CircleHelp className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="right"
+        className="max-w-72 text-xs leading-5"
+      >
+        {description}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
