@@ -93,7 +93,9 @@ TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
 inspector. Serving can run one selected topology or compare all six in one
 replay-verified view.
 The dashboard is React-based and extends the existing shadcn/Radix component
-layer; simulation and expert-owner semantics remain in the shared core.
+layer. Its expert-placement selector and the CLI's `placement_strategy` feed
+the same contiguous/round-robin core contract; neither product surface
+reimplements owner semantics.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it

@@ -260,6 +260,7 @@ export function topologyProfileFromSpeculative(
 
 export function topologyProfileFromExpertCache(
   result: ExpertCacheWorkloadResult,
+  placementStrategy: TopologyExpertPlacement["strategy"] = "contiguous",
 ): TopologyWorkloadProfile {
   const initialization = result.trace.find(
     (event) => event.kind === "initialize",
@@ -283,6 +284,11 @@ export function topologyProfileFromExpertCache(
       "expert-cache initialization has duplicate expert ids",
     );
   }
+  const expertPlacement: TopologyExpertPlacement = {
+    strategy: placementStrategy,
+    expertIds: initialization.config.experts.map((expert) => expert.id),
+  };
+  validateExpertPlacement(expertPlacement, "expert-cache workload");
   const bytesForExpert = (expertId: string): number => {
     const bytes = expertBytesById.get(expertId);
     if (bytes === undefined) {
@@ -335,10 +341,7 @@ export function topologyProfileFromExpertCache(
   return {
     id: "expert-cache",
     batchSize: 1,
-    expertPlacement: {
-      strategy: "contiguous",
-      expertIds: initialization.config.experts.map((expert) => expert.id),
-    },
+    expertPlacement,
     units: result.routes.map((route, index) => ({
       id: `route-${index}`,
       targetTokenWidth: 1,
@@ -588,7 +591,7 @@ export function simulateTopologyWorkload(
         ? "transport timing uses declared directed-link bandwidth and latency"
         : "transport timing uses exact-path calibration curves without extrapolation",
       scenario.execution.parallelism.expert > 1
-        ? "routed experts use the profile's explicit owner mapping; demand loads, prefetches, and FFN work execute only on the owning EP rank"
+        ? `routed experts use the profile's explicit ${profile.expertPlacement?.strategy ?? "unavailable"} owner mapping; demand loads, prefetches, and FFN work execute only on the owning EP rank`
         : "tensor-sharded FFN expert-load bytes are evenly divided across participating FFN placements",
       "warm and cold expert loads originate in each FFN placement's local host domain",
       "foreground completion is the final workload-unit terminal; independent background transfers may drain afterward",
@@ -678,6 +681,11 @@ class WorkloadPlanCompiler {
   private nextStepId = 0;
   private readonly collectiveSequenceByGroup = new Map<string, number>();
   private readonly expertOwnerByKey = new Map<string, PartitionPlacement>();
+  private readonly lastWriterByAllocation = new Map<string, number>();
+  private readonly readersSinceWriteByAllocation = new Map<
+    string,
+    Set<number>
+  >();
   private previousTerminalStepId?: number;
   private readonly backgroundPrefetchTerminalByDomain = new Map<
     string,
@@ -1735,7 +1743,49 @@ class WorkloadPlanCompiler {
     input: Omit<PlanStep, "id">,
   ): number {
     const id = this.nextStepId++;
-    this.steps.push({ id, ...input });
+    const reads = unique(input.reads);
+    const writes = unique(input.writes);
+    const writeSet = new Set(writes);
+    const hazardDependencies: number[] = [];
+    for (const allocationId of reads) {
+      const writer = this.lastWriterByAllocation.get(allocationId);
+      if (writer !== undefined) {
+        hazardDependencies.push(writer);
+      }
+    }
+    for (const allocationId of writes) {
+      const writer = this.lastWriterByAllocation.get(allocationId);
+      if (writer !== undefined) {
+        hazardDependencies.push(writer);
+      }
+      hazardDependencies.push(
+        ...(this.readersSinceWriteByAllocation.get(allocationId) ?? []),
+      );
+    }
+    const dependencies = uniqueNumbers([
+      ...input.dependencies,
+      ...hazardDependencies,
+    ]);
+    this.steps.push({
+      id,
+      ...input,
+      dependencies,
+      reads,
+      writes,
+    });
+    for (const allocationId of writes) {
+      this.lastWriterByAllocation.set(allocationId, id);
+      this.readersSinceWriteByAllocation.delete(allocationId);
+    }
+    for (const allocationId of reads) {
+      if (writeSet.has(allocationId)) {
+        continue;
+      }
+      const readers =
+        this.readersSinceWriteByAllocation.get(allocationId) ?? new Set();
+      readers.add(id);
+      this.readersSinceWriteByAllocation.set(allocationId, readers);
+    }
     if (this.steps.length > this.scenario.execution.maxEvents) {
       throw new TopologyWorkloadError(
         `compiled plan exceeds scenario maxEvents ${this.scenario.execution.maxEvents}`,

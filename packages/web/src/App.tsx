@@ -119,6 +119,7 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     prefillChunkTokens: 64,
   },
   expertCache: {
+    placementStrategy: "contiguous",
     tokenCount: 96,
     topK: 2,
     expertCount: 16,
@@ -1037,6 +1038,33 @@ function ConfigurationPanel({
               )}
         </TabsContent>
         <TabsContent value="expert-cache" className="space-y-5">
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
+              Expert placement
+            </span>
+            <Select
+              value={config.expertCache.placementStrategy}
+              disabled={disabled}
+              onValueChange={(placementStrategy) => onChange({
+                ...config,
+                expertCache: {
+                  ...config.expertCache,
+                  placementStrategy:
+                    placementStrategy as DashboardRunConfig[
+                      "expertCache"
+                    ]["placementStrategy"],
+                },
+              })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="contiguous">Contiguous</SelectItem>
+                <SelectItem value="round_robin">Round robin</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
           <div className="mb-4">
             <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
               Warm prefetch

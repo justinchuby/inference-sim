@@ -53,6 +53,7 @@ export interface DashboardRunConfig {
     readonly prefillChunkTokens: number;
   };
   readonly expertCache: {
+    readonly placementStrategy: "contiguous" | "round_robin";
     readonly tokenCount: number;
     readonly topK: number;
     readonly expertCount: number;

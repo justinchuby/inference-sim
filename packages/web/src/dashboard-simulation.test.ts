@@ -30,6 +30,7 @@ const base: DashboardRunConfig = {
     prefillChunkTokens: 32,
   },
   expertCache: {
+    placementStrategy: "contiguous",
     tokenCount: 32,
     topK: 2,
     expertCount: 12,
@@ -138,6 +139,20 @@ describe("simulateDashboard", () => {
     expect(first.expertCache?.metrics.adaptivePrefetchDecisions)
       .toBeGreaterThan(0);
     expect(first.topology.operationCounts.transfer).toBeGreaterThan(0);
+    expect(first.topology.assumptions.some(
+      (assumption) => assumption.includes("explicit contiguous owner mapping"),
+    )).toBe(true);
+
+    const roundRobin = simulateDashboard({
+      ...config,
+      expertCache: {
+        ...config.expertCache,
+        placementStrategy: "round_robin",
+      },
+    });
+    expect(roundRobin.topology.assumptions.some(
+      (assumption) => assumption.includes("explicit round_robin owner mapping"),
+    )).toBe(true);
   });
 
   it("runs continuous serving with replayed request timing", () => {

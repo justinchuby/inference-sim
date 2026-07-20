@@ -48,6 +48,7 @@ import {
   type TopologyServingResult,
   type TopologyServingExpertCacheConfig,
   type TopologyCostModel,
+  type TopologyExpertPlacement,
   type TopologyWorkloadProfile,
   type ConcurrentPlanCampaignOptions,
 } from "@inference-sim/core";
@@ -897,7 +898,24 @@ function parseServingExpertCacheConfig(
       revision as typeof SERVING_EXPERT_CACHE_CONTRACT_REVISION,
     cache: parsed.cache,
     topK,
+    placementStrategy: requireExpertPlacementStrategy(optionalString(
+      cache,
+      "placement_strategy",
+      "contiguous",
+      "expert_cache",
+    )),
   };
+}
+
+function requireExpertPlacementStrategy(
+  value: string,
+): TopologyExpertPlacement["strategy"] {
+  if (value !== "contiguous" && value !== "round_robin") {
+    throw new Error(
+      `expert_cache.placement_strategy must be contiguous or round_robin; got ${value}`,
+    );
+  }
+  return value;
 }
 
 function parseServingSpeculativeConfig(
@@ -1050,7 +1068,16 @@ function buildTopologyProfile(
   if (config.expert_cache !== undefined) {
     const workload = parseExpertCacheConfig(config);
     const result = simulateExpertCacheWorkload(workload);
-    return topologyProfileFromExpertCache(result);
+    const cache = requireRecord(config.expert_cache, "expert_cache");
+    return topologyProfileFromExpertCache(
+      result,
+      requireExpertPlacementStrategy(optionalString(
+        cache,
+        "placement_strategy",
+        "contiguous",
+        "expert_cache",
+      )),
+    );
   }
   if (config.target_only !== undefined) {
     const targetOnly = requireRecord(config.target_only, "target_only");

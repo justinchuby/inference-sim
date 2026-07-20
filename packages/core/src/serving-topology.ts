@@ -54,6 +54,7 @@ export interface TopologyServingExpertCacheConfig {
     typeof SERVING_EXPERT_CACHE_CONTRACT_REVISION;
   readonly cache: ExpertCacheConfig;
   readonly topK: number;
+  readonly placementStrategy?: TopologyExpertPlacement["strategy"];
 }
 
 export interface TopologyServingExpertCacheResult {
@@ -176,7 +177,7 @@ export function simulateTopologyServingWorkload(
     expertCacheConfig === undefined
       ? undefined
       : {
-          strategy: "contiguous",
+          strategy: expertCacheConfig.placementStrategy ?? "contiguous",
           expertIds: expertCacheConfig.cache.experts.map(
             (expert) => expert.id,
           ),
@@ -899,6 +900,15 @@ function validateExpertCacheComposition(
   if (!Number.isSafeInteger(config.topK) || config.topK <= 0) {
     throw new Error("serving expert-cache topK must be a positive safe integer");
   }
+  if (
+    config.placementStrategy !== undefined
+    && config.placementStrategy !== "contiguous"
+    && config.placementStrategy !== "round_robin"
+  ) {
+    throw new Error(
+      `serving expert-cache has invalid placement strategy ${String(config.placementStrategy)}`,
+    );
+  }
   if (config.topK > config.cache.experts.length) {
     throw new Error(
       `serving expert-cache topK ${config.topK} exceeds ${config.cache.experts.length} experts`,
@@ -916,7 +926,7 @@ function validateExpertCacheComposition(
     placement.requiredCapabilities.includes("ffn")
   ));
   const placement: TopologyExpertPlacement = {
-    strategy: "contiguous",
+    strategy: config.placementStrategy ?? "contiguous",
     expertIds: config.cache.experts.map((expert) => expert.id),
   };
   if (scenario.execution.parallelism.expert > 1) {

@@ -390,6 +390,52 @@ describe("topology-aware workload execution", () => {
     expect(warm?.dependencies).not.toContain(coldStart?.id);
   });
 
+  it("orders cross-owner transfers that alias one staging allocation", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        id: "shared-staging-routes",
+        batchSize: 1,
+        expertPlacement: expertPlacement("round_robin"),
+        units: [{
+          id: "shared-staging-0",
+          targetTokenWidth: 1,
+          committedTokens: 1,
+          draftTokens: 0,
+          activeExperts: 2,
+          expertRouted: true,
+          routedExperts: [
+            {
+              expertId: "e0",
+              sourceTier: "cold",
+              loadBytes: expertBytes,
+            },
+            {
+              expertId: "e1",
+              sourceTier: "cold",
+              loadBytes: expertBytes,
+            },
+          ],
+          warmLoadBytes: 0,
+          coldLoadBytes: 2 * expertBytes,
+        }],
+      },
+    );
+    const stagingWriters = result.plan.steps.filter((step) => (
+      step.writes.includes("expert-cache-host")
+    ));
+    const firstConsumer = result.plan.steps.find((step) => (
+      step.reads.includes("expert-cache-host")
+      && step.writes.includes("expert-hot-cache:target-shard-0")
+    ));
+
+    expect(stagingWriters).toHaveLength(2);
+    expect(firstConsumer).toBeDefined();
+    expect(stagingWriters[1].dependencies).toContain(firstConsumer?.id);
+    expect(result.execution.status).toBe("succeeded");
+  });
+
   it("rejects incomplete, duplicate, and unplaced routed assignments", () => {
     const base = {
       id: "invalid-routes",
@@ -581,7 +627,8 @@ describe("topology-aware workload execution", () => {
       topK: 2,
       tokenIntervalNs: 1,
     });
-    const profile = topologyProfileFromExpertCache(cache);
+    const profile = topologyProfileFromExpertCache(cache, "round_robin");
+    expect(profile.expertPlacement?.strategy).toBe("round_robin");
 
     for (const unit of profile.units) {
       const routed = unit.routedExperts ?? [];

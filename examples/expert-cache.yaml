@@ -1,4 +1,5 @@
 expert_cache:
+  placement_strategy: contiguous
   hot_capacity_bytes: 201326592
   warm_capacity_bytes: 402653184
   warm_to_hot_latency_ns: 400000

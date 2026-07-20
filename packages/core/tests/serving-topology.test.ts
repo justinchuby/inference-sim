@@ -538,6 +538,17 @@ describe("topology-aware serving", () => {
       undefined,
       {
         contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache,
+        topK: 1,
+        placementStrategy: "hashed" as "contiguous",
+      },
+    )).toThrow("invalid placement strategy hashed");
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
         cache: {
           ...cache,
           experts: largeExperts,

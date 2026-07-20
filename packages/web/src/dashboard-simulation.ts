@@ -96,7 +96,10 @@ export function simulateDashboard(
     mode: config.mode,
     topology: summarizeTopology(simulateTopologyWorkload(
       scenario,
-      topologyProfileFromExpertCache(workload.result),
+      topologyProfileFromExpertCache(
+        workload.result,
+        config.expertCache.placementStrategy,
+      ),
       costModel,
     )),
     expertCache: workload.dashboard,
@@ -376,6 +379,7 @@ function buildServingExpertCacheConfig(
     contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
     cache: expert.cache,
     topK: expert.topK,
+    placementStrategy: config.expertCache.placementStrategy,
   };
 }
 

@@ -217,6 +217,7 @@ speculative_token_trace:
     const path = join(directory, "expert-cache.yaml");
     await writeFile(path, `
 expert_cache:
+  placement_strategy: round_robin
   hot_capacity_bytes: 144
   warm_capacity_bytes: 144
   warm_to_hot_latency_ns: 5
@@ -257,10 +258,14 @@ workload:
         allReduce: number;
         allToAll: number;
       };
+      assumptions: string[];
     };
     expect(topology.operationCounts.allReduce).toBe(3);
     expect(topology.operationCounts.allToAll).toBe(6);
     expect(topology.operationCounts.collective).toBe(9);
+    expect(topology.assumptions.some(
+      (assumption) => assumption.includes("explicit round_robin owner mapping"),
+    )).toBe(true);
   });
 
   it("runs continuous serving through a selected topology", async () => {

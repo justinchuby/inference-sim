@@ -279,6 +279,13 @@ sets before enqueue:
 - dropping an observation handle does not release backend ownership; and
 - free/reuse occurs only after terminal success or abort quiescence.
 
+Topology compilation also inserts allocation hazard dependencies in source-plan
+order. A read waits for the last writer; a write waits for the last writer and
+all readers since that write. Read/read remains parallel. This RAW/WAR/WAW
+closure is required even when otherwise independent owner transfers alias one
+host staging allocation; resource-lane serialization alone does not establish
+buffer lifetime.
+
 ### 8.4 Concurrent Plan Campaigns
 
 Multiple valid `FrozenPlan` instances may be admitted into one deterministic
@@ -635,11 +642,12 @@ round_robin owner = i mod EP
 ```
 
 The current expert-cache and serving adapters select `contiguous`, matching the
-recommended initial onnx-genai static placement. A caller may request
-`round_robin` only by declaring it in the workload profile. Missing experts,
-duplicate expert IDs, incomplete per-token top-K assignments, duplicate
-assignments within one token, an FFN-placement count different from `EP`, or
-ambiguous communicator membership are fatal input errors.
+recommended initial onnx-genai static placement. Workload profiles, the CLI
+`placement_strategy`, and the React workbench's shadcn/Radix selector may
+explicitly request `round_robin`; all three feed the same core contract.
+Missing experts, duplicate expert IDs, incomplete per-token top-K assignments,
+duplicate assignments within one token, an FFN-placement count different from
+`EP`, or ambiguous communicator membership are fatal input errors.
 
 The expert-cache initialization trace is authoritative for each expert's byte
 extent. Topology projection resolves route and load identities through that

@@ -23,6 +23,7 @@ serving:
 
 expert_cache:
   contract_revision: 2
+  placement_strategy: contiguous
   top_k: 2
   hot_capacity_bytes: 268435456
   warm_capacity_bytes: 268435456
