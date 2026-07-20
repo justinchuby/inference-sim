@@ -1,6 +1,7 @@
 import {
   buildMultiGpuRingScenario,
   buildScenarioPreset,
+  buildTopology,
   type ScenarioPresetName,
   type SimulationScenario,
 } from "@inference-sim/core";
@@ -74,6 +75,10 @@ import {
 } from "./scenario-import.js";
 import { importModelPackage } from "./model-import-client.js";
 import type { ImportedModelPackage } from "./model-package-import.js";
+import {
+  calculateIdealRoofline,
+  summarizeModelPackage,
+} from "./model-metrics.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -1337,7 +1342,12 @@ export function App(): React.JSX.Element {
                   />
                 )
               : modelPackage.result
-              ? <ModelPackageOverview modelPackage={modelPackage.result} />
+              ? (
+                  <ModelPackageOverview
+                    modelPackage={modelPackage.result}
+                    scenario={selectedScenario}
+                  />
+                )
               : runState.status === "idle" && selectedScenario
               ? <TopologyConfigurationPreview scenario={selectedScenario} />
               : <EmptyState state={runState} />}
@@ -3202,6 +3212,14 @@ function OnnxStaticResults({
 }: {
   readonly result: OnnxStaticBrowserResult;
 }): React.JSX.Element {
+  const idealRoofline = useMemo(() => calculateIdealRoofline(
+    result.model,
+    buildTopology(result.config.hardwarePreset),
+    result.config.parallelism.tensorParallel
+      * result.config.parallelism.pipelineParallel
+      * result.config.parallelism.expertParallel
+      * result.config.parallelism.dataParallel,
+  ), [result]);
   const firstDevice = result.analysis.memoryBreakdown[0];
   const used = firstDevice === undefined
     ? 0
@@ -3225,11 +3243,21 @@ function OnnxStaticResults({
         </div>
       </div>
 
-      <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
         <OnnxMetric
           label="Weight inventory"
           value={formatBytes(result.manifest.initializerLogicalBytes)}
           detail={`${result.model.totalParams.toLocaleString()} elements`}
+        />
+        <OnnxMetric
+          label="Forward work"
+          value={formatFlops(idealRoofline.forwardFlopsPerToken)}
+          detail={`${formatBytes(idealRoofline.activeWeightBytesPerToken)} active weights / token`}
+        />
+        <OnnxMetric
+          label="Ideal roofline"
+          value={formatRate(idealRoofline.rooflineCeilingTokensPerSec)}
+          detail={`${idealRoofline.limitingResource.replace("_", " ")} ceiling`}
         />
         <OnnxMetric
           label="Device used"
@@ -3253,6 +3281,34 @@ function OnnxStaticResults({
           detail={`${result.analysis.estimatedThroughput.timeToFirstTokenMs.toFixed(2)} ms TTFT`}
         />
       </div>
+
+      <section>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-bold">Theoretical hardware ceilings</h2>
+          <Badge variant="warning">ideal upper bound</Badge>
+        </div>
+        <div className="grid gap-px border border-zinc-200 bg-zinc-200 sm:grid-cols-2">
+          <OnnxMetric
+            label="Peak compute ceiling"
+            value={idealRoofline.computeCeilingTokensPerSec === undefined
+              ? "Unavailable"
+              : formatRate(idealRoofline.computeCeilingTokensPerSec)}
+            detail={idealRoofline.aggregatePeakComputeFlops === 0
+              ? "Selected dtype has no declared peak"
+              : `${formatFlops(idealRoofline.aggregatePeakComputeFlops)}/s aggregate`}
+          />
+          <OnnxMetric
+            label="Weight-bandwidth ceiling"
+            value={formatRate(idealRoofline.bandwidthCeilingTokensPerSec)}
+            detail={`${formatBandwidth(idealRoofline.aggregateMemoryBandwidthBytesPerSec)} aggregate`}
+          />
+        </div>
+        <p className="mt-2 text-[11px] leading-5 text-zinc-500">
+          Ideal roofline assumes perfect device scaling and no KV, activation,
+          communication, scheduling, or kernel overhead. Modeled throughput
+          above applies utilization assumptions and is the planning estimate.
+        </p>
+      </section>
 
       <section>
         <div className="mb-2 flex items-center justify-between">
@@ -4095,9 +4151,15 @@ function RunProgress({ state }: { readonly state: RunState }): React.JSX.Element
 
 function ModelPackageOverview({
   modelPackage,
+  scenario,
 }: {
   readonly modelPackage: ImportedModelPackage;
+  readonly scenario?: SimulationScenario;
 }): React.JSX.Element {
+  const metrics = useMemo(
+    () => summarizeModelPackage(modelPackage, scenario),
+    [modelPackage, scenario],
+  );
   const components = modelPackage.metadata.components.length > 0
     ? modelPackage.metadata.components
     : modelPackage.models.map((model) => ({
@@ -4123,6 +4185,39 @@ function ModelPackageOverview({
           </Badge>
         </div>
       </div>
+      <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-5">
+        <OnnxMetric
+          label="Package size"
+          value={formatBytes(metrics.packageBytes)}
+          detail={`${modelPackage.fileCount} local files`}
+        />
+        <OnnxMetric
+          label="Weight inventory"
+          value={formatBytes(metrics.weightBytes)}
+          detail={`${formatLargeCount(metrics.parameterCount)} parameters`}
+        />
+        <OnnxMetric
+          label="Graph"
+          value={formatLargeCount(metrics.graphNodes)}
+          detail={`${metrics.components.length} ONNX model${metrics.components.length === 1 ? "" : "s"}`}
+        />
+        <OnnxMetric
+          label="Forward work"
+          value={metrics.forwardFlopsPerToken === undefined
+            ? "Unavailable"
+            : formatFlops(metrics.forwardFlopsPerToken)}
+          detail={metrics.components.length === 1
+            ? `${metrics.completeComputeProfiles}/1 complete profile`
+            : "pipeline schedule required"}
+        />
+        <OnnxMetric
+          label="Ideal decode ceiling"
+          value={metrics.bandwidthCeilingTokensPerSec === undefined
+            ? "Unavailable"
+            : formatRate(metrics.bandwidthCeilingTokensPerSec)}
+          detail="weight-bandwidth upper bound"
+        />
+      </div>
       <section>
         <h2 className="mb-3 text-sm font-bold">Components</h2>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -4130,6 +4225,11 @@ function ModelPackageOverview({
             const model = modelPackage.models.find((candidate) => (
               candidate.fileName === component.filename
             ));
+            const componentMetrics = model === undefined
+              ? undefined
+              : metrics.components.find(
+                (entry) => entry.fileName === model.fileName,
+              );
             return (
               <div
                 key={component.id}
@@ -4148,8 +4248,12 @@ function ModelPackageOverview({
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
                   <DiagnosticValue
-                    label="Nodes"
-                    value={String(model?.manifest.graph.nodeCount ?? 0)}
+                    label="Parameters"
+                    value={model === undefined
+                      ? "N/A"
+                      : formatLargeCount(
+                        model.manifest.totals.initializerElements,
+                      )}
                   />
                   <DiagnosticValue
                     label="Weights"
@@ -4157,11 +4261,79 @@ function ModelPackageOverview({
                       model?.manifest.totals.initializerLogicalBytes ?? 0,
                     )}
                   />
+                  <DiagnosticValue
+                    label="Forward work"
+                    value={componentMetrics?.forwardFlopsPerToken === undefined
+                      ? "Unavailable"
+                      : formatFlops(componentMetrics.forwardFlopsPerToken)}
+                  />
+                  <DiagnosticValue
+                    label="ONNX graph"
+                    value={model === undefined
+                      ? "N/A"
+                      : `${model.manifest.graph.nodeCount.toLocaleString()} nodes`}
+                  />
+                  <DiagnosticValue
+                    label="BW ceiling"
+                    value={componentMetrics?.activeWeightBytesPerToken === undefined
+                      || metrics.hotMemoryBandwidthBytesPerSec === 0
+                      ? "Unavailable"
+                      : formatRate(
+                        metrics.hotMemoryBandwidthBytesPerSec
+                          / componentMetrics.activeWeightBytesPerToken,
+                      )}
+                  />
+                  <DiagnosticValue
+                    label="Operator kinds"
+                    value={componentMetrics === undefined
+                      ? "N/A"
+                      : componentMetrics.operatorKinds.toLocaleString()}
+                  />
                 </div>
+                {model === undefined
+                  ? null
+                  : <ComponentArchitecture metrics={componentMetrics} />}
               </div>
             );
           })}
         </div>
+      </section>
+      <section className="border-y border-zinc-200 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold">Theoretical speed boundary</h2>
+          <Badge variant="warning">ideal upper bound</Badge>
+        </div>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <DiagnosticValue
+            label="Hot-memory bandwidth"
+            value={metrics.hotMemoryBandwidthBytesPerSec === 0
+              ? "Unavailable"
+              : formatBandwidth(metrics.hotMemoryBandwidthBytesPerSec)}
+          />
+          <DiagnosticValue
+            label="Active weight stream"
+            value={metrics.activeWeightBytesPerToken === undefined
+              ? metrics.components.length > 1
+                ? "Pipeline schedule required"
+                : "Unavailable"
+              : `${formatBytes(metrics.activeWeightBytesPerToken)} / token`}
+          />
+          <DiagnosticValue
+            label="Weight-streaming ceiling"
+            value={metrics.bandwidthCeilingTokensPerSec === undefined
+              ? "Unavailable"
+              : formatRate(metrics.bandwidthCeilingTokensPerSec)}
+          />
+        </div>
+        <p className="mt-3 text-[11px] leading-5 text-zinc-500">
+          This is a batch-1 algebraic ceiling from declared hot-memory
+          bandwidth divided by active model weights. It assumes perfect
+          sharding and ignores compute, KV, activations, communication,
+          scheduling, and kernel overhead. The selected runtime simulation does
+          not yet bind imported ONNX operator work into its timing model.
+          Multi-model packages report ceilings per component until an execution
+          schedule defines component invocation rates.
+        </p>
       </section>
       <section className="border-t border-zinc-200 pt-4">
         <h2 className="mb-3 text-sm font-bold">Dataflow</h2>
@@ -4194,6 +4366,41 @@ function ModelPackageOverview({
               </div>
             )}
       </section>
+    </div>
+  );
+}
+
+function ComponentArchitecture({
+  metrics,
+}: {
+  readonly metrics: ReturnType<
+    typeof summarizeModelPackage
+  >["components"][number] | undefined;
+}): React.JSX.Element | null {
+  if (metrics === undefined) {
+    return null;
+  }
+  const architecture = metrics.architecture;
+  const details = architecture === undefined
+    ? ["Architecture metadata incomplete"]
+    : [
+        `${architecture.layers} layers`,
+        `hidden ${architecture.hiddenSize.toLocaleString()}`,
+        `${architecture.attentionHeads} attention / ${architecture.kvHeads} KV heads`,
+        ...(architecture.experts === undefined
+          ? []
+          : [`${architecture.activeExperts}/${architecture.experts} active experts`]),
+      ];
+  return (
+    <div className="mt-3 border-t border-zinc-200 pt-2">
+      <div className="text-[11px] leading-5 text-zinc-500">
+        {details.join(" · ")}
+      </div>
+      <div className="mt-1 truncate text-[11px] text-zinc-500">
+        {metrics.topOperators.length === 0
+          ? "No graph operators"
+          : `Top operators: ${metrics.topOperators.join(" · ")}`}
+      </div>
     </div>
   );
 }
@@ -4512,4 +4719,44 @@ function formatRate(tokensPerSecond: number): string {
           })
         : tokensPerSecond.toFixed(1);
   return `${value} tok/s`;
+}
+
+function formatLargeCount(value: number): string {
+  if (value >= 1_000_000_000_000) {
+    return `${(value / 1_000_000_000_000).toFixed(2)}T`;
+  }
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+  return value.toLocaleString();
+}
+
+function formatFlops(flops: number): string {
+  if (flops >= 1e15) {
+    return `${(flops / 1e15).toFixed(2)} PFLOP`;
+  }
+  if (flops >= 1e12) {
+    return `${(flops / 1e12).toFixed(2)} TFLOP`;
+  }
+  if (flops >= 1e9) {
+    return `${(flops / 1e9).toFixed(2)} GFLOP`;
+  }
+  if (flops >= 1e6) {
+    return `${(flops / 1e6).toFixed(2)} MFLOP`;
+  }
+  return `${flops.toLocaleString(undefined, {
+    maximumFractionDigits: 0,
+  })} FLOP`;
+}
+
+function formatBandwidth(bytesPerSecond: number): string {
+  return `${(bytesPerSecond / 1e12).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })} TB/s`;
 }

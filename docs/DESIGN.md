@@ -1180,6 +1180,33 @@ requires active expert count plus routed and shared expert bytes per layer;
 revision 1's dense-only readiness rule is intentionally not accepted as
 equivalent evidence.
 
+The model UI distinguishes three evidence classes:
+
+- package bytes, initializer bytes, initializer elements, graph nodes, and
+  operator counts are exact manifest inventory;
+- forward FLOPs per token use the documented `2 * active_parameters`
+  approximation, with only active routed experts counted for a complete MoE
+  profile; and
+- theoretical tokens/second are algebraic upper bounds, not predictions.
+
+For the static hardware analyzer, the ideal roofline is the minimum of
+aggregate declared peak compute divided by forward FLOPs per token and
+aggregate device-memory bandwidth divided by active weight bytes per token.
+It applies no utilization factor. The existing planning estimate remains
+separate and applies its documented MFU/MBU assumptions.
+
+The package/topology view cannot calculate a compute roofline because revision-4
+`SimulationScenario` does not declare peak FLOP/s. It therefore reports only a
+batch-1 weight-streaming ceiling. The bandwidth numerator contains each unique
+hot memory domain visible to a device with attention, FFN, or draft capability;
+copy- or sampling-only devices do not contribute. This bound assumes perfect
+sharding and excludes KV, activations, communication, scheduling, and kernel
+overhead. It must not be labeled as modeled or expected throughput. A
+multi-model package has no aggregate per-token work or speed ceiling until its
+execution schedule defines each component's invocation rate; the UI reports
+per-component values instead of summing target, proposer, encoder, and decoder
+work indiscriminately.
+
 Example:
 
 ```yaml

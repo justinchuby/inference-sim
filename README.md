@@ -114,8 +114,11 @@ metadata supplies routed and shared expert bytes per layer.
 The React workbench imports the same revision-2 manifest, validates it before
 and inside the Worker, and exposes shadcn controls for hardware, runtime dtypes,
 sequence shape, TP/PP/EP, and offload. Its model view reports per-device memory,
-capacity feasibility, heuristic throughput, architecture inventory, and every
-profile assumption.
+capacity feasibility, exact package/weight/parameter inventory, architecture
+and operator summaries, heuristic forward FLOPs per token, modeled throughput,
+and every profile assumption. It also separates ideal compute and
+weight-bandwidth roofline ceilings from utilization-adjusted planning
+estimates.
 The serving workbench can also import a local model folder or a selected set
 of package files without uploading them. A dedicated browser Worker decodes
 each ONNX protobuf, incrementally hashes external-data sidecars, parses
@@ -125,6 +128,12 @@ and declared speculative families are bound into deterministic run input.
 Target-only is the only decode mode enabled when metadata does not provide
 specific speculative evidence; unknown proposal methods remain visible as
 diagnostics and are never coerced to a similar simulator family.
+The imported package view shows each model's size, parameter count,
+architecture, leading ONNX operators, and estimated forward work. Its selected
+topology speed boundary is explicitly a batch-1 weight-streaming upper bound:
+only model-capable devices contribute hot-memory bandwidth, and the UI states
+that compute, KV, communication, scheduling, and kernel overhead are excluded.
+The dashboard does not present this bound as measured or simulated throughput.
 `onnx-search` exhaustively ranks a bounded, explicitly declared static search
 space across topology, runtime dtype, batch, sequence shape, TP/PP/EP/DP, and
 offload. It reports declared, evaluated, eligible, returned, and per-reason
