@@ -22,7 +22,7 @@ serving:
       output_tokens: 64
 
 expert_cache:
-  contract_revision: 2
+  contract_revision: 3
   placement_strategy: contiguous
   top_k: 2
   hot_capacity_bytes: 268435456

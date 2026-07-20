@@ -266,6 +266,20 @@ workload:
     expect(topology.assumptions.some(
       (assumption) => assumption.includes("explicit round_robin owner mapping"),
     )).toBe(true);
+
+    const comparisonCapture = captureIo();
+    expect(await runCli(["compare", path], comparisonCapture.io)).toBe(0);
+    const comparison = JSON.parse(comparisonCapture.stdout()) as {
+      comparison: Array<{
+        scenarioId: string;
+        rank: number;
+        relativeToFastest: number;
+      }>;
+    };
+    expect(comparison.comparison).toHaveLength(6);
+    expect(comparison.comparison[0].relativeToFastest).toBe(1);
+    expect(new Set(comparison.comparison.map((entry) => entry.scenarioId)).size)
+      .toBe(6);
   });
 
   it("runs continuous serving through a selected topology", async () => {
@@ -323,7 +337,7 @@ serving:
     - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 5 }
     - { id: b, arrival_ns: 10, prompt_tokens: 4, output_tokens: 5 }
 expert_cache:
-  contract_revision: 2
+  contract_revision: 3
   top_k: 1
   hot_capacity_bytes: 67108864
   warm_capacity_bytes: 67108864
@@ -376,7 +390,7 @@ expert_cache:
     expect(output.batches.some((batch) => (
       batch.work.decode.some((decode) => decode.mode === "speculative")
     ))).toBe(true);
-    expect(output.expertCache.contractRevision).toBe(2);
+    expect(output.expertCache.contractRevision).toBe(3);
     expect(output.expertCache.metrics.coldMisses).toBe(1);
     expect(output.expertCache.metrics.hotHits)
       .toBe(output.expertCache.routes - 1);

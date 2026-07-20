@@ -1,6 +1,6 @@
 import { DiscreteEventSimulator } from "./event-loop.js";
 
-export const EXPERT_CACHE_CONTRACT_REVISION = 4;
+export const EXPERT_CACHE_CONTRACT_REVISION = 5;
 
 export type ExpertCacheTier = "hot" | "warm" | "cold";
 export type ExpertLoadTarget = "hot" | "warm";
@@ -19,10 +19,18 @@ export interface AdaptiveExpertPrefetchPolicy {
   readonly maxExpertsPerDecision: number;
 }
 
+export interface ExpertCacheTierPartition {
+  readonly id: string;
+  readonly expertIds: readonly string[];
+  readonly capacityBytes: number;
+}
+
 export interface ExpertCacheConfig {
   readonly experts: readonly ExpertSpec[];
   readonly hotCapacityBytes: number;
   readonly warmCapacityBytes: number;
+  readonly hotPartitions?: readonly ExpertCacheTierPartition[];
+  readonly warmPartitions?: readonly ExpertCacheTierPartition[];
   readonly warmToHotLatencyNs: number;
   readonly coldToHotLatencyNs: number;
   readonly coldToWarmLatencyNs: number;
@@ -97,8 +105,18 @@ export interface ExpertCacheSnapshot {
   readonly warmReservedBytes: number;
   readonly hotExpertIds: readonly string[];
   readonly warmExpertIds: readonly string[];
+  readonly hotPartitions: readonly ExpertCachePartitionSnapshot[];
+  readonly warmPartitions: readonly ExpertCachePartitionSnapshot[];
   readonly pendingLoads: readonly ExpertPendingLoadSnapshot[];
   readonly metrics: ExpertCacheMetrics;
+}
+
+export interface ExpertCachePartitionSnapshot {
+  readonly id: string;
+  readonly capacityBytes: number;
+  readonly residentBytes: number;
+  readonly reservedBytes: number;
+  readonly expertIds: readonly string[];
 }
 
 interface ExpertCacheTraceEnvelope {
@@ -138,6 +156,7 @@ export type ExpertCacheTraceEvent = ExpertCacheTraceEnvelope & (
       readonly kind: "evict";
       readonly atNs: number;
       readonly tier: ExpertLoadTarget;
+      readonly partitionId: string;
       readonly expertId: string;
       readonly bytes: number;
     }
@@ -227,6 +246,12 @@ interface ExpertRouteHistory {
   lastTokenIndex: number;
 }
 
+interface ExpertCacheTierLayout {
+  readonly partitions: readonly ExpertCacheTierPartition[];
+  readonly partitionByExpertId: ReadonlyMap<string, string>;
+  readonly capacityByPartitionId: ReadonlyMap<string, number>;
+}
+
 export class ExpertCacheProtocolError extends Error {
   constructor(message: string) {
     super(message);
@@ -245,6 +270,8 @@ export class ExpertCacheSimulator {
   private readonly config: ExpertCacheConfig;
   private readonly sourceId: string;
   private readonly experts: Map<string, ExpertSpec>;
+  private readonly hotLayout: ExpertCacheTierLayout;
+  private readonly warmLayout: ExpertCacheTierLayout;
   private readonly hot = new Map<string, number>();
   private readonly warm = new Map<string, number>();
   private readonly pending = new Map<string, ExpertPendingLoadSnapshot>();
@@ -270,6 +297,8 @@ export class ExpertCacheSimulator {
     this.config = cloneConfig(config);
     this.sourceId = config.sourceId ?? "expert-cache";
     this.experts = new Map(config.experts.map((expert) => [expert.id, expert]));
+    this.hotLayout = buildTierLayout(this.config, "hot");
+    this.warmLayout = buildTierLayout(this.config, "warm");
     this.rng = new DeterministicRng(config.routingSeed);
 
     for (const id of config.initialWarmExpertIds ?? []) {
@@ -308,36 +337,41 @@ export class ExpertCacheSimulator {
       request.topK,
       this.rng,
     );
-    const selectedBytes = selected.reduce((sum, expert) => (
-      checkedAdd(sum, expert.bytes, "routed expert bytes")
-    ), 0);
-    if (selectedBytes > this.config.hotCapacityBytes) {
-      this.rng.restore(rngCheckpoint);
-      throw new ExpertCacheProtocolError(
-        `routed working set requires ${selectedBytes} hot bytes but capacity is ${this.config.hotCapacityBytes}`,
-      );
-    }
-
     const expertIds = selected.map((expert) => expert.id);
     const sourceTiers = expertIds.map((id) => this.tierFor(id));
-    const newDemandBytes = expertIds.reduce((sum, id) => (
-      this.hot.has(id) || this.pendingTarget(id, "hot")
-        ? sum
-        : checkedAdd(sum, this.requireExpert(id).bytes, "new demand bytes")
-    ), 0);
-    const protectedHotBytes = expertIds.reduce((sum, id) => (
-      this.hot.has(id)
-        ? checkedAdd(sum, this.requireExpert(id).bytes, "protected hot bytes")
-        : sum
-    ), 0);
-    if (
-      protectedHotBytes + this.hotReservedBytes + newDemandBytes
-      > this.config.hotCapacityBytes
-    ) {
-      this.rng.restore(rngCheckpoint);
-      throw new ExpertCacheProtocolError(
-        "pending hot reservations leave insufficient capacity for the routed working set",
+    for (const partitionId of unique(expertIds.map((id) => (
+      requirePartitionId(this.hotLayout, id, "hot")
+    )))) {
+      const selectedInPartition = expertIds.filter((id) => (
+        requirePartitionId(this.hotLayout, id, "hot") === partitionId
+      ));
+      const newDemandBytes = selectedInPartition.reduce((sum, id) => (
+        this.hot.has(id) || this.pendingTarget(id, "hot")
+          ? sum
+          : checkedAdd(sum, this.requireExpert(id).bytes, "new demand bytes")
+      ), 0);
+      const protectedHotBytes = selectedInPartition.reduce((sum, id) => (
+        this.hot.has(id)
+          ? checkedAdd(sum, this.requireExpert(id).bytes, "protected hot bytes")
+          : sum
+      ), 0);
+      const capacity = requirePartitionCapacity(
+        this.hotLayout,
+        partitionId,
+        "hot",
       );
+      const reserved = reservedBytesInPartition(
+        this.pending,
+        this.hotLayout,
+        "hot",
+        partitionId,
+      );
+      if (protectedHotBytes + reserved + newDemandBytes > capacity) {
+        this.rng.restore(rngCheckpoint);
+        throw new ExpertCacheProtocolError(
+          `pending hot reservations leave insufficient capacity in partition ${partitionId} for the routed working set`,
+        );
+      }
     }
     const requestId = `expert-request-${this.nextRequestId++}`;
     this.metrics.routes++;
@@ -467,21 +501,33 @@ export class ExpertCacheSimulator {
       this.requireExpert(id);
     }
     const resident = targetTier === "hot" ? this.hot : this.warm;
-    const reserved = targetTier === "hot"
-      ? this.hotReservedBytes
-      : this.warmReservedBytes;
-    const capacity = targetTier === "hot"
-      ? this.config.hotCapacityBytes
-      : this.config.warmCapacityBytes;
-    const incomingBytes = uniqueIds.reduce((sum, id) => (
-      resident.has(id) || this.pendingTarget(id, targetTier)
-        ? sum
-        : checkedAdd(sum, this.requireExpert(id).bytes, "prefetch bytes")
-    ), 0);
-    if (reserved + incomingBytes > capacity) {
-      throw new ExpertCacheProtocolError(
-        `pending reservations plus prefetch require ${reserved + incomingBytes} ${targetTier} bytes but capacity is ${capacity}`,
+    const layout = targetTier === "hot" ? this.hotLayout : this.warmLayout;
+    for (const partitionId of unique(uniqueIds.map((id) => (
+      requirePartitionId(layout, id, targetTier)
+    )))) {
+      const incomingBytes = uniqueIds.reduce((sum, id) => (
+        requirePartitionId(layout, id, targetTier) !== partitionId
+        || resident.has(id)
+        || this.pendingTarget(id, targetTier)
+          ? sum
+          : checkedAdd(sum, this.requireExpert(id).bytes, "prefetch bytes")
+      ), 0);
+      const reserved = reservedBytesInPartition(
+        this.pending,
+        layout,
+        targetTier,
+        partitionId,
       );
+      const capacity = requirePartitionCapacity(
+        layout,
+        partitionId,
+        targetTier,
+      );
+      if (reserved + incomingBytes > capacity) {
+        throw new ExpertCacheProtocolError(
+          `pending reservations plus prefetch require ${reserved + incomingBytes} ${targetTier} bytes in partition ${partitionId} but capacity is ${capacity}`,
+        );
+      }
     }
     this.commitEvent({
       kind: "prefetch",
@@ -534,8 +580,8 @@ export class ExpertCacheSimulator {
       history: this.routeHistory,
       warm: this.warm,
       pendingByTarget: this.pendingByTarget,
-      warmReservedBytes: this.warmReservedBytes,
-      warmCapacityBytes: this.config.warmCapacityBytes,
+      pending: this.pending,
+      warmLayout: this.warmLayout,
     });
     this.metrics.adaptivePrefetchDecisions++;
     this.metrics.adaptivePrefetchSelections += expertIds.length;
@@ -573,6 +619,8 @@ export class ExpertCacheSimulator {
       warm: this.warm,
       hotReservedBytes: this.hotReservedBytes,
       warmReservedBytes: this.warmReservedBytes,
+      hotLayout: this.hotLayout,
+      warmLayout: this.warmLayout,
       pending: this.pending,
       metrics: this.metrics,
     });
@@ -699,16 +747,36 @@ export class ExpertCacheSimulator {
         : this.config.coldToWarmLatencyNs;
     const completesAtNs = checkedAdd(atNs, latencyNs, "expert load completion");
     const resident = targetTier === "hot" ? this.hot : this.warm;
-    const capacity = targetTier === "hot"
-      ? this.config.hotCapacityBytes
-      : this.config.warmCapacityBytes;
-    const reserved = targetTier === "hot"
-      ? this.hotReservedBytes
-      : this.warmReservedBytes;
+    const layout = targetTier === "hot" ? this.hotLayout : this.warmLayout;
+    const partitionId = requirePartitionId(
+      layout,
+      expertId,
+      targetTier,
+    );
+    const capacity = requirePartitionCapacity(
+      layout,
+      partitionId,
+      targetTier,
+    );
+    const partitionResident = new Map(
+      [...resident.entries()].filter(([id]) => (
+        requirePartitionId(layout, id, targetTier) === partitionId
+      )),
+    );
+    const reserved = reservedBytesInPartition(
+      this.pending,
+      layout,
+      targetTier,
+      partitionId,
+    );
     const victims = chooseVictims(
-      resident,
+      partitionResident,
       this.experts,
-      checkedAdd(residentBytes(resident, this.experts), reserved, "cache use"),
+      checkedAdd(
+        residentBytes(partitionResident, this.experts),
+        reserved,
+        "cache partition use",
+      ),
       expert.bytes,
       capacity,
       protectedIds,
@@ -721,6 +789,7 @@ export class ExpertCacheSimulator {
         kind: "evict",
         atNs,
         tier: targetTier,
+        partitionId,
         expertId: victimId,
         bytes: victim.bytes,
       });
@@ -802,17 +871,24 @@ export class ExpertCacheSimulator {
   private installInitial(expertId: string, tier: ExpertLoadTarget): void {
     const expert = this.requireExpert(expertId);
     const resident = tier === "hot" ? this.hot : this.warm;
-    const capacity = tier === "hot"
-      ? this.config.hotCapacityBytes
-      : this.config.warmCapacityBytes;
+    const layout = tier === "hot" ? this.hotLayout : this.warmLayout;
+    const partitionId = requirePartitionId(layout, expertId, tier);
+    const capacity = requirePartitionCapacity(layout, partitionId, tier);
     if (resident.has(expertId)) {
       throw new ExpertCacheProtocolError(
         `initial ${tier} expert ${expertId} is duplicated`,
       );
     }
-    if (residentBytes(resident, this.experts) + expert.bytes > capacity) {
+    const partitionResidentBytes = residentBytesInPartition(
+      resident,
+      this.experts,
+      layout,
+      partitionId,
+      tier,
+    );
+    if (partitionResidentBytes + expert.bytes > capacity) {
       throw new ExpertCacheProtocolError(
-        `initial ${tier} experts exceed ${capacity} bytes`,
+        `initial ${tier} experts exceed ${capacity} bytes in partition ${partitionId}`,
       );
     }
     this.touch(resident, expertId);
@@ -885,6 +961,8 @@ export function replayExpertCacheTrace(
   }
   const config = cloneConfig(initial.config);
   const experts = new Map(config.experts.map((expert) => [expert.id, expert]));
+  const hotLayout = buildTierLayout(config, "hot");
+  const warmLayout = buildTierLayout(config, "warm");
   const hot = new Map<string, number>();
   const warm = new Map<string, number>();
   const pending = new Map<string, ExpertPendingLoadSnapshot>();
@@ -1039,11 +1117,26 @@ export function replayExpertCacheTrace(
           requireMonotonicTime(event.atNs, currentTimeNs);
           currentTimeNs = event.atNs;
           const resident = event.tier === "hot" ? hot : warm;
+          const layout = event.tier === "hot" ? hotLayout : warmLayout;
+          const expertPartitionId = requirePartitionId(
+            layout,
+            event.expertId,
+            event.tier,
+          );
+          if (event.partitionId !== expertPartitionId) {
+            replayFail(
+              `eviction expert ${event.expertId} belongs to ${expertPartitionId}, not ${event.partitionId}`,
+            );
+          }
           const protectedIds = new Set(
             [...outstandingRoutes.values()].flatMap((route) => route.expertIds),
           );
           const expectedVictim = [...resident.entries()]
-            .filter(([id]) => !protectedIds.has(id))
+            .filter(([id]) => (
+              !protectedIds.has(id)
+              && requirePartitionId(layout, id, event.tier)
+                === event.partitionId
+            ))
             .sort((left, right) => (
               left[1] - right[1] || left[0].localeCompare(right[0])
             ))[0]?.[0];
@@ -1107,11 +1200,26 @@ export function replayExpertCacheTrace(
           pendingByTarget.set(pendingKey, event.load.loadId);
           if (event.load.targetTier === "hot") {
             hotReservedBytes += event.load.bytes;
+            const partitionId = requirePartitionId(
+              hotLayout,
+              event.load.expertId,
+              "hot",
+            );
             if (
-              residentBytes(hot, experts) + hotReservedBytes
-              > config.hotCapacityBytes
+              residentBytesInPartition(
+                hot,
+                experts,
+                hotLayout,
+                partitionId,
+                "hot",
+              ) + reservedBytesInPartition(
+                pending,
+                hotLayout,
+                "hot",
+                partitionId,
+              ) > requirePartitionCapacity(hotLayout, partitionId, "hot")
             ) {
-              replayFail("hot cache capacity exceeded");
+              replayFail(`hot cache partition ${partitionId} capacity exceeded`);
             }
             metrics.highWaterHotBytes = Math.max(
               metrics.highWaterHotBytes,
@@ -1119,11 +1227,26 @@ export function replayExpertCacheTrace(
             );
           } else {
             warmReservedBytes += event.load.bytes;
+            const partitionId = requirePartitionId(
+              warmLayout,
+              event.load.expertId,
+              "warm",
+            );
             if (
-              residentBytes(warm, experts) + warmReservedBytes
-              > config.warmCapacityBytes
+              residentBytesInPartition(
+                warm,
+                experts,
+                warmLayout,
+                partitionId,
+                "warm",
+              ) + reservedBytesInPartition(
+                pending,
+                warmLayout,
+                "warm",
+                partitionId,
+              ) > requirePartitionCapacity(warmLayout, partitionId, "warm")
             ) {
-              replayFail("warm cache capacity exceeded");
+              replayFail(`warm cache partition ${partitionId} capacity exceeded`);
             }
             metrics.highWaterWarmBytes = Math.max(
               metrics.highWaterWarmBytes,
@@ -1251,8 +1374,8 @@ export function replayExpertCacheTrace(
                 history: routeHistory,
                 warm,
                 pendingByTarget,
-                warmReservedBytes,
-                warmCapacityBytes: config.warmCapacityBytes,
+                pending,
+                warmLayout,
               }),
             };
           }
@@ -1293,6 +1416,8 @@ export function replayExpertCacheTrace(
       warm,
       hotReservedBytes,
       warmReservedBytes,
+      hotLayout,
+      warmLayout,
       pending,
       metrics,
     }),
@@ -1369,6 +1494,8 @@ function buildSnapshot(input: {
   readonly warm: ReadonlyMap<string, number>;
   readonly hotReservedBytes: number;
   readonly warmReservedBytes: number;
+  readonly hotLayout: ExpertCacheTierLayout;
+  readonly warmLayout: ExpertCacheTierLayout;
   readonly pending: ReadonlyMap<string, ExpertPendingLoadSnapshot>;
   readonly metrics: MutableMetrics;
 }): ExpertCacheSnapshot {
@@ -1382,6 +1509,20 @@ function buildSnapshot(input: {
     warmReservedBytes: input.warmReservedBytes,
     hotExpertIds: sortedResidentIds(input.hot),
     warmExpertIds: sortedResidentIds(input.warm),
+    hotPartitions: partitionSnapshots(
+      input.hot,
+      input.pending,
+      input.experts,
+      input.hotLayout,
+      "hot",
+    ),
+    warmPartitions: partitionSnapshots(
+      input.warm,
+      input.pending,
+      input.experts,
+      input.warmLayout,
+      "warm",
+    ),
     pendingLoads: [...input.pending.values()]
       .sort((left, right) => (
         left.completesAtNs - right.completesAtNs
@@ -1436,8 +1577,8 @@ function selectAdaptivePrefetchExperts(input: {
   readonly history: ReadonlyMap<string, ExpertRouteHistory>;
   readonly warm: ReadonlyMap<string, number>;
   readonly pendingByTarget: ReadonlyMap<string, string>;
-  readonly warmReservedBytes: number;
-  readonly warmCapacityBytes: number;
+  readonly pending: ReadonlyMap<string, ExpertPendingLoadSnapshot>;
+  readonly warmLayout: ExpertCacheTierLayout;
 }): string[] {
   const ranked = [...input.history.entries()]
     .filter(([id, history]) => (
@@ -1451,20 +1592,29 @@ function selectAdaptivePrefetchExperts(input: {
       || left[0].localeCompare(right[0])
     ));
   const selected: string[] = [];
-  let incomingBytes = 0;
+  const incomingBytesByPartition = new Map<string, number>();
   for (const [id] of ranked) {
     if (selected.length >= input.policy.maxExpertsPerDecision) {
       break;
     }
     const expertBytes = input.experts.get(id)?.bytes;
-    const availableBytes = input.warmCapacityBytes
-      - input.warmReservedBytes
-      - incomingBytes;
+    const partitionId = requirePartitionId(input.warmLayout, id, "warm");
+    const incomingBytes = incomingBytesByPartition.get(partitionId) ?? 0;
+    const availableBytes = requirePartitionCapacity(
+      input.warmLayout,
+      partitionId,
+      "warm",
+    ) - reservedBytesInPartition(
+      input.pending,
+      input.warmLayout,
+      "warm",
+      partitionId,
+    ) - incomingBytes;
     if (expertBytes === undefined || expertBytes > availableBytes) {
       continue;
     }
     selected.push(id);
-    incomingBytes += expertBytes;
+    incomingBytesByPartition.set(partitionId, incomingBytes + expertBytes);
   }
   return selected;
 }
@@ -1553,6 +1703,8 @@ function validateConfig(config: ExpertCacheConfig): void {
       );
     }
   }
+  validateTierPartitions(config, "hot", ids);
+  validateTierPartitions(config, "warm", ids);
   for (const id of [
     ...(config.initialHotExpertIds ?? []),
     ...(config.initialWarmExpertIds ?? []),
@@ -1563,28 +1715,230 @@ function validateConfig(config: ExpertCacheConfig): void {
       );
     }
   }
-  for (const [tier, initialIds, capacity] of [
-    ["hot", config.initialHotExpertIds ?? [], config.hotCapacityBytes],
-    ["warm", config.initialWarmExpertIds ?? [], config.warmCapacityBytes],
+  for (const [tier, initialIds] of [
+    ["hot", config.initialHotExpertIds ?? []],
+    ["warm", config.initialWarmExpertIds ?? []],
   ] as const) {
     if (unique(initialIds).length !== initialIds.length) {
       throw new ExpertCacheProtocolError(
         `initial ${tier} expert ids must be unique`,
       );
     }
-    const bytes = initialIds.reduce((sum, id) => (
-      checkedAdd(
-        sum,
-        config.experts.find((expert) => expert.id === id)?.bytes ?? 0,
-        `initial ${tier} bytes`,
-      )
-    ), 0);
-    if (bytes > capacity) {
+    const layout = buildTierLayout(config, tier);
+    for (const partition of layout.partitions) {
+      const bytes = initialIds.reduce((sum, id) => (
+        requirePartitionId(layout, id, tier) !== partition.id
+          ? sum
+          : checkedAdd(
+              sum,
+              config.experts.find((expert) => expert.id === id)?.bytes ?? 0,
+              `initial ${tier} bytes`,
+            )
+      ), 0);
+      if (bytes > partition.capacityBytes) {
+        throw new ExpertCacheProtocolError(
+          `initial ${tier} experts require ${bytes} bytes in partition ${partition.id} but capacity is ${partition.capacityBytes}`,
+        );
+      }
+    }
+  }
+}
+
+function validateTierPartitions(
+  config: ExpertCacheConfig,
+  tier: ExpertLoadTarget,
+  expertIds: ReadonlySet<string>,
+): void {
+  const partitions = tier === "hot"
+    ? config.hotPartitions
+    : config.warmPartitions;
+  if (partitions === undefined) {
+    return;
+  }
+  if (partitions.length === 0) {
+    throw new ExpertCacheProtocolError(
+      `${tier} partitions must not be empty`,
+    );
+  }
+  const partitionIds = new Set<string>();
+  const assigned = new Set<string>();
+  let capacityBytes = 0;
+  for (const partition of partitions) {
+    if (partition.id.length === 0 || partitionIds.has(partition.id)) {
       throw new ExpertCacheProtocolError(
-        `initial ${tier} experts require ${bytes} bytes but capacity is ${capacity}`,
+        `${tier} partition id ${JSON.stringify(partition.id)} must be non-empty and unique`,
+      );
+    }
+    partitionIds.add(partition.id);
+    assertNonNegativeSafeInteger(
+      partition.capacityBytes,
+      `${tier} partition ${partition.id} capacity`,
+    );
+    capacityBytes = checkedAdd(
+      capacityBytes,
+      partition.capacityBytes,
+      `${tier} partition capacity`,
+    );
+    if (partition.expertIds.length === 0) {
+      throw new ExpertCacheProtocolError(
+        `${tier} partition ${partition.id} must own at least one expert`,
+      );
+    }
+    for (const expertId of partition.expertIds) {
+      if (!expertIds.has(expertId)) {
+        throw new ExpertCacheProtocolError(
+          `${tier} partition ${partition.id} references unknown expert ${expertId}`,
+        );
+      }
+      if (assigned.has(expertId)) {
+        throw new ExpertCacheProtocolError(
+          `${tier} expert ${expertId} is assigned to more than one partition`,
+        );
+      }
+      assigned.add(expertId);
+    }
+  }
+  const missing = [...expertIds].filter((expertId) => !assigned.has(expertId));
+  if (missing.length > 0) {
+    throw new ExpertCacheProtocolError(
+      `${tier} partitions do not assign experts ${missing.join(", ")}`,
+    );
+  }
+  const declaredCapacity = tier === "hot"
+    ? config.hotCapacityBytes
+    : config.warmCapacityBytes;
+  if (capacityBytes !== declaredCapacity) {
+    throw new ExpertCacheProtocolError(
+      `${tier} partition capacity ${capacityBytes} does not equal aggregate ${declaredCapacity}`,
+    );
+  }
+}
+
+function buildTierLayout(
+  config: ExpertCacheConfig,
+  tier: ExpertLoadTarget,
+): ExpertCacheTierLayout {
+  const configured = tier === "hot"
+    ? config.hotPartitions
+    : config.warmPartitions;
+  const partitions = configured === undefined
+    ? [{
+        id: "default",
+        expertIds: config.experts.map((expert) => expert.id),
+        capacityBytes: tier === "hot"
+          ? config.hotCapacityBytes
+          : config.warmCapacityBytes,
+      }]
+    : configured.map((partition) => ({
+        ...partition,
+        expertIds: [...partition.expertIds],
+      }));
+  return {
+    partitions,
+    partitionByExpertId: new Map(partitions.flatMap((partition) => (
+      partition.expertIds.map((expertId) => [expertId, partition.id] as const)
+    ))),
+    capacityByPartitionId: new Map(partitions.map((partition) => (
+      [partition.id, partition.capacityBytes] as const
+    ))),
+  };
+}
+
+function requirePartitionId(
+  layout: ExpertCacheTierLayout,
+  expertId: string,
+  tier: ExpertLoadTarget,
+): string {
+  const partitionId = layout.partitionByExpertId.get(expertId);
+  if (partitionId === undefined) {
+    throw new ExpertCacheProtocolError(
+      `${tier} cache has no partition for expert ${expertId}`,
+    );
+  }
+  return partitionId;
+}
+
+function requirePartitionCapacity(
+  layout: ExpertCacheTierLayout,
+  partitionId: string,
+  tier: ExpertLoadTarget,
+): number {
+  const capacity = layout.capacityByPartitionId.get(partitionId);
+  if (capacity === undefined) {
+    throw new ExpertCacheProtocolError(
+      `${tier} cache has unknown partition ${partitionId}`,
+    );
+  }
+  return capacity;
+}
+
+function reservedBytesInPartition(
+  pending: ReadonlyMap<string, ExpertPendingLoadSnapshot>,
+  layout: ExpertCacheTierLayout,
+  tier: ExpertLoadTarget,
+  partitionId: string,
+): number {
+  let bytes = 0;
+  for (const load of pending.values()) {
+    if (
+      load.targetTier === tier
+      && requirePartitionId(layout, load.expertId, tier) === partitionId
+    ) {
+      bytes = checkedAdd(bytes, load.bytes, `${tier} partition reserved bytes`);
+    }
+  }
+  return bytes;
+}
+
+function residentBytesInPartition(
+  resident: ReadonlyMap<string, number>,
+  experts: ReadonlyMap<string, ExpertSpec>,
+  layout: ExpertCacheTierLayout,
+  partitionId: string,
+  tier: ExpertLoadTarget,
+): number {
+  let bytes = 0;
+  for (const id of resident.keys()) {
+    if (requirePartitionId(layout, id, tier) === partitionId) {
+      bytes = checkedAdd(
+        bytes,
+        experts.get(id)?.bytes ?? 0,
+        `${tier} partition resident bytes`,
       );
     }
   }
+  return bytes;
+}
+
+function partitionSnapshots(
+  resident: ReadonlyMap<string, number>,
+  pending: ReadonlyMap<string, ExpertPendingLoadSnapshot>,
+  experts: ReadonlyMap<string, ExpertSpec>,
+  layout: ExpertCacheTierLayout,
+  tier: ExpertLoadTarget,
+): ExpertCachePartitionSnapshot[] {
+  return layout.partitions.map((partition) => ({
+    id: partition.id,
+    capacityBytes: partition.capacityBytes,
+    residentBytes: residentBytesInPartition(
+      resident,
+      experts,
+      layout,
+      partition.id,
+      tier,
+    ),
+    reservedBytes: reservedBytesInPartition(
+      pending,
+      layout,
+      tier,
+      partition.id,
+    ),
+    expertIds: sortedResidentIds(new Map(
+      [...resident.entries()].filter(([id]) => (
+        requirePartitionId(layout, id, tier) === partition.id
+      )),
+    )),
+  }));
 }
 
 function residentBytes(

@@ -648,14 +648,20 @@ function topologyPerformanceConfidence(
 
 export function compareTopologyWorkloads(
   scenarios: readonly SimulationScenario[],
-  profile: TopologyWorkloadProfile,
+  profile:
+    | TopologyWorkloadProfile
+    | ((scenario: SimulationScenario) => TopologyWorkloadProfile),
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
 ): readonly TopologyComparisonEntry[] {
   if (scenarios.length === 0) {
     throw new TopologyWorkloadError("at least one scenario is required");
   }
   const results = scenarios.map((scenario) => (
-    simulateTopologyWorkload(scenario, profile, costModel)
+    simulateTopologyWorkload(
+      scenario,
+      typeof profile === "function" ? profile(scenario) : profile,
+      costModel,
+    )
   )).sort((left, right) => (
     left.metrics.totalDurationNs - right.metrics.totalDurationNs
     || left.scenarioId.localeCompare(right.scenarioId)

@@ -62,8 +62,9 @@ Phase 3 has an initial speculative workload slice:
   metrics.
 - variable-size, byte-capacity hot/warm expert caches with weighted routing
   without replacement, deterministic LRU eviction, asynchronous initial plus
-  history-driven adaptive warm prefetch, physical cold-storage link
-  contention, and independent trace replay; and
+  history-driven adaptive warm prefetch, EP-owner hot partitions, node-local
+  warm partitions, physical cold-storage link contention, and independent
+  trace replay; and
 - routed expert execution with TP attention, `all_reduce_ring`,
   `all_to_all_v` dispatch/gather, explicit contiguous/round-robin expert
   ownership, owner-only demand/prefetch transfers, and route-skewed owner-local
@@ -95,7 +96,9 @@ replay-verified view.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
-reimplements owner semantics.
+reimplements owner semantics. Cache slot controls are per EP owner for hot
+residency and per node for warm residency; result snapshots expose both
+aggregate and partition-level capacity evidence.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it

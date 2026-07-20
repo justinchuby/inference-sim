@@ -5,6 +5,7 @@ import {
   buildScenarioPreset,
   compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
+  expertCacheConfigForTopology,
   simulateTopologyServingWorkload,
   type ServingSchedulerConfig,
   type SpeculativeProposerFamily,
@@ -517,7 +518,7 @@ describe("topology-aware serving", () => {
       workload,
       undefined,
       {
-        contractRevision: 99 as 2,
+        contractRevision: 99 as 3,
         cache,
         topK: 1,
       },
@@ -616,6 +617,97 @@ describe("topology-aware serving", () => {
     )).toThrow(
       "hot requirement 2147483648 on owner target-shard-0 exceeds physical hot allocations 1073741824",
     );
+  });
+
+  it("derives independent hot-owner and warm-node cache partitions", () => {
+    const scenario = buildScenarioPreset("multi-node");
+    const expertBytes = 64 * 1024 ** 2;
+    const cache = {
+      experts: Array.from({ length: 4 }, (_, index) => ({
+        id: `e${index}`,
+        bytes: expertBytes,
+      })),
+      hotCapacityBytes: expertBytes,
+      warmCapacityBytes: expertBytes,
+      warmToHotLatencyNs: 2_000,
+      coldToHotLatencyNs: 20_000,
+      coldToWarmLatencyNs: 10_000,
+      routingSeed: 7,
+      initialHotExpertIds: ["e0", "e1"],
+    } as const;
+    const partitioned = expertCacheConfigForTopology(
+      scenario,
+      cache,
+      {
+        strategy: "round_robin",
+        expertIds: cache.experts.map((expert) => expert.id),
+      },
+    );
+
+    expect(partitioned.hotCapacityBytes).toBe(2 * expertBytes);
+    expect(partitioned.warmCapacityBytes).toBe(2 * expertBytes);
+    expect(partitioned.hotPartitions).toEqual([
+      {
+        id: "target-shard-0",
+        expertIds: ["e0", "e2"],
+        capacityBytes: expertBytes,
+      },
+      {
+        id: "target-shard-1",
+        expertIds: ["e1", "e3"],
+        capacityBytes: expertBytes,
+      },
+    ]);
+    expect(partitioned.warmPartitions).toEqual([
+      {
+        id: "node0",
+        expertIds: ["e0", "e2"],
+        capacityBytes: expertBytes,
+      },
+      {
+        id: "node1",
+        expertIds: ["e1", "e3"],
+        capacityBytes: expertBytes,
+      },
+    ]);
+
+    const result = simulateTopologyServingWorkload(
+      scenario,
+      {
+        requests: [
+          { id: "partitioned", arrivalNs: 0, promptTokens: 1, outputTokens: 1 },
+        ],
+        maxBatchSize: 1,
+        maxBatchTokens: 1,
+        prefillChunkTokens: 1,
+        maxKvTokens: 1,
+      },
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache,
+        topK: 1,
+        placementStrategy: "round_robin",
+      },
+    );
+    expect(result.expertCache?.snapshot.hotPartitions).toEqual([
+      {
+        id: "target-shard-0",
+        capacityBytes: expertBytes,
+        residentBytes: expertBytes,
+        reservedBytes: 0,
+        expertIds: ["e0"],
+      },
+      {
+        id: "target-shard-1",
+        capacityBytes: expertBytes,
+        residentBytes: expertBytes,
+        reservedBytes: 0,
+        expertIds: ["e1"],
+      },
+    ]);
+    expect(result.expertCache?.replay.snapshot)
+      .toEqual(result.expertCache?.snapshot);
   });
 
   it("retimes adaptive prefetch from the shared physical storage trace", () => {

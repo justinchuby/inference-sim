@@ -159,6 +159,89 @@ describe("ExpertCacheSimulator", () => {
     expect(cache.snapshot().metrics.evictions).toBe(1);
   });
 
+  it("isolates capacity and LRU eviction across explicit tier partitions", () => {
+    const partitioned: ExpertCacheConfig = {
+      experts: Array.from({ length: 4 }, (_, index) => ({
+        id: `e${index}`,
+        bytes: 40,
+      })),
+      hotCapacityBytes: 80,
+      warmCapacityBytes: 0,
+      hotPartitions: [
+        { id: "owner-0", expertIds: ["e0", "e1"], capacityBytes: 40 },
+        { id: "owner-1", expertIds: ["e2", "e3"], capacityBytes: 40 },
+      ],
+      warmPartitions: [
+        { id: "node-0", expertIds: ["e0", "e1"], capacityBytes: 0 },
+        { id: "node-1", expertIds: ["e2", "e3"], capacityBytes: 0 },
+      ],
+      warmToHotLatencyNs: 5,
+      coldToHotLatencyNs: 20,
+      coldToWarmLatencyNs: 12,
+      routingSeed: 7,
+      initialHotExpertIds: ["e0", "e2"],
+    };
+    const cache = new ExpertCacheSimulator(partitioned);
+
+    cache.prefetch(["e1"], "hot", 0);
+    cache.advanceTo(20);
+    expect(cache.snapshot().hotExpertIds).toEqual(["e2", "e1"]);
+    expect(cache.snapshot().hotPartitions).toEqual([
+      {
+        id: "owner-0",
+        capacityBytes: 40,
+        residentBytes: 40,
+        reservedBytes: 0,
+        expertIds: ["e1"],
+      },
+      {
+        id: "owner-1",
+        capacityBytes: 40,
+        residentBytes: 40,
+        reservedBytes: 0,
+        expertIds: ["e2"],
+      },
+    ]);
+
+    cache.prefetch(["e3"], "hot", 20);
+    cache.advanceTo(40);
+    expect(cache.snapshot().hotExpertIds).toEqual(["e1", "e3"]);
+    expect(replayExpertCacheTrace(cache.trace()).snapshot)
+      .toEqual(cache.snapshot());
+
+    const mutated: ExpertCacheTraceEvent[] = structuredClone(cache.trace());
+    const firstEviction = mutated.find((event) => event.kind === "evict");
+    if (firstEviction?.kind !== "evict") {
+      throw new Error("missing partition eviction");
+    }
+    firstEviction.expertId = "e2";
+    expect(() => replayExpertCacheTrace(mutated))
+      .toThrow("belongs to owner-1, not owner-0");
+  });
+
+  it("fails closed for incomplete or inconsistent tier partitions", () => {
+    const base: ExpertCacheConfig = {
+      ...config,
+      initialHotExpertIds: [],
+      initialWarmExpertIds: [],
+      hotPartitions: [
+        { id: "owner-0", expertIds: ["e0", "e1"], capacityBytes: 180 },
+      ],
+    };
+    expect(() => new ExpertCacheSimulator(base))
+      .toThrow("hot partitions do not assign experts e2, e3");
+    expect(() => new ExpertCacheSimulator({
+      ...base,
+      hotPartitions: [
+        {
+          id: "owner-0",
+          expertIds: ["e0", "e1", "e2", "e3"],
+          capacityBytes: 179,
+        },
+      ],
+    })).toThrow("does not equal aggregate 180");
+  });
+
   it("independently replays the full cache trace", () => {
     const cache = new ExpertCacheSimulator(config);
     cache.prefetch(["e3"], "warm", 0);

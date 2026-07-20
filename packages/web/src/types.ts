@@ -5,6 +5,7 @@ import type {
   TransportCalibrationFitDiagnostic,
   ConfidenceClass,
   ExpertCacheMetrics,
+  ExpertCachePartitionSnapshot,
   ExpertRouteResult,
   ScenarioMemoryLedgerEntry,
   SpeculativeWorkloadIteration,
@@ -124,6 +125,8 @@ export interface DashboardResult {
     readonly warmResidentBytes: number;
     readonly hotCapacityBytes: number;
     readonly warmCapacityBytes: number;
+    readonly hotPartitions: readonly ExpertCachePartitionSnapshot[];
+    readonly warmPartitions: readonly ExpertCachePartitionSnapshot[];
   };
   readonly serving?: {
     readonly decodeMode: "target_only" | SpeculativeProposerFamily;

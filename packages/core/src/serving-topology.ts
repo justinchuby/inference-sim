@@ -46,7 +46,7 @@ import type {
   PlanTraceEvent,
 } from "./plan-types.js";
 
-export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 2;
+export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 3;
 const DEFERRED_PREFETCH_COMPLETION_NS = Number.MAX_SAFE_INTEGER;
 
 export interface TopologyServingExpertCacheConfig {
@@ -182,10 +182,18 @@ export function simulateTopologyServingWorkload(
             (expert) => expert.id,
           ),
         };
+  const runtimeExpertCacheConfig =
+    expertCacheConfig === undefined || expertPlacement === undefined
+      ? undefined
+      : expertCacheConfigForTopology(
+          scenario,
+          expertCacheConfig.cache,
+          expertPlacement,
+        );
   const batches = new Map<number, TopologyServingBatchResult>();
-  const expertCache = expertCacheConfig === undefined
+  const expertCache = runtimeExpertCacheConfig === undefined
     ? undefined
-    : new ExpertCacheSimulator(expertCacheConfig.cache);
+    : new ExpertCacheSimulator(runtimeExpertCacheConfig);
   const physicalRuntime = expertCacheConfig === undefined
     ? undefined
     : new StreamingConcurrentPlanRuntime(scenario);
@@ -510,7 +518,7 @@ export function simulateTopologyServingWorkload(
         : "decode uses one target-authoritative token per sequence step",
       expertCache === undefined
         ? "target FFN execution is dense and does not model expert residency"
-        : "expert routes preserve cache state across batches; routes within each batch are serialized conservatively",
+        : "expert routes preserve cache state across batches with independent hot-owner and warm-node capacity/LRU partitions; routes within each batch are serialized conservatively",
       expertCache === undefined
         ? "batch duration is determined by topology execution"
         : "expert demand loads complete on the shared physical topology before cache access and batch compute admission",
@@ -546,6 +554,114 @@ export function simulateTopologyServingWorkload(
       resourceUtilization,
     },
   };
+}
+
+export function expertCacheConfigForTopology(
+  scenario: SimulationScenario,
+  config: ExpertCacheConfig,
+  placement: TopologyExpertPlacement,
+): ExpertCacheConfig {
+  if (scenario.execution.parallelism.expert <= 1) {
+    return structuredClone(config);
+  }
+  if (
+    config.hotPartitions !== undefined
+    || config.warmPartitions !== undefined
+  ) {
+    throw new Error(
+      "topology-bound execution derives expert-cache partitions from physical ownership",
+    );
+  }
+  const expertsById = new Map(
+    config.experts.map((expert) => [expert.id, expert]),
+  );
+  const hotExpertIds = new Map<string, string[]>();
+  const warmExpertIds = new Map<string, string[]>();
+  for (const expert of config.experts) {
+    const owner = resolveTopologyExpertOwnerPlacement(
+      scenario,
+      placement,
+      expert.id,
+    );
+    const device = scenario.devices.find(
+      (candidate) => candidate.id === owner.deviceId,
+    );
+    if (device === undefined) {
+      throw new Error(
+        `expert owner ${owner.partitionId} has unknown device ${owner.deviceId}`,
+      );
+    }
+    appendPartitionExpert(hotExpertIds, owner.partitionId, expert.id);
+    appendPartitionExpert(warmExpertIds, device.nodeId, expert.id);
+  }
+  const hotPartitions = buildTopologyTierPartitions(
+    hotExpertIds,
+    expertsById,
+    config.hotCapacityBytes,
+    "hot",
+  );
+  const warmPartitions = buildTopologyTierPartitions(
+    warmExpertIds,
+    expertsById,
+    config.warmCapacityBytes,
+    "warm",
+  );
+  return {
+    ...structuredClone(config),
+    hotCapacityBytes: sumPartitionCapacity(hotPartitions, "hot"),
+    warmCapacityBytes: sumPartitionCapacity(warmPartitions, "warm"),
+    hotPartitions,
+    warmPartitions,
+  };
+}
+
+function appendPartitionExpert(
+  partitions: Map<string, string[]>,
+  partitionId: string,
+  expertId: string,
+): void {
+  const expertIds = partitions.get(partitionId) ?? [];
+  expertIds.push(expertId);
+  partitions.set(partitionId, expertIds);
+}
+
+function buildTopologyTierPartitions(
+  expertIdsByPartition: ReadonlyMap<string, readonly string[]>,
+  expertsById: ReadonlyMap<string, ExpertCacheConfig["experts"][number]>,
+  capacityLimitBytes: number,
+  tier: "hot" | "warm",
+) {
+  return [...expertIdsByPartition.entries()].map(
+    ([id, expertIds]) => {
+      const ownedBytes = expertIds.reduce(
+        (sum, expertId) => checkedMetricAdd(
+          sum,
+          expertsById.get(expertId)?.bytes ?? 0,
+          `${tier} expert bytes on ${id}`,
+        ),
+        0,
+      );
+      return {
+        id,
+        expertIds: [...expertIds],
+        capacityBytes: Math.min(capacityLimitBytes, ownedBytes),
+      };
+    },
+  );
+}
+
+function sumPartitionCapacity(
+  partitions: readonly { readonly capacityBytes: number }[],
+  tier: "hot" | "warm",
+): number {
+  return partitions.reduce(
+    (sum, partition) => checkedMetricAdd(
+      sum,
+      partition.capacityBytes,
+      `${tier} aggregate partition capacity`,
+    ),
+    0,
+  );
 }
 
 function retimePhysicalDemandLoads(

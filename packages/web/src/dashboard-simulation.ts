@@ -7,6 +7,7 @@ import {
   calculateScenarioMemoryLedger,
   compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
+  expertCacheConfigForTopology,
   fitTopologyCostModel,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
@@ -90,7 +91,7 @@ export function simulateDashboard(
     const serving = runServing(config, scenario, costModel);
     return attachCalibration(servingDashboardResult(config, scenario, serving));
   }
-  const workload = runExpertCache(config);
+  const workload = runExpertCache(config, scenario);
   return attachCalibration({
     scenario: scenarioSummary,
     mode: config.mode,
@@ -226,6 +227,8 @@ function servingDashboardResult(
             warmResidentBytes: serving.expertCache.snapshot.warmResidentBytes,
             hotCapacityBytes: serving.expertCache.snapshot.hotCapacityBytes,
             warmCapacityBytes: serving.expertCache.snapshot.warmCapacityBytes,
+            hotPartitions: serving.expertCache.snapshot.hotPartitions,
+            warmPartitions: serving.expertCache.snapshot.warmPartitions,
           },
         }),
     ...(comparison
@@ -346,10 +349,19 @@ function runSpeculative(
 
 function runExpertCache(
   config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
 ) {
   const expert = buildDashboardExpertCache(config, true);
+  const placement = {
+    strategy: config.expertCache.placementStrategy,
+    expertIds: expert.cache.experts.map((candidate) => candidate.id),
+  } as const;
   const result = simulateExpertCacheWorkload({
-    cache: expert.cache,
+    cache: expertCacheConfigForTopology(
+      scenario,
+      expert.cache,
+      placement,
+    ),
     tokenCount: clampInteger(config.expertCache.tokenCount, 1, 512),
     topK: expert.topK,
     tokenIntervalNs: 250_000,
@@ -364,6 +376,8 @@ function runExpertCache(
       warmResidentBytes: result.snapshot.warmResidentBytes,
       hotCapacityBytes: result.snapshot.hotCapacityBytes,
       warmCapacityBytes: result.snapshot.warmCapacityBytes,
+      hotPartitions: result.snapshot.hotPartitions,
+      warmPartitions: result.snapshot.warmPartitions,
     },
   };
 }

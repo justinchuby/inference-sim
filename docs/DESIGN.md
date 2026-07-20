@@ -655,6 +655,27 @@ table; it does not accept a second uniform-size scalar or infer one expert's
 size from another. Variable-size experts therefore preserve their exact
 warm/cold transfer bytes through core, CLI, and Web execution.
 
+Expert-cache trace revision 5 makes tier ownership explicit. A standalone
+cache without a topology has one implicit `default` partition per tier. A
+topology-bound workload instead derives one hot partition per non-empty EP
+owner and one warm partition per node that owns experts from the same
+expert-placement contract used by
+physical execution. `hot_capacity_bytes` is the capacity limit for each owner;
+`warm_capacity_bytes` is the limit for each node. A partition is capped at the
+total bytes of experts it can own, and the snapshot's top-level capacities are
+the checked sums of those effective partitions. The snapshot also reports
+resident, reserved, capacity, and LRU-ordered resident IDs per partition.
+
+Admission, pending reservations, victim selection, initial residency, and
+adaptive-prefetch budgeting are checked independently in each partition. An
+owner's miss can evict only that owner's LRU expert. Trace eviction evidence
+includes the partition identity, and replay rejects a changed owner before a
+later load can hide the corruption. Every expert must appear exactly once in
+each tier's partition table, partition capacities must sum to the declared
+aggregate, and malformed or prepartitioned topology-serving input fails
+closed. This prevents a global logical LRU from evicting state on an unrelated
+GPU and allows independent device caches to use their real aggregate capacity.
+
 Demand loads, background prefetch, and routed FFN compute resolve the same
 expert to the same owner. Under `EP > 1`, the complete expert bytes move only
 to that owner's hot cache and only owners receiving routed assignments emit
@@ -714,7 +735,7 @@ that fallback with shape-regime measurements. Metrics include TTFT and ITL
 average/p50/p95, request latency, throughput, sequence/token batch utilization,
 idle/service time, and KV high water.
 
-Serving may opt into revision-2 stateful expert-cache composition. One cache
+Serving may opt into revision-3 stateful expert-cache composition. One cache
 instance persists across all batches, and every target token in prefill or
 verification receives one seeded top-K route. Draft-only proposer work does
 not route through the target MoE unless a future proposer profile explicitly
@@ -749,7 +770,7 @@ allocations written by demand terminals, but carries zero demand-load bytes.
 It is admitted at cache readiness.
 
 Physical capacity validation is owner-aware. For each EP rank, required hot
-bytes are bounded by both the logical hot capacity and the total bytes of
+bytes are bounded by both its partition capacity and the total bytes of
 experts that rank can own. Warm capacity is checked analogously per owner node.
 This rejects an undersized owner even when aggregate capacity across unrelated
 ranks is sufficient, while avoiding fictitious reservation of unused logical
@@ -1262,11 +1283,13 @@ and release metrics, and independent trace replay; the speculative workload
 checks that its final KV length matches committed target state. Expert-cache
 workloads now model seeded weighted routing without replacement, exact
 per-expert byte extents, hot/warm byte capacities and reservations,
-deterministic LRU eviction,
+deterministic partition-local LRU eviction,
 asynchronous initial prefetch, history-driven adaptive warm prefetch, stalls,
 metrics, and independent replay. Validated prefetch loads compile into
 background storage transfers that overlap compute and serialize only within
-the same warm domain.
+the same warm domain. Topology-bound execution derives independent hot
+partitions per EP owner and warm partitions per node, with aggregate and
+per-partition replay evidence.
 Speculative and expert-cache logical traces now compile into FrozenPlan
 resources across all six required topology families. Default link duration
 uses each declared directed link's latency and bandwidth; imported revision 2
@@ -1286,7 +1309,7 @@ execution with independent replay. Batch duration estimation receives the
 authoritative scheduler start time, and replay must reproduce both batch work
 and that time coordinate. This is the contract needed for future stateful
 cache residency, eviction, and prefetch completion across batch boundaries.
-Revision-2 composed serving preserves one expert-cache instance across
+Revision-3 composed serving preserves one expert-cache instance across
 batches, routes every target token through the selected top-K experts, emits
 routed AllToAllV/FFN plans, and independently replays scheduler, cache, and
 global physical traces. Demand loads now compile into separately admitted

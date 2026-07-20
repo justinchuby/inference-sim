@@ -1124,7 +1124,7 @@ function ConfigurationPanel({
             })}
           />
           <SliderField
-            label="Hot cache slots"
+            label="Hot slots / owner"
             value={config.expertCache.hotSlots}
             minimum={config.expertCache.topK}
             maximum={config.expertCache.expertCount}
@@ -1136,7 +1136,7 @@ function ConfigurationPanel({
             })}
           />
           <SliderField
-            label="Warm cache slots"
+            label="Warm slots / node"
             value={config.expertCache.warmSlots}
             minimum={0}
             maximum={config.expertCache.expertCount}

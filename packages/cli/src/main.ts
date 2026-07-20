@@ -14,6 +14,7 @@ import {
   compareTopologyWorkloads,
   compileTopologyWorkloadPlan,
   defaultSpeculativeEligibility,
+  expertCacheConfigForTopology,
   fitTopologyCostModel,
   parseCalibrationDataset,
   parseSpeculativeTokenTrace,
@@ -270,7 +271,7 @@ export async function runCli(
           summarizeTopologyRun(
             simulateTopologyWorkload(
               scenario,
-              buildTopologyProfile(config),
+              buildTopologyProfile(config, scenario),
               costModel,
             ),
           ),
@@ -279,14 +280,15 @@ export async function runCli(
       }
       case "compare": {
         const config = await loadRequiredConfig(argument, "compare");
-        const profile = buildTopologyProfile(config);
+        const scenarios = SCENARIO_PRESET_NAMES.map(buildScenarioPreset);
+        const profile = buildTopologyProfile(config, scenarios[0]);
         const costModel = await loadCostModel(secondArgument);
         printJson(io, {
           profileId: profile.id,
           costModel: summarizeCostModel(costModel),
           comparison: compareTopologyWorkloads(
-            SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
-            profile,
+            scenarios,
+            (scenario) => buildTopologyProfile(config, scenario),
             costModel,
           ),
         });
@@ -307,7 +309,7 @@ export async function runCli(
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
-          buildTopologyProfile(config),
+          buildTopologyProfile(config, scenario),
           costModel,
         );
         printJson(
@@ -333,7 +335,7 @@ export async function runCli(
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
-          buildTopologyProfile(config),
+          buildTopologyProfile(config, scenario),
           costModel,
         );
         printJson(
@@ -384,15 +386,16 @@ export async function runCli(
           },
         };
         const costModel = await loadCostModel(fourthArgument);
-        const profile = buildTopologyProfile(config);
+        const failedProfile = buildTopologyProfile(config, failedScenario);
+        const recoveryProfile = buildTopologyProfile(config, recoveryScenario);
         const failedPlan = compileTopologyWorkloadPlan(
           failedScenario,
-          profile,
+          failedProfile,
           costModel,
         );
         const replannedPlan = compileTopologyWorkloadPlan(
           recoveryScenario,
-          profile,
+          recoveryProfile,
           costModel,
         );
         printJson(
@@ -440,7 +443,7 @@ export async function runCli(
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
-          buildTopologyProfile(config),
+          buildTopologyProfile(config, scenario),
           costModel,
         );
         printJson(
@@ -1059,6 +1062,7 @@ function parseServingAcceptance(
 
 function buildTopologyProfile(
   config: Record<string, unknown>,
+  scenario?: SimulationScenario,
 ): TopologyWorkloadProfile {
   if (config.speculative !== undefined) {
     return topologyProfileFromSpeculative(
@@ -1067,16 +1071,31 @@ function buildTopologyProfile(
   }
   if (config.expert_cache !== undefined) {
     const workload = parseExpertCacheConfig(config);
-    const result = simulateExpertCacheWorkload(workload);
     const cache = requireRecord(config.expert_cache, "expert_cache");
+    const placementStrategy = requireExpertPlacementStrategy(optionalString(
+      cache,
+      "placement_strategy",
+      "contiguous",
+      "expert_cache",
+    ));
+    const placement: TopologyExpertPlacement = {
+      strategy: placementStrategy,
+      expertIds: workload.cache.experts.map((expert) => expert.id),
+    };
+    const effectiveWorkload = scenario === undefined
+      ? workload
+      : {
+          ...workload,
+          cache: expertCacheConfigForTopology(
+            scenario,
+            workload.cache,
+            placement,
+          ),
+        };
+    const result = simulateExpertCacheWorkload(effectiveWorkload);
     return topologyProfileFromExpertCache(
       result,
-      requireExpertPlacementStrategy(optionalString(
-        cache,
-        "placement_strategy",
-        "contiguous",
-        "expert_cache",
-      )),
+      placementStrategy,
     );
   }
   if (config.target_only !== undefined) {
@@ -1298,6 +1317,8 @@ function summarizeServingRun(result: TopologyServingResult) {
             metrics: result.expertCache.snapshot.metrics,
             hotExpertIds: result.expertCache.snapshot.hotExpertIds,
             warmExpertIds: result.expertCache.snapshot.warmExpertIds,
+            hotPartitions: result.expertCache.snapshot.hotPartitions,
+            warmPartitions: result.expertCache.snapshot.warmPartitions,
             routes: result.expertCache.routes.length,
             traceEvents: result.expertCache.trace.length,
             replayAppliedEvents: result.expertCache.replay.appliedEvents,

@@ -142,6 +142,13 @@ describe("simulateDashboard", () => {
     expect(first.topology.assumptions.some(
       (assumption) => assumption.includes("explicit contiguous owner mapping"),
     )).toBe(true);
+    expect(first.expertCache?.hotPartitions).toHaveLength(2);
+    expect(first.expertCache?.hotPartitions.every((partition) => (
+      partition.capacityBytes === 4 * 64 * 1024 ** 2
+      && partition.residentBytes + partition.reservedBytes
+        <= partition.capacityBytes
+    ))).toBe(true);
+    expect(first.expertCache?.warmPartitions).toHaveLength(1);
 
     const roundRobin = simulateDashboard({
       ...config,
@@ -153,6 +160,9 @@ describe("simulateDashboard", () => {
     expect(roundRobin.topology.assumptions.some(
       (assumption) => assumption.includes("explicit round_robin owner mapping"),
     )).toBe(true);
+    expect(roundRobin.expertCache?.hotPartitions.map(
+      (partition) => partition.id,
+    )).toEqual(["target-shard-0", "target-shard-1"]);
   });
 
   it("runs continuous serving with replayed request timing", () => {
@@ -175,6 +185,7 @@ describe("simulateDashboard", () => {
     expect(result.expertCache?.metrics.routes).toBe(
       result.expertCache?.routes.length,
     );
+    expect(result.expertCache?.hotPartitions).toHaveLength(2);
     expect(result.serving?.physicalReplayEvents).toBeGreaterThan(0);
     expect(result.serving?.maximumConcurrentPlans).toBeGreaterThan(0);
     expect(result.serving?.physicalDrainNs).toBe(
