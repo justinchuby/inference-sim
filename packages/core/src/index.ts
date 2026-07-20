@@ -321,6 +321,7 @@ export {
   buildMultiNodeLanScenario,
   buildMultiGpuRingScenario,
   buildScenarioPreset,
+  configureSmallLanNetwork,
   type MultiNodeLanNodeCount,
   type MultiNodeLanOptions,
   type ScenarioPresetName,

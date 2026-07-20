@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildScenarioPreset } from "@inference-sim/core";
+import {
+  buildMultiNodeLanScenario,
+  buildScenarioPreset,
+} from "@inference-sim/core";
 import {
   buildTopologyGraph,
   formatDuration,
@@ -77,6 +80,62 @@ describe("topology graph projection", () => {
         .filter((edge) => edge.data.category === "link")
         .some((edge) => edge.data.scope === "inter-node"),
     ).toBe(true);
+  });
+
+  it("projects advanced network resources into the logical link path", () => {
+    const scenario = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      linkKind: "infiniband",
+      transport: "gpudirect_rdma",
+    });
+    const graph = buildTopologyGraph(scenario);
+    const logicalLink = scenario.links.find(
+      (link) => link.id === "lan:node0:node1",
+    )!;
+    const pathEdges = graph.edges.filter((edge) => (
+      edge.id.startsWith(`${logicalLink.id}:path:`)
+    ));
+
+    expect(graph.nodes.find((node) => node.id === "node0:nic0"))
+      .toMatchObject({
+        parentId: "system:node0",
+        extent: "parent",
+        data: {
+          category: "network",
+          kind: "NIC / HCA",
+          accent: "nic",
+        },
+      });
+    const fabric = graph.nodes.find((node) => node.id === "lan:fabric0")!;
+    expect(fabric).not.toHaveProperty("parentId");
+    expect(fabric).toMatchObject({
+      data: {
+        category: "network",
+        kind: "switch fabric",
+        accent: "fabric",
+      },
+    });
+    expect(pathEdges.map((edge) => [edge.source, edge.target])).toEqual([
+      ["node0:gpu0:vram", "node0:nic0"],
+      ["node0:nic0", "lan:fabric0"],
+      ["lan:fabric0", "node1:nic0"],
+      ["node1:nic0", "node1:gpu0:vram"],
+    ]);
+    expect(pathEdges[1]).toMatchObject({
+      label: "gpudirect_rdma · 50 GB/s · 3.0 us",
+      data: {
+        transport: "gpudirect_rdma",
+        logicalSourceId: "node0:gpu0:vram",
+        logicalTargetId: "node1:gpu0:vram",
+        networkResourceIds: [
+          "node0:nic0",
+          "lan:fabric0",
+          "node1:nic0",
+        ],
+        segmentCount: 4,
+      },
+    });
+    expect(pathEdges[3].markerEnd).toMatchObject({ type: "arrowclosed" });
   });
 
   it("formats transport evidence without hiding units", () => {

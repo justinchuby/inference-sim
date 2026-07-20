@@ -11,10 +11,14 @@ import {
 import type {
   ComputeCapability,
   MemoryDomainSpec,
+  MultiNodeLanOptions,
+  NetworkResourceSpec,
+  NetworkTransportMode,
   SimDeviceSpec,
   SimLinkSpec,
   SimulationScenario,
 } from "@inference-sim/core";
+import { configureSmallLanNetwork } from "@inference-sim/core";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -39,6 +43,8 @@ import {
   gibibytesToBytes,
   gigabytesPerSecondToBytes,
   LINK_KINDS,
+  materializeNetworkResources,
+  NETWORK_TRANSPORTS,
 } from "./topology-editor.js";
 import TopologyGraph from "./TopologyGraph.js";
 
@@ -57,12 +63,16 @@ export default function TopologyEditorDialog({
   const [view, setView] = useState<
     "map" | "resources" | "devices" | "links"
   >("map");
+  const [advancedNetwork, setAdvancedNetwork] = useState(false);
+  const [showLinkDetails, setShowLinkDetails] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
     if (open) {
       setDraft(scenario);
       setView("map");
+      setAdvancedNetwork((scenario.networkResources?.length ?? 0) > 0);
+      setShowLinkDetails(false);
       setError(undefined);
     }
   }, [open, scenario]);
@@ -100,10 +110,22 @@ export default function TopologyEditorDialog({
       )),
     }));
   };
+  const updateNetworkResource = (
+    id: string,
+    update: (resource: NetworkResourceSpec) => NetworkResourceSpec,
+  ) => {
+    setDraft((current) => ({
+      ...current,
+      networkResources: (current.networkResources ?? []).map((resource) => (
+        resource.id === id ? update(resource) : resource
+      )),
+    }));
+  };
   const systemCount = new Set([
     ...draft.devices.map((device) => device.nodeId),
     ...draft.memoryDomains.map((domain) => domain.nodeId),
   ]).size;
+  const lanOptions = smallLanOptions(draft, advancedNetwork);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -150,7 +172,7 @@ export default function TopologyEditorDialog({
               onClick={() => setView("links")}
             >
               <Link2 className="size-4" />
-              Links
+              Network
             </Button>
           </div>
 
@@ -203,15 +225,76 @@ export default function TopologyEditorDialog({
                   </div>
                 )
               : (
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    {draft.links.map((link) => (
-                      <LinkEditor
-                        key={link.id}
-                        link={link}
-                        domains={draft.memoryDomains}
-                        onChange={(update) => updateLink(link.id, update)}
+                  <div className="space-y-4">
+                    <section className="border border-zinc-200 bg-white p-4">
+                      <SmallLanEditor
+                        scenario={draft}
+                        advanced={advancedNetwork}
+                        onChange={(options) => {
+                          try {
+                            const configured = configureSmallLanNetwork(
+                              draft,
+                              options,
+                            );
+                            setDraft(configured);
+                            setAdvancedNetwork(options.advanced ?? false);
+                            setError(undefined);
+                          } catch (networkError) {
+                            setError(
+                              networkError instanceof Error
+                                ? networkError.message
+                                : String(networkError),
+                            );
+                          }
+                        }}
                       />
-                    ))}
+                    </section>
+
+                    {advancedNetwork
+                      ? (
+                          <NetworkResourceEditor
+                            resources={draft.networkResources ?? []}
+                            domains={draft.memoryDomains}
+                            onMaterialize={() => setDraft(
+                              materializeNetworkResources,
+                            )}
+                            onChange={updateNetworkResource}
+                          />
+                        )
+                      : null}
+
+                    {lanOptions !== undefined
+                      ? (
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => setShowLinkDetails((shown) => (
+                                !shown
+                              ))}
+                            >
+                              <Link2 className="size-4" />
+                              {showLinkDetails ? "Hide" : "Show"} directed links
+                            </Button>
+                          </div>
+                        )
+                      : null}
+                    {lanOptions === undefined || showLinkDetails
+                      ? (
+                          <div className="grid gap-3 xl:grid-cols-2">
+                            {draft.links.map((link) => (
+                              <LinkEditor
+                                key={link.id}
+                                link={link}
+                                domains={draft.memoryDomains}
+                                networkResources={draft.networkResources ?? []}
+                                advanced={advancedNetwork}
+                                onChange={(update) => updateLink(link.id, update)}
+                              />
+                            ))}
+                          </div>
+                        )
+                      : null}
                   </div>
                 )}
           </div>
@@ -515,10 +598,14 @@ function formatDomainKind(kind: MemoryDomainSpec["kind"]): string {
 function LinkEditor({
   link,
   domains,
+  networkResources,
+  advanced,
   onChange,
 }: {
   readonly link: SimLinkSpec;
   readonly domains: readonly MemoryDomainSpec[];
+  readonly networkResources: readonly NetworkResourceSpec[];
+  readonly advanced: boolean;
   readonly onChange: (update: (link: SimLinkSpec) => SimLinkSpec) => void;
 }): React.JSX.Element {
   return (
@@ -603,8 +690,391 @@ function LinkEditor({
           />
         </EditorField>
       </div>
+      {advanced && (link.kind === "ethernet" || link.kind === "infiniband")
+        ? (
+            <div className="mt-4 border-t border-zinc-200 pt-3">
+              <div className="mb-2 text-xs font-semibold text-zinc-600">
+                Resource path
+              </div>
+              {networkResources.length === 0
+                ? (
+                    <p className="text-xs text-zinc-500">
+                      No NIC or shared fabric resources are declared.
+                    </p>
+                  )
+                : (
+                    <div className="flex flex-wrap gap-2">
+                      {networkResources.map((resource) => {
+                        const active = link.networkResourceIds?.includes(
+                          resource.id,
+                        ) ?? false;
+                        const order = link.networkResourceIds?.indexOf(
+                          resource.id,
+                        ) ?? -1;
+                        return (
+                          <label
+                            key={resource.id}
+                            className="flex items-center gap-1.5 text-xs text-zinc-700"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={active}
+                              onChange={() => onChange((current) => ({
+                                ...current,
+                                networkResourceIds: toggleOrderedValue(
+                                  current.networkResourceIds ?? [],
+                                  resource.id,
+                                ),
+                              }))}
+                            />
+                            {active ? `${order + 1}. ` : ""}
+                            {resource.id}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+            </div>
+          )
+        : null}
     </section>
   );
+}
+
+function SmallLanEditor({
+  scenario,
+  advanced,
+  onChange,
+}: {
+  readonly scenario: SimulationScenario;
+  readonly advanced: boolean;
+  readonly onChange: (options: MultiNodeLanOptions) => void;
+}): React.JSX.Element {
+  const current = smallLanOptions(scenario, advanced);
+  const systemCount = new Set(scenario.memoryDomains.map(
+    (domain) => domain.nodeId,
+  )).size;
+  if (systemCount < 2 || systemCount > 4 || current === undefined) {
+    return (
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold">Network links</h3>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            Edit directed links individually below.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const apply = (update: Partial<MultiNodeLanOptions>): void => {
+    const nextAdvanced = update.advanced ?? current.advanced ?? false;
+    const requestedTransport = update.transport ?? current.transport;
+    const transport = !nextAdvanced && requestedTransport === "gpudirect_rdma"
+      ? current.linkKind === "infiniband" ? "rdma_host" : "tcp"
+      : requestedTransport;
+    onChange({ ...current, ...update, advanced: nextAdvanced, transport });
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold">Small LAN</h3>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            {systemCount} systems on one switched local network.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-zinc-600">Advanced</span>
+          <Switch
+            aria-label="Advanced network"
+            checked={advanced}
+            onCheckedChange={(checked) => apply({ advanced: checked })}
+          />
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <EditorField label="Network">
+          <Select
+            value={current.linkKind}
+            onValueChange={(kind) => apply({
+              linkKind: kind as "ethernet" | "infiniband",
+              transport: kind === "infiniband" ? "rdma_host" : "tcp",
+            })}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ethernet">Ethernet</SelectItem>
+              <SelectItem value="infiniband">InfiniBand</SelectItem>
+            </SelectContent>
+          </Select>
+        </EditorField>
+        <EditorField label="Transport">
+          <Select
+            value={current.transport}
+            onValueChange={(transport) => apply({
+              transport: transport as NonNullable<
+                MultiNodeLanOptions["transport"]
+              >,
+            })}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {NETWORK_TRANSPORTS
+                .filter((transport) => advanced || transport !== "gpudirect_rdma")
+                .map((transport) => (
+                  <SelectItem key={transport} value={transport}>
+                    {formatTransport(transport)}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </EditorField>
+        <EditorField label="Bandwidth GB/s">
+          <NumberInput
+            value={bytesToGigabytesPerSecond(
+              current.bandwidthBytesPerSec!,
+            )}
+            minimum={0.001}
+            step={1}
+            onChange={(value) => apply({
+              bandwidthBytesPerSec: gigabytesPerSecondToBytes(value),
+            })}
+          />
+        </EditorField>
+        <EditorField label="Latency ns">
+          <NumberInput
+            value={current.latencyNs!}
+            minimum={0}
+            step={1}
+            onChange={(latencyNs) => apply({ latencyNs })}
+          />
+        </EditorField>
+        <EditorField label="Link lanes">
+          <NumberInput
+            value={current.linkConcurrencyLanes!}
+            minimum={1}
+            step={1}
+            onChange={(linkConcurrencyLanes) => apply({
+              linkConcurrencyLanes,
+            })}
+          />
+        </EditorField>
+      </div>
+    </div>
+  );
+}
+
+function smallLanOptions(
+  scenario: SimulationScenario,
+  advanced: boolean,
+): MultiNodeLanOptions | undefined {
+  const domainById = new Map(
+    scenario.memoryDomains.map((domain) => [domain.id, domain]),
+  );
+  const link = scenario.links.find((candidate) => {
+    if (candidate.kind !== "ethernet" && candidate.kind !== "infiniband") {
+      return false;
+    }
+    const source = domainById.get(candidate.sourceDomainId);
+    const target = domainById.get(candidate.targetDomainId);
+    return source !== undefined
+      && target !== undefined
+      && source.nodeId !== target.nodeId;
+  });
+  if (link === undefined) {
+    return undefined;
+  }
+  const nic = scenario.networkResources?.find(
+    (resource) => resource.kind === "nic",
+  );
+  const fabric = scenario.networkResources?.find(
+    (resource) => resource.kind === "switch",
+  );
+  return {
+    advanced,
+    linkKind: link.kind as "ethernet" | "infiniband",
+    transport: link.transport
+      ?? (link.kind === "infiniband" ? "rdma_host" : "tcp"),
+    bandwidthBytesPerSec: link.bandwidthBytesPerSec,
+    latencyNs: link.latencyNs,
+    linkConcurrencyLanes: link.concurrencyLanes,
+    nicBandwidthBytesPerSec: nic?.bandwidthBytesPerSec,
+    nicLatencyNs: nic?.latencyNs,
+    nicConcurrencyLanes: nic?.concurrencyLanes,
+    fabricBandwidthBytesPerSec: fabric?.bandwidthBytesPerSec,
+    fabricLatencyNs: fabric?.latencyNs,
+    fabricConcurrencyLanes: fabric?.concurrencyLanes,
+  };
+}
+
+function NetworkResourceEditor({
+  resources,
+  domains,
+  onMaterialize,
+  onChange,
+}: {
+  readonly resources: readonly NetworkResourceSpec[];
+  readonly domains: readonly MemoryDomainSpec[];
+  readonly onMaterialize: () => void;
+  readonly onChange: (
+    id: string,
+    update: (resource: NetworkResourceSpec) => NetworkResourceSpec,
+  ) => void;
+}): React.JSX.Element {
+  if (resources.length === 0) {
+    return (
+      <section className="border border-dashed border-zinc-300 bg-white p-4">
+        <h3 className="text-sm font-bold">Physical network</h3>
+        <p className="mt-1 text-xs text-zinc-500">
+          This scenario has logical network links but no declared NIC or
+          shared fabric resources.
+        </p>
+        <Button type="button" className="mt-3" onClick={onMaterialize}>
+          <Network className="size-4" />
+          Add NICs and shared fabric
+        </Button>
+      </section>
+    );
+  }
+  return (
+    <div className="grid gap-3 xl:grid-cols-2">
+      {resources.map((resource) => (
+        <section
+          key={resource.id}
+          className="border border-zinc-200 bg-white p-4"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-bold">{resource.id}</h3>
+              <div className="mt-0.5 text-[11px] text-zinc-500">
+                {resource.nodeId ?? "shared across systems"}
+              </div>
+            </div>
+            <Badge variant="neutral">
+              {resource.kind === "nic" ? "NIC / HCA" : "switch fabric"}
+            </Badge>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <EditorField label="Bandwidth GB/s">
+              <NumberInput
+                value={bytesToGigabytesPerSecond(
+                  resource.bandwidthBytesPerSec,
+                )}
+                minimum={0.001}
+                step={1}
+                onChange={(value) => onChange(resource.id, (current) => ({
+                  ...current,
+                  bandwidthBytesPerSec: gigabytesPerSecondToBytes(value),
+                }))}
+              />
+            </EditorField>
+            <EditorField label="Latency ns">
+              <NumberInput
+                value={resource.latencyNs}
+                minimum={0}
+                step={1}
+                onChange={(latencyNs) => onChange(
+                  resource.id,
+                  (current) => ({ ...current, latencyNs }),
+                )}
+              />
+            </EditorField>
+            <EditorField label="Concurrency lanes">
+              <NumberInput
+                value={resource.concurrencyLanes}
+                minimum={1}
+                step={1}
+                onChange={(concurrencyLanes) => onChange(
+                  resource.id,
+                  (current) => ({ ...current, concurrencyLanes }),
+                )}
+              />
+            </EditorField>
+          </div>
+          <div className="mt-4 border-t border-zinc-200 pt-3">
+            <div className="mb-2 text-xs font-semibold text-zinc-600">
+              Supported transports
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {NETWORK_TRANSPORTS.map((transport) => (
+                <label
+                  key={transport}
+                  className="flex items-center gap-1.5 text-xs text-zinc-700"
+                >
+                  <input
+                    type="checkbox"
+                    checked={resource.supportedTransports.includes(transport)}
+                    onChange={() => onChange(resource.id, (current) => ({
+                      ...current,
+                      supportedTransports: toggleOrderedValue(
+                        current.supportedTransports,
+                        transport,
+                      ),
+                    }))}
+                  />
+                  {formatTransport(transport)}
+                </label>
+              ))}
+            </div>
+          </div>
+          {resource.kind === "nic"
+            ? (
+                <div className="mt-4 border-t border-zinc-200 pt-3">
+                  <div className="mb-2 text-xs font-semibold text-zinc-600">
+                    Direct memory access
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {domains
+                      .filter((domain) => domain.nodeId === resource.nodeId)
+                      .map((domain) => (
+                        <label
+                          key={domain.id}
+                          className="flex items-center gap-1.5 text-xs text-zinc-700"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={resource.directMemoryDomainIds.includes(
+                              domain.id,
+                            )}
+                            onChange={() => onChange(
+                              resource.id,
+                              (current) => ({
+                                ...current,
+                                directMemoryDomainIds: toggleOrderedValue(
+                                  current.directMemoryDomainIds,
+                                  domain.id,
+                                ),
+                              }),
+                            )}
+                          />
+                          {domain.id}
+                        </label>
+                      ))}
+                  </div>
+                </div>
+              )
+            : null}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function formatTransport(transport: NetworkTransportMode): string {
+  switch (transport) {
+    case "tcp":
+      return "TCP";
+    case "rdma_host":
+      return "Host-staged RDMA";
+    case "gpudirect_rdma":
+      return "GPUDirect RDMA";
+  }
+}
+
+function toggleOrderedValue<T>(values: readonly T[], value: T): T[] {
+  return values.includes(value)
+    ? values.filter((entry) => entry !== value)
+    : [...values, value];
 }
 
 function DomainSelect({

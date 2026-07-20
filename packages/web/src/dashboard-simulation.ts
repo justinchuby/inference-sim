@@ -3,6 +3,7 @@ import {
   SCENARIO_PRESET_NAMES,
   SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   buildMultiGpuRingScenario,
+  buildMultiNodeLanScenario,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
@@ -445,6 +446,15 @@ function buildSelectedScenario(config: DashboardRunConfig) {
     if (config.multiGpuRanks !== 2) {
       return buildMultiGpuRingScenario(config.multiGpuRanks);
     }
+  }
+  if (config.scenarioName === "multi-node") {
+    const nodeCount = config.multiNodeCount ?? 2;
+    if (nodeCount !== 2 && nodeCount !== 3 && nodeCount !== 4) {
+      throw new Error(
+        `dashboard multi-node count must be 2, 3, or 4; got ${String(nodeCount)}`,
+      );
+    }
+    return buildMultiNodeLanScenario(nodeCount);
   }
   return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
 }

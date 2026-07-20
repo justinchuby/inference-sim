@@ -89,6 +89,7 @@ export interface DashboardRunConfig {
     | "multi-node"
     | "custom";
   readonly multiGpuRanks: 2 | 4 | 8;
+  readonly multiNodeCount?: 2 | 3 | 4;
   readonly customScenario?: SimulationScenario;
   readonly modelBinding?: DashboardModelBinding;
   readonly mode: WorkloadMode;

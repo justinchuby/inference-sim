@@ -113,6 +113,7 @@ export default function TopologyGraph({
         <Legend color="bg-zinc-800" label="System" />
         <Legend color="bg-sky-700" label="Compute" />
         <Legend color="bg-emerald-700" label="Memory" />
+        <Legend color="bg-rose-700" label="NIC / fabric" />
         <Legend color="bg-zinc-400" label="Access" dashed />
         <Legend color="bg-zinc-700" label="Directed link" />
       </div>
@@ -145,7 +146,14 @@ export default function TopologyGraph({
                       <div className="mt-1 text-[11px] text-zinc-600">
                         {selection.data.category === "access"
                           ? "Device-visible memory relationship"
-                          : `${formatRate(selection.data.bandwidthBytesPerSec!)} · ${formatDuration(selection.data.latencyNs!)} · ${selection.data.concurrencyLanes} lane${selection.data.concurrencyLanes === 1 ? "" : "s"}`}
+                          : [
+                              selection.data.transport,
+                              `${selection.data.logicalSourceId} → ${selection.data.logicalTargetId}`,
+                              selection.data.networkResourceIds?.length
+                                ? selection.data.networkResourceIds.join(" → ")
+                                : undefined,
+                              `${formatRate(selection.data.bandwidthBytesPerSec!)} · ${formatDuration(selection.data.latencyNs!)} · ${selection.data.concurrencyLanes} lane${selection.data.concurrencyLanes === 1 ? "" : "s"}`,
+                            ].filter(Boolean).join(" · ")}
                       </div>
                     </>
                   )}
@@ -287,5 +295,9 @@ function accentColor(accent: TopologyGraphNodeData["accent"]): string {
       return "bg-teal-700";
     case "storage":
       return "bg-amber-700";
+    case "nic":
+      return "bg-rose-700";
+    case "fabric":
+      return "bg-fuchsia-700";
   }
 }

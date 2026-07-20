@@ -230,6 +230,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     assertOnlyKeys(config, [
       "scenarioName",
       "multiGpuRanks",
+      "multiNodeCount",
       "customScenario",
       "modelBinding",
       "mode",
@@ -262,6 +263,13 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       [2, 4, 8] as const,
       "artifact input multiGpuRanks",
     );
+    const multiNodeCount = config.multiNodeCount === undefined
+      ? undefined
+      : requireEnum(
+          config.multiNodeCount,
+          [2, 3, 4] as const,
+          "artifact input multiNodeCount",
+        );
     const customScenario = config.customScenario === undefined
       ? undefined
       : parseSimulationScenario(config.customScenario);
@@ -302,6 +310,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     return {
       scenarioName,
       multiGpuRanks,
+      ...(multiNodeCount === undefined ? {} : { multiNodeCount }),
       ...(customScenario === undefined ? {} : { customScenario }),
       ...(modelBinding === undefined ? {} : { modelBinding }),
       mode,
@@ -906,6 +915,7 @@ function assertOnlyKeys(
   const required = keys.filter((key) => (
     key !== "calibration"
     && key !== "customScenario"
+    && key !== "multiNodeCount"
     && key !== "modelBinding"
     && key !== "pipelineStrategy"
     && key !== "pipelineExecution"

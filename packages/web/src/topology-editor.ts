@@ -1,6 +1,8 @@
 import {
+  configureSmallLanNetwork,
   parseSimulationScenario,
   type ComputeCapability,
+  type NetworkTransportMode,
   type SimulationScenario,
 } from "@inference-sim/core";
 
@@ -24,6 +26,35 @@ export const LINK_KINDS = [
   "storage",
 ] as const;
 
+export const NETWORK_TRANSPORTS: readonly NetworkTransportMode[] = [
+  "tcp",
+  "rdma_host",
+  "gpudirect_rdma",
+];
+
+export function materializeNetworkResources(
+  scenario: SimulationScenario,
+): SimulationScenario {
+  if ((scenario.networkResources?.length ?? 0) > 0) {
+    return scenario;
+  }
+  const networkLink = scenario.links.find((link) => (
+    link.transport !== undefined
+    && (link.kind === "ethernet" || link.kind === "infiniband")
+  ));
+  if (networkLink === undefined) {
+    return scenario;
+  }
+  return configureSmallLanNetwork(scenario, {
+    advanced: true,
+    linkKind: networkLink.kind as "ethernet" | "infiniband",
+    transport: networkLink.transport,
+    bandwidthBytesPerSec: networkLink.bandwidthBytesPerSec,
+    latencyNs: networkLink.latencyNs,
+    linkConcurrencyLanes: networkLink.concurrencyLanes,
+  });
+}
+
 export function finalizeEditedTopology(
   input: SimulationScenario,
 ): SimulationScenario {
@@ -44,6 +75,14 @@ export function finalizeEditedTopology(
       ...device,
       provenance,
     })),
+    ...(input.networkResources === undefined
+      ? {}
+      : {
+          networkResources: input.networkResources.map((resource) => ({
+            ...resource,
+            provenance,
+          })),
+        }),
     links: input.links.map((link) => ({
       ...link,
       provenance,

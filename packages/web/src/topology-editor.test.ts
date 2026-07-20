@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { buildScenarioPreset } from "@inference-sim/core";
+import {
+  buildMultiNodeLanScenario,
+  buildScenarioPreset,
+} from "@inference-sim/core";
 import {
   bytesToGibibytes,
   bytesToGigabytesPerSecond,
   finalizeEditedTopology,
   gibibytesToBytes,
   gigabytesPerSecondToBytes,
+  materializeNetworkResources,
 } from "./topology-editor.js";
 
 describe("topology editor boundary", () => {
@@ -32,6 +36,51 @@ describe("topology editor boundary", () => {
       .toBe(preset.execution.topologyEpoch + 1);
     expect(edited.links[0].bandwidthBytesPerSec).toBe(48_000_000_000);
     expect(edited.links[0].provenance.source).toContain("user-edited");
+  });
+
+  it("marks edited network resource evidence", () => {
+    const scenario = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      transport: "gpudirect_rdma",
+    });
+    const edited = finalizeEditedTopology({
+      ...scenario,
+      networkResources: scenario.networkResources?.map((resource) => (
+        resource.id === "lan:fabric0"
+          ? { ...resource, concurrencyLanes: 8 }
+          : resource
+      )),
+    });
+
+    expect(edited.networkResources).toHaveLength(3);
+    expect(edited.networkResources?.find(
+      (resource) => resource.id === "lan:fabric0",
+    )).toMatchObject({
+      concurrencyLanes: 8,
+      provenance: {
+        confidence: "heuristic",
+        source: "user-edited in inference-sim web topology editor",
+      },
+    });
+  });
+
+  it("materializes an ordered NIC and shared fabric path for a simple LAN", () => {
+    const scenario = buildMultiNodeLanScenario(2);
+    const advanced = materializeNetworkResources(scenario);
+
+    expect(advanced.networkResources?.map((resource) => resource.id)).toEqual([
+      "node0:nic0",
+      "node1:nic0",
+      "lan:fabric0",
+    ]);
+    expect(advanced.links.find(
+      (link) => link.id === "lan:node0:node1",
+    )?.networkResourceIds).toEqual([
+      "node0:nic0",
+      "lan:fabric0",
+      "node1:nic0",
+    ]);
+    expect(materializeNetworkResources(advanced)).toBe(advanced);
   });
 
   it("preserves physical capacity while applying resource limits and features", () => {

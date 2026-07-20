@@ -23,6 +23,7 @@ import type { DashboardRunConfig } from "./types.js";
 const base: DashboardRunConfig = {
   scenarioName: "multi-gpu",
   multiGpuRanks: 2,
+  multiNodeCount: 2,
   mode: "speculative",
   seed: 42,
   speculative: {
@@ -288,6 +289,30 @@ describe("simulateDashboard", () => {
     }
   });
 
+  it("runs the selected workload on deterministic small LAN scenarios", () => {
+    for (const multiNodeCount of [2, 3, 4] as const) {
+      const first = simulateDashboard({
+        ...base,
+        scenarioName: "multi-node",
+        multiNodeCount,
+      });
+      const second = simulateDashboard({
+        ...base,
+        scenarioName: "multi-node",
+        multiNodeCount,
+      });
+
+      expect(first).toEqual(second);
+      expect(first.scenario.id).toBe(
+        multiNodeCount === 2 ? "multi-node" : `multi-node-${multiNodeCount}`,
+      );
+      expect(first.scenario.deviceCount).toBe(multiNodeCount * 2);
+      expect(first.scenario.linkCount).toBeGreaterThanOrEqual(
+        multiNodeCount * (multiNodeCount - 1),
+      );
+    }
+  });
+
   it("runs a strictly embedded custom device scenario", () => {
     const customScenario = {
       ...buildScenarioPreset("gpu-npu"),
@@ -418,6 +443,14 @@ describe("simulateDashboard", () => {
       ...base,
       multiGpuRanks: 3 as DashboardRunConfig["multiGpuRanks"],
     })).toThrow("dashboard multi-GPU ranks must be 2, 4, or 8; got 3");
+  });
+
+  it("rejects an untrusted dashboard multi-node count", () => {
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "multi-node",
+      multiNodeCount: 5 as DashboardRunConfig["multiNodeCount"],
+    })).toThrow("dashboard multi-node count must be 2, 3, or 4; got 5");
   });
 
   it("partitions routed experts across selected GPU ranks", () => {

@@ -24,6 +24,7 @@ import type {
 const config: DashboardRunConfig = {
   scenarioName: "multi-gpu",
   multiGpuRanks: 2,
+  multiNodeCount: 2,
   mode: "speculative",
   seed: 42,
   speculative: {
@@ -180,6 +181,28 @@ describe("dashboard result artifact import", () => {
     expect(replay.actualArtifactFingerprint).toBe(
       artifact.artifactFingerprint,
     );
+  });
+
+  it("strictly round-trips and replays a selected multi-node count", () => {
+    const multiNodeConfig: DashboardRunConfig = {
+      ...config,
+      scenarioName: "multi-node",
+      multiNodeCount: 4,
+    };
+    const artifact = createDashboardArtifact(
+      multiNodeConfig,
+      simulateDashboardExecution(multiNodeConfig),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "multi-node.json",
+    );
+
+    expect(parsed.config).toEqual(multiNodeConfig);
+    expect(executeDashboardWorkerRun(
+      parsed.config,
+      parsed.expectation,
+    ).artifactReplay?.matches).toBe(true);
   });
 
   it("binds and revalidates a complete custom scenario", () => {
@@ -471,6 +494,28 @@ describe("dashboard result artifact import", () => {
       serializeSimulationResultArtifact(malformed),
       "malformed.json",
     )).toThrow("multiGpuRanks is unsupported");
+
+    const invalidNodeCount = createSimulationResultArtifact(
+      artifact.runKind,
+      dashboardArtifactContracts(config),
+      { ...artifact.input, multiNodeCount: 5 },
+      artifact.output,
+    );
+    expect(() => parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(invalidNodeCount),
+      "invalid-node-count.json",
+    )).toThrow("multiNodeCount is unsupported");
+
+    const advancedNicField = createSimulationResultArtifact(
+      artifact.runKind,
+      dashboardArtifactContracts(config),
+      { ...artifact.input, nicBandwidthBytesPerSec: 25_000_000_000 },
+      artifact.output,
+    );
+    expect(() => parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(advancedNicField),
+      "advanced-nic.json",
+    )).toThrow("unknown keys nicBandwidthBytesPerSec");
   });
 
   it("rejects a mismatched run kind and non-JSON extension", () => {

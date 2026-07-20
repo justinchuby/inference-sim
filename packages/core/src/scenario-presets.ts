@@ -852,7 +852,26 @@ function buildUnified(): SimulationScenario {
 }
 
 function buildMultiNode(): SimulationScenario {
-  return buildMultiNodeLanScenario(2);
+  const generated = buildMultiNodeLanScenario(2, {
+    linkKind: "infiniband",
+    transport: "rdma_host",
+    bandwidthBytesPerSec: 50 * GBps,
+    latencyNs: 3_000,
+  });
+  return {
+    ...generated,
+    links: generated.links.map((entry) => {
+      if (entry.id === "lan:node0:node1") {
+        const { transport: _transport, ...legacy } = entry;
+        return { ...legacy, id: "cluster:rdma:forward" };
+      }
+      if (entry.id === "lan:node1:node0") {
+        const { transport: _transport, ...legacy } = entry;
+        return { ...legacy, id: "cluster:rdma:reverse" };
+      }
+      return entry;
+    }),
+  };
 }
 
 export type MultiNodeLanNodeCount = 2 | 3 | 4;
@@ -998,7 +1017,7 @@ export function buildMultiNodeLanScenario(
       ),
     ]),
     devices: nodes.flatMap(({ cpu, gpu }) => [cpu, gpu]),
-    networkResources,
+    ...(advanced ? { networkResources } : {}),
     links: [
       ...nodes.flatMap(({ nodeId }) => bidirectionalLink(
         `${nodeId}:pcie`,
@@ -1069,6 +1088,183 @@ export function buildMultiNodeLanScenario(
       data: 1,
     },
   });
+}
+
+export function configureSmallLanNetwork(
+  input: SimulationScenario,
+  options: MultiNodeLanOptions,
+): SimulationScenario {
+  const nodeIds = [...new Set([
+    ...input.devices.map((entry) => entry.nodeId),
+    ...input.memoryDomains.map((entry) => entry.nodeId),
+  ])].sort();
+  if (
+    nodeIds.length < 2
+    || nodeIds.length > 4
+  ) {
+    throw new Error("small LAN configuration requires 2 through 4 systems");
+  }
+  const advanced = options.advanced ?? false;
+  const linkKind = options.linkKind ?? "ethernet";
+  const transport = options.transport
+    ?? (linkKind === "ethernet" ? "tcp" : "rdma_host");
+  if (transport === "gpudirect_rdma" && !advanced) {
+    throw new Error("GPUDirect RDMA requires advanced LAN modeling");
+  }
+  const endpointByNode = new Map<string, {
+    readonly host: MemoryDomainSpec;
+    readonly device: MemoryDomainSpec;
+  }>();
+  for (const nodeId of nodeIds) {
+    const hosts = input.memoryDomains.filter((domain) => (
+      domain.nodeId === nodeId && domain.kind === "host"
+    ));
+    const devices = input.memoryDomains.filter((domain) => (
+      domain.nodeId === nodeId && domain.kind === "device"
+    ));
+    if (hosts.length !== 1 || devices.length !== 1) {
+      throw new Error(
+        `small LAN system ${nodeId} requires exactly one host and one device memory domain`,
+      );
+    }
+    endpointByNode.set(nodeId, { host: hosts[0], device: devices[0] });
+  }
+  const existingNetworkLinks = input.links.filter((entry) => {
+    if (entry.kind !== "ethernet" && entry.kind !== "infiniband") {
+      return false;
+    }
+    const source = input.memoryDomains.find(
+      (domain) => domain.id === entry.sourceDomainId,
+    );
+    const target = input.memoryDomains.find(
+      (domain) => domain.id === entry.targetDomainId,
+    );
+    return source !== undefined
+      && target !== undefined
+      && source.nodeId !== target.nodeId;
+  });
+  const provenance = existingNetworkLinks[0]?.provenance ?? HEURISTIC;
+  const networkResources: NetworkResourceSpec[] = advanced
+    ? [
+        ...nodeIds.map((nodeId): NetworkResourceSpec => ({
+          id: `${nodeId}:nic0`,
+          kind: "nic",
+          nodeId,
+          bandwidthBytesPerSec:
+            options.nicBandwidthBytesPerSec ?? 25 * GBps,
+          latencyNs: options.nicLatencyNs ?? 700,
+          concurrencyLanes: options.nicConcurrencyLanes ?? 2,
+          supportedTransports: [transport],
+          directMemoryDomainIds: transport === "gpudirect_rdma"
+            ? [endpointByNode.get(nodeId)!.device.id]
+            : [],
+          provenance,
+        })),
+        {
+          id: "lan:fabric0",
+          kind: "switch",
+          bandwidthBytesPerSec:
+            options.fabricBandwidthBytesPerSec ?? 50 * GBps,
+          latencyNs: options.fabricLatencyNs ?? 500,
+          concurrencyLanes: options.fabricConcurrencyLanes ?? nodeIds.length,
+          supportedTransports: [transport],
+          directMemoryDomainIds: [],
+          provenance,
+        },
+      ]
+    : [];
+  const networkLinks = nodeIds.flatMap((sourceNodeId) => (
+    nodeIds.flatMap((targetNodeId): SimLinkSpec[] => {
+      if (sourceNodeId === targetNodeId) {
+        return [];
+      }
+      const source = endpointByNode.get(sourceNodeId)!;
+      const target = endpointByNode.get(targetNodeId)!;
+      return [{
+        id: `lan:${sourceNodeId}:${targetNodeId}`,
+        sourceDomainId: transport === "gpudirect_rdma"
+          ? source.device.id
+          : source.host.id,
+        targetDomainId: transport === "gpudirect_rdma"
+          ? target.device.id
+          : target.host.id,
+        kind: linkKind,
+        bandwidthBytesPerSec: options.bandwidthBytesPerSec
+          ?? (linkKind === "ethernet" ? 10 * GBps : 50 * GBps),
+        latencyNs: options.latencyNs
+          ?? (linkKind === "ethernet" ? 10_000 : 3_000),
+        concurrencyLanes: options.linkConcurrencyLanes ?? 1,
+        transport,
+        ...(advanced
+          ? {
+              networkResourceIds: [
+                `${sourceNodeId}:nic0`,
+                "lan:fabric0",
+                `${targetNodeId}:nic0`,
+              ],
+            }
+          : {}),
+        provenance,
+      }];
+    })
+  ));
+  const domainById = new Map(
+    input.memoryDomains.map((domain) => [domain.id, domain]),
+  );
+  const stagingByNode = new Map<string, string[]>();
+  for (const placement of input.placements) {
+    for (const allocation of placement.allocations) {
+      if (
+        allocation.purpose !== "staging"
+        || allocation.allocationClass !== "pinned"
+      ) {
+        continue;
+      }
+      const nodeId = domainById.get(allocation.domainId)?.nodeId;
+      if (nodeId !== undefined) {
+        stagingByNode.set(nodeId, [
+          ...(stagingByNode.get(nodeId) ?? []),
+          allocation.physicalAllocationId,
+        ]);
+      }
+    }
+  }
+  const transfers = input.transfers.map((entry) => {
+    const sourceNodeId = domainById.get(entry.sourceDomainId)?.nodeId;
+    const targetNodeId = domainById.get(entry.targetDomainId)?.nodeId;
+    if (
+      sourceNodeId === undefined
+      || targetNodeId === undefined
+      || sourceNodeId === targetNodeId
+    ) {
+      return entry;
+    }
+    return {
+      ...entry,
+      requiresPinnedStaging: transport !== "gpudirect_rdma",
+      stagingAllocationIds: transport === "gpudirect_rdma"
+        ? []
+        : [
+            ...(stagingByNode.get(sourceNodeId) ?? []),
+            ...(stagingByNode.get(targetNodeId) ?? []),
+          ],
+    };
+  });
+  const {
+    networkResources: _networkResources,
+    ...withoutNetworkResources
+  } = input;
+  const configured: SimulationScenario = {
+    ...withoutNetworkResources,
+    ...(advanced ? { networkResources } : {}),
+    links: [
+      ...input.links.filter((entry) => !existingNetworkLinks.includes(entry)),
+      ...networkLinks,
+    ],
+    transfers,
+  };
+  assertValidScenario(configured);
+  return configured;
 }
 
 interface ScenarioParts {

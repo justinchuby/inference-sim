@@ -1,7 +1,10 @@
-import type { SimulationScenario } from "@inference-sim/core";
+import type {
+  NetworkResourceSpec,
+  SimulationScenario,
+} from "@inference-sim/core";
 
 export interface TopologyGraphNodeData {
-  readonly category: "system" | "device" | "memory";
+  readonly category: "system" | "device" | "memory" | "network";
   readonly title: string;
   readonly kind: string;
   readonly nodeId: string;
@@ -14,7 +17,9 @@ export interface TopologyGraphNodeData {
     | "host"
     | "device"
     | "unified"
-    | "storage";
+    | "storage"
+    | "nic"
+    | "fabric";
 }
 
 export interface TopologyGraphNode {
@@ -37,6 +42,12 @@ export interface TopologyGraphEdgeData {
   readonly bandwidthBytesPerSec?: number;
   readonly latencyNs?: number;
   readonly concurrencyLanes?: number;
+  readonly transport?: SimulationScenario["links"][number]["transport"];
+  readonly logicalSourceId?: string;
+  readonly logicalTargetId?: string;
+  readonly networkResourceIds?: readonly string[];
+  readonly segmentIndex?: number;
+  readonly segmentCount?: number;
 }
 
 export interface TopologyGraphEdge {
@@ -64,12 +75,14 @@ const NODE_WIDTH = 210;
 const NODE_GAP = 100;
 const GROUP_GAP = 90;
 const GROUP_X = 30;
-const GROUP_Y = 30;
+const GROUP_Y = 135;
 const GROUP_PADDING_X = 30;
 const GROUP_HEADER_HEIGHT = 70;
-const GROUP_HEIGHT = 390;
+const GROUP_HEIGHT = 500;
 const DEVICE_Y = GROUP_HEADER_HEIGHT;
 const MEMORY_Y = 245;
+const NETWORK_Y = 385;
+const FABRIC_Y = 30;
 
 export function buildTopologyGraph(
   scenario: SimulationScenario,
@@ -80,6 +93,9 @@ export function buildTopologyGraph(
   const nodeIds = [...new Set([
     ...scenario.devices.map((device) => device.nodeId),
     ...scenario.memoryDomains.map((domain) => domain.nodeId),
+    ...(scenario.networkResources ?? []).flatMap((resource) => (
+      resource.nodeId === undefined ? [] : [resource.nodeId]
+    )),
   ])].sort();
   const nodes: TopologyGraphNode[] = [];
   const positionById = new Map<string, { readonly x: number; readonly y: number }>();
@@ -98,7 +114,15 @@ export function buildTopologyGraph(
     const domains = scenario.memoryDomains
       .filter((domain) => domain.nodeId === nodeId)
       .sort((left, right) => left.id.localeCompare(right.id));
-    const columns = Math.max(devices.length, domains.length, 1);
+    const networkResources = (scenario.networkResources ?? [])
+      .filter((resource) => resource.nodeId === nodeId)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const columns = Math.max(
+      devices.length,
+      domains.length,
+      networkResources.length,
+      1,
+    );
     const groupWidth = GROUP_PADDING_X * 2
       + columns * NODE_WIDTH
       + Math.max(0, columns - 1) * NODE_GAP;
@@ -116,7 +140,7 @@ export function buildTopologyGraph(
         details: [
           `${devices.length} compute chip${devices.length === 1 ? "" : "s"}`,
           `${domains.length} memory domain${domains.length === 1 ? "" : "s"}`,
-          "physical fault and transport boundary",
+          `${networkResources.length} network adapter${networkResources.length === 1 ? "" : "s"}`,
         ],
       },
     });
@@ -184,8 +208,34 @@ export function buildTopologyGraph(
         },
       });
     });
+    networkResources.forEach((resource, index) => {
+      const localPosition = {
+        x: GROUP_PADDING_X
+          + centeredColumn(index, networkResources.length, columns),
+        y: NETWORK_Y,
+      };
+      positionById.set(resource.id, {
+        x: groupOffset + localPosition.x,
+        y: GROUP_Y + localPosition.y,
+      });
+      nodes.push(networkResourceNode(resource, localPosition, nodeId));
+    });
     groupOffset += groupWidth + GROUP_GAP;
   }
+
+  const fabrics = (scenario.networkResources ?? [])
+    .filter((resource) => resource.nodeId === undefined)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const totalWidth = Math.max(groupOffset - GROUP_GAP - GROUP_X, NODE_WIDTH);
+  fabrics.forEach((resource, index) => {
+    const position = {
+      x: GROUP_X + (totalWidth - NODE_WIDTH) / 2
+        + (index - (fabrics.length - 1) / 2) * (NODE_WIDTH + 30),
+      y: FABRIC_Y,
+    };
+    positionById.set(resource.id, position);
+    nodes.push(networkResourceNode(resource, position));
+  });
 
   const accessEdges: TopologyGraphEdge[] = scenario.devices.flatMap(
     (device) => device.memoryDomainIds.map((domainId) => ({
@@ -211,10 +261,17 @@ export function buildTopologyGraph(
     })),
   );
   const labeledPairs = new Set<string>();
-  const linkEdges: TopologyGraphEdge[] = scenario.links.map((link) => {
+  const linkEdges: TopologyGraphEdge[] = scenario.links.flatMap((link) => {
     const color = linkColor(link.kind);
-    const sourceX = positionById.get(link.sourceDomainId)?.x ?? 0;
-    const targetX = positionById.get(link.targetDomainId)?.x ?? 0;
+    const path = [
+      link.sourceDomainId,
+      ...(link.networkResourceIds ?? []).filter((resourceId) => (
+        positionById.has(resourceId)
+      )),
+      link.targetDomainId,
+    ];
+    const sourceX = positionById.get(path[0])?.x ?? 0;
+    const targetX = positionById.get(path[path.length - 1])?.x ?? 0;
     const labelKey = [
       ...[link.sourceDomainId, link.targetDomainId].sort(),
       link.kind,
@@ -232,43 +289,101 @@ export function buildTopologyGraph(
         && position.x > Math.min(sourceX, targetX)
         && position.x < Math.max(sourceX, targetX);
     });
-    const showLabel = !labeledPairs.has(labelKey) && !crossesNode;
+    const showLabel = !labeledPairs.has(labelKey)
+      && (!crossesNode || path.length > 2);
     labeledPairs.add(labelKey);
-    return {
-      id: link.id,
-      source: link.sourceDomainId,
-      target: link.targetDomainId,
-      sourceHandle: sourceX <= targetX ? "right-source" : "left-source",
-      targetHandle: sourceX <= targetX ? "left-target" : "right-target",
-      type: "smoothstep",
-      ...(showLabel
-        ? {
-            label: `${formatRate(link.bandwidthBytesPerSec)} · ${formatDuration(link.latencyNs)}`,
-          }
-        : {}),
-      animated: false,
-      style: {
-        stroke: color,
-        strokeWidth: 2,
-      },
-      markerEnd: {
-        type: "arrowclosed",
-        color,
-      },
-      data: {
-        category: "link",
-        scope: systemByDomain.get(link.sourceDomainId)
-            === systemByDomain.get(link.targetDomainId)
-          ? "intra-node"
-          : "inter-node",
-        kind: link.kind,
-        bandwidthBytesPerSec: link.bandwidthBytesPerSec,
-        latencyNs: link.latencyNs,
-        concurrencyLanes: link.concurrencyLanes,
-      },
-    };
+    return path.slice(0, -1).map((source, segmentIndex) => {
+      const target = path[segmentIndex + 1];
+      const segmentSourceX = positionById.get(source)?.x ?? sourceX;
+      const segmentTargetX = positionById.get(target)?.x ?? targetX;
+      const labelSegment = Math.floor((path.length - 2) / 2);
+      return {
+        id: path.length === 2 ? link.id : `${link.id}:path:${segmentIndex}`,
+        source,
+        target,
+        sourceHandle: segmentSourceX <= segmentTargetX
+          ? "right-source"
+          : "left-source",
+        targetHandle: segmentSourceX <= segmentTargetX
+          ? "left-target"
+          : "right-target",
+        type: "smoothstep" as const,
+        ...(showLabel && segmentIndex === labelSegment
+          ? {
+              label: [
+                link.transport,
+                formatRate(link.bandwidthBytesPerSec),
+                formatDuration(link.latencyNs),
+              ].filter(Boolean).join(" · "),
+            }
+          : {}),
+        animated: false,
+        style: {
+          stroke: color,
+          strokeWidth: 2,
+        },
+        ...(segmentIndex === path.length - 2
+          ? {
+              markerEnd: {
+                type: "arrowclosed" as const,
+                color,
+              },
+            }
+          : {}),
+        data: {
+          category: "link" as const,
+          scope: systemByDomain.get(link.sourceDomainId)
+              === systemByDomain.get(link.targetDomainId)
+            ? "intra-node" as const
+            : "inter-node" as const,
+          kind: link.kind,
+          bandwidthBytesPerSec: link.bandwidthBytesPerSec,
+          latencyNs: link.latencyNs,
+          concurrencyLanes: link.concurrencyLanes,
+          transport: link.transport,
+          logicalSourceId: link.sourceDomainId,
+          logicalTargetId: link.targetDomainId,
+          networkResourceIds: link.networkResourceIds,
+          segmentIndex,
+          segmentCount: path.length - 1,
+        },
+      };
+    });
   });
   return { nodes, edges: [...accessEdges, ...linkEdges] };
+}
+
+function networkResourceNode(
+  resource: NetworkResourceSpec,
+  position: { readonly x: number; readonly y: number },
+  nodeId = "shared-network",
+): TopologyGraphNode {
+  return {
+    id: resource.id,
+    type: "topology",
+    position,
+    ...(resource.nodeId === undefined
+      ? {}
+      : {
+          parentId: `system:${resource.nodeId}`,
+          extent: "parent" as const,
+        }),
+    data: {
+      category: "network",
+      title: resource.id,
+      kind: resource.kind === "nic" ? "NIC / HCA" : "switch fabric",
+      nodeId,
+      accent: resource.kind === "nic" ? "nic" : "fabric",
+      details: [
+        `${formatRate(resource.bandwidthBytesPerSec)} · ${formatDuration(resource.latencyNs)}`,
+        `${resource.concurrencyLanes} lane${resource.concurrencyLanes === 1 ? "" : "s"}`,
+        compactList(resource.supportedTransports),
+        resource.directMemoryDomainIds.length === 0
+          ? "host staged"
+          : `direct: ${compactList(resource.directMemoryDomainIds)}`,
+      ],
+    },
+  };
 }
 
 function centeredColumn(

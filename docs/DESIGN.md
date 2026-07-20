@@ -915,6 +915,10 @@ multi-rail striping. Two to four logical point-to-point paths may share the
 same declared fabric resource, which is sufficient to model endpoint
 injection limits and switch contention deterministically.
 
+The original fixed `multi-node` preset retains its two host-staged InfiniBand
+link identities and coefficients so existing transport calibrations remain
+addressable. The browser's parameterized LAN control uses the new builder.
+
 ### 10.2 Scenario Schema
 
 ```typescript

@@ -9,6 +9,7 @@ import {
   buildScenarioPreset,
   calculateLinkDurationNs,
   calculateScenarioMemoryLedger,
+  configureSmallLanNetwork,
   findTransferPath,
   findTransferRoute,
   validateScenario,
@@ -314,6 +315,10 @@ describe("scenario presets", () => {
       "node1:host",
       "node1:gpu0:vram",
     ]);
+    expect(multiNode.networkResources).toBeUndefined();
+    expect(multiNode.links.filter((link) => link.kind === "infiniband").map(
+      (link) => link.id,
+    )).toEqual(["cluster:rdma:forward", "cluster:rdma:reverse"]);
   });
 
   it("selects a deterministic message-size-aware transfer route", () => {
@@ -557,6 +562,42 @@ describe("scenario presets", () => {
       1_000_000,
       direct.networkResources,
     )).toBeGreaterThan(directLink.latencyNs);
+  });
+
+  it("upgrades and downgrades a LAN without replacing model placement", () => {
+    const simple = buildMultiNodeLanScenario(3);
+    const originalPlacements = simple.placements;
+    const direct = configureSmallLanNetwork(simple, {
+      advanced: true,
+      linkKind: "infiniband",
+      transport: "gpudirect_rdma",
+    });
+    const downgraded = configureSmallLanNetwork(direct, {
+      advanced: false,
+      linkKind: "ethernet",
+      transport: "tcp",
+      bandwidthBytesPerSec: 5_000_000_000,
+    });
+
+    expect(direct.placements).toBe(originalPlacements);
+    expect(direct.networkResources).toHaveLength(4);
+    expect(findTransferRoute(direct, direct.transfers[0])?.domainIds).toEqual([
+      "node0:gpu0:vram",
+      "node1:gpu0:vram",
+    ]);
+    expect(downgraded.placements).toBe(originalPlacements);
+    expect(downgraded.networkResources).toBeUndefined();
+    expect(downgraded.links.filter((link) => link.transport !== undefined))
+      .toHaveLength(6);
+    expect(findTransferRoute(
+      downgraded,
+      downgraded.transfers[0],
+    )?.domainIds).toEqual([
+      "node0:gpu0:vram",
+      "node0:host",
+      "node1:host",
+      "node1:gpu0:vram",
+    ]);
   });
 
   it("rejects GPUDirect paths without endpoint-local direct NIC access", () => {

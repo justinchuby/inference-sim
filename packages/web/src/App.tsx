@@ -1,5 +1,6 @@
 import {
   buildMultiGpuRingScenario,
+  buildMultiNodeLanScenario,
   buildScenarioPreset,
   buildTopology,
   type ScenarioPresetName,
@@ -172,6 +173,8 @@ const MULTI_GPU_RANKS: readonly DashboardRunConfig["multiGpuRanks"][] = [
   8,
 ];
 
+const MULTI_NODE_COUNTS = [2, 3, 4] as const;
+
 const SPECULATIVE_FAMILIES: ReadonlyArray<{
   readonly value: DashboardRunConfig["speculative"]["family"];
   readonly label: string;
@@ -187,6 +190,7 @@ const SPECULATIVE_FAMILIES: ReadonlyArray<{
 const DEFAULT_CONFIG: DashboardRunConfig = {
   scenarioName: "multi-gpu",
   multiGpuRanks: 2,
+  multiNodeCount: 2,
   modelBinding: createBuiltinModelBinding("llama-3-8b"),
   mode: "serving",
   seed: 42,
@@ -1122,7 +1126,12 @@ export function App(): React.JSX.Element {
   const result = runState.result;
   const selectedScenario = useMemo(
     () => resolveSelectedScenario(config),
-    [config.customScenario, config.multiGpuRanks, config.scenarioName],
+    [
+      config.customScenario,
+      config.multiGpuRanks,
+      config.multiNodeCount,
+      config.scenarioName,
+    ],
   );
   const displayedScenario = result?.comparison
     ? buildScenarioPreset(result.scenario.id as ScenarioPresetName)
@@ -1993,6 +2002,9 @@ function resolveSelectedScenario(
   ) {
     return buildMultiGpuRingScenario(config.multiGpuRanks);
   }
+  if (config.scenarioName === "multi-node") {
+    return buildMultiNodeLanScenario(config.multiNodeCount ?? 2);
+  }
   return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
 }
 
@@ -2062,6 +2074,7 @@ function ConfigurationPanel({
   const selectedScenario = useMemo(() => resolveSelectedScenario(config), [
     config.customScenario,
     config.multiGpuRanks,
+    config.multiNodeCount,
     config.scenarioName,
   ]);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
@@ -2412,6 +2425,38 @@ function ConfigurationPanel({
                                 value={String(rankCount)}
                               >
                                 {rankCount} GPUs
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    )
+                  : null}
+                {config.scenarioName === "multi-node"
+                  ? (
+                      <Field label="LAN nodes">
+                        <Select
+                          value={String(config.multiNodeCount ?? 2)}
+                          disabled={disabled}
+                          onValueChange={(nodeCount) => {
+                            const multiNodeCount = MULTI_NODE_COUNTS.find(
+                              (candidate) => String(candidate) === nodeCount,
+                            );
+                            if (multiNodeCount !== undefined) {
+                              onChange({ ...config, multiNodeCount });
+                            }
+                          }}
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MULTI_NODE_COUNTS.map((nodeCount) => (
+                              <SelectItem
+                                key={nodeCount}
+                                value={String(nodeCount)}
+                              >
+                                {nodeCount} nodes
                               </SelectItem>
                             ))}
                           </SelectContent>
