@@ -82,6 +82,12 @@ const SCENARIOS: ReadonlyArray<{
   { value: "multi-node", label: "Multi-node" },
 ];
 
+const MULTI_GPU_RANKS: readonly DashboardRunConfig["multiGpuRanks"][] = [
+  2,
+  4,
+  8,
+];
+
 const SPECULATIVE_FAMILIES: ReadonlyArray<{
   readonly value: DashboardRunConfig["speculative"]["family"];
   readonly label: string;
@@ -96,6 +102,7 @@ const SPECULATIVE_FAMILIES: ReadonlyArray<{
 
 const DEFAULT_CONFIG: DashboardRunConfig = {
   scenarioName: "multi-gpu",
+  multiGpuRanks: 2,
   mode: "speculative",
   seed: 42,
   speculative: {
@@ -489,28 +496,62 @@ function ConfigurationPanel({
         {config.mode === "serving" && config.serving.compareTopologies
           ? null
           : (
-              <Field label="Device topology">
-                <Select
-                  value={config.scenarioName}
-                  disabled={disabled}
-                  onValueChange={(scenarioName) => onChange({
-                    ...config,
-                    scenarioName:
-                      scenarioName as DashboardRunConfig["scenarioName"],
-                  })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SCENARIOS.map((scenario) => (
-                      <SelectItem key={scenario.value} value={scenario.value}>
-                        {scenario.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <>
+                <Field label="Device topology">
+                  <Select
+                    value={config.scenarioName}
+                    disabled={disabled}
+                    onValueChange={(scenarioName) => onChange({
+                      ...config,
+                      scenarioName:
+                        scenarioName as DashboardRunConfig["scenarioName"],
+                    })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SCENARIOS.map((scenario) => (
+                        <SelectItem key={scenario.value} value={scenario.value}>
+                          {scenario.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {config.scenarioName === "multi-gpu"
+                  ? (
+                      <Field label="GPU ranks">
+                        <Select
+                          value={String(config.multiGpuRanks)}
+                          disabled={disabled}
+                          onValueChange={(rankCount) => {
+                            const multiGpuRanks = MULTI_GPU_RANKS.find(
+                              (candidate) => String(candidate) === rankCount,
+                            );
+                            if (multiGpuRanks !== undefined) {
+                              onChange({ ...config, multiGpuRanks });
+                            }
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MULTI_GPU_RANKS.map((rankCount) => (
+                              <SelectItem
+                                key={rankCount}
+                                value={String(rankCount)}
+                              >
+                                {rankCount} GPUs
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    )
+                  : null}
+              </>
             )}
 
         <div className="mb-4 border-y border-zinc-200 py-3">

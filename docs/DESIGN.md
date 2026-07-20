@@ -864,6 +864,14 @@ The same composition also covers heterogeneous scenarios listed by onnx-genai:
 CUDA+MLX overflow, NPU attention with GPU FFN, multi-vendor GPU via host/RDMA,
 and multiple CPU EPs for deterministic testing.
 
+The public parameterized multi-GPU builder materializes 2 through 64 ranks with
+per-rank VRAM, placement allocations, PCIe links, DeviceGovernors, and a closed
+bidirectional inter-GPU ring. It validates the completed storage/cache tiers
+before returning. The browser intentionally exposes only 2, 4, and 8 ranks as
+a bounded option set and rejects any other Worker input; the fixed two-rank
+`multi-gpu` preset retains its original scenario and link identities for
+calibration compatibility.
+
 ### 10.2 Scenario Schema
 
 ```typescript
@@ -1435,6 +1443,9 @@ utilization charts, and recent request/iteration/route inspection. Serving
 controls select target-only or any proposer family plus width and acceptance,
 and use a shadcn/Radix switch to compose the Experts-tab cache parameters into
 that serving run.
+Multi-GPU runs additionally select 2, 4, or 8 ranks and delegate topology
+construction to the validated core builder; the UI does not synthesize
+placements or links.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. General configuration
 search, FrozenPlan file execution/export, ONNX import, trace export, and richer

@@ -29,6 +29,7 @@ export interface DashboardRunConfig {
     | "gpu-npu"
     | "unified-memory"
     | "multi-node";
+  readonly multiGpuRanks: 2 | 4 | 8;
   readonly mode: WorkloadMode;
   readonly seed: number;
   readonly calibration?: CalibrationDataset;

@@ -8,6 +8,7 @@ import type { DashboardRunConfig } from "./types.js";
 
 const base: DashboardRunConfig = {
   scenarioName: "multi-gpu",
+  multiGpuRanks: 2,
   mode: "speculative",
   seed: 42,
   speculative: {
@@ -71,6 +72,46 @@ describe("simulateDashboard", () => {
       expect(result.speculative?.family).toBe(family);
       expect(result.speculative?.finalTokenLength).toBe(2112);
     }
+  });
+
+  it("runs the selected workload on parameterized multi-GPU rings", () => {
+    for (const multiGpuRanks of [4, 8] as const) {
+      const result = simulateDashboard({ ...base, multiGpuRanks });
+
+      expect(result.scenario.id).toBe(
+        `multi-gpu-ring-${multiGpuRanks}`,
+      );
+      expect(result.scenario.deviceCount).toBe(multiGpuRanks + 1);
+      expect(result.topology.operationCounts.allReduce).toBeGreaterThan(0);
+      expect(result.topology.metrics.linkUtilization.some((resource) => (
+        resource.resourceId.includes("nvlink")
+      ))).toBe(true);
+      expect(result.topology.metrics.committedTokens).toBe(
+        base.speculative.outputTokens,
+      );
+    }
+  });
+
+  it("rejects an untrusted dashboard GPU-rank value", () => {
+    expect(() => simulateDashboard({
+      ...base,
+      multiGpuRanks: 3 as DashboardRunConfig["multiGpuRanks"],
+    })).toThrow("dashboard multi-GPU ranks must be 2, 4, or 8; got 3");
+  });
+
+  it("partitions routed experts across selected GPU ranks", () => {
+    const result = simulateDashboard({
+      ...base,
+      mode: "expert-cache",
+      multiGpuRanks: 4,
+    });
+
+    expect(result.scenario.id).toBe("multi-gpu-ring-4");
+    expect(result.expertCache?.hotPartitions).toHaveLength(4);
+    expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
+    expect(result.topology.assumptions.some((assumption) => (
+      assumption.includes("balanced pairwise-exchange phases")
+    ))).toBe(true);
   });
 
   it("runs imported token evidence through value and state parity", async () => {

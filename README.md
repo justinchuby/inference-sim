@@ -100,6 +100,10 @@ the same contiguous/round-robin core contract; neither product surface
 reimplements owner semantics. Cache slot controls are per EP owner for hot
 residency and per node for warm residency; result snapshots expose both
 aggregate and partition-level capacity evidence.
+The Multi-GPU topology selector can instantiate validated 2-, 4-, or 8-rank
+rings through the public core scenario builder. Each rank owns independent
+VRAM, cache, workspace, PCIe, and ring-link resources; the Worker rejects
+unrecognized rank counts instead of coercing them.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it

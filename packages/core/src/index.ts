@@ -246,6 +246,7 @@ export {
 } from "./scenario.js";
 export {
   SCENARIO_PRESET_NAMES,
+  buildMultiGpuRingScenario,
   buildScenarioPreset,
   type ScenarioPresetName,
 } from "./scenario-presets.js";

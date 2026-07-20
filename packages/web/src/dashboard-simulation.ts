@@ -2,6 +2,7 @@ import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+  buildMultiGpuRingScenario,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
@@ -70,9 +71,7 @@ export function simulateDashboard(
       comparison,
     ));
   }
-  const scenario = buildScenarioPreset(
-    config.scenarioName as ScenarioPresetName,
-  );
+  const scenario = buildSelectedScenario(config);
   const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
     const workload = runSpeculative(config);
@@ -105,6 +104,24 @@ export function simulateDashboard(
     )),
     expertCache: workload.dashboard,
   });
+}
+
+function buildSelectedScenario(config: DashboardRunConfig) {
+  if (config.scenarioName === "multi-gpu") {
+    if (
+      config.multiGpuRanks !== 2
+      && config.multiGpuRanks !== 4
+      && config.multiGpuRanks !== 8
+    ) {
+      throw new Error(
+        `dashboard multi-GPU ranks must be 2, 4, or 8; got ${String(config.multiGpuRanks)}`,
+      );
+    }
+    if (config.multiGpuRanks !== 2) {
+      return buildMultiGpuRingScenario(config.multiGpuRanks);
+    }
+  }
+  return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
 }
 
 function runServing(

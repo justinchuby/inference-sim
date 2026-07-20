@@ -197,7 +197,27 @@ function buildSingleGpu(): SimulationScenario {
   });
 }
 
+export function buildMultiGpuRingScenario(
+  gpuCount: number,
+): SimulationScenario {
+  if (!Number.isSafeInteger(gpuCount) || gpuCount < 2 || gpuCount > 64) {
+    throw new Error(
+      `multi-GPU ring count must be a safe integer from 2 through 64; got ${gpuCount}`,
+    );
+  }
+  const result = buildMultiGpuRing(gpuCount, `multi-gpu-ring-${gpuCount}`);
+  assertValidScenario(result);
+  return result;
+}
+
 function buildMultiGpu(): SimulationScenario {
+  return buildMultiGpuRing(2, "multi-gpu");
+}
+
+function buildMultiGpuRing(
+  gpuCount: number,
+  id: string,
+): SimulationScenario {
   const cpu = device(
     "node0:cpu0",
     "node0",
@@ -206,24 +226,36 @@ function buildMultiGpu(): SimulationScenario {
     ["node0:host"],
     ["copy", "sampling"],
   );
-  const gpu0 = device(
-    "node0:gpu0",
+  const gpus = Array.from({ length: gpuCount }, (_, index) => device(
+    `node0:gpu${index}`,
     "node0",
     "gpu",
     "CUDAExecutionProvider",
-    ["node0:gpu0:vram", "node0:host"],
+    [`node0:gpu${index}:vram`, "node0:host"],
     ["attention", "ffn", "collective", "copy", "sampling", "draft"],
-  );
-  const gpu1 = device(
-    "node0:gpu1",
-    "node0",
-    "gpu",
-    "CUDAExecutionProvider",
-    ["node0:gpu1:vram", "node0:host"],
-    ["attention", "ffn", "collective", "copy", "sampling", "draft"],
-  );
+  ));
+  const ringLinks = gpuCount === 2
+    ? bidirectionalLink(
+        "node0:nvlink",
+        "node0:gpu0:vram",
+        "node0:gpu1:vram",
+        "nvlink",
+        600 * GBps,
+        500,
+      )
+    : gpus.flatMap((_, index) => {
+        const next = (index + 1) % gpuCount;
+        return bidirectionalLink(
+          `node0:nvlink${index}${next}`,
+          `node0:gpu${index}:vram`,
+          `node0:gpu${next}:vram`,
+          "nvlink",
+          600 * GBps,
+          500,
+        );
+      });
   return scenario({
-    id: "multi-gpu",
+    id,
     family: "multi_gpu",
     domains: [
       domain(
@@ -233,88 +265,71 @@ function buildMultiGpu(): SimulationScenario {
         512 * GiB,
         120 * GBps,
         ["pageable", "pinned"],
-        [cpu.id, gpu0.id, gpu1.id],
+        [cpu.id, ...gpus.map((gpu) => gpu.id)],
         { kind: "host", nodeId: "node0" },
       ),
-      domain(
-        "node0:gpu0:vram",
+      ...gpus.map((gpu, index) => domain(
+        `node0:gpu${index}:vram`,
         "node0",
         "device",
         80 * GiB,
         3_000 * GBps,
         ["device"],
-        [gpu0.id],
-        { kind: "device", deviceId: gpu0.id },
-      ),
-      domain(
-        "node0:gpu1:vram",
-        "node0",
-        "device",
-        80 * GiB,
-        3_000 * GBps,
-        ["device"],
-        [gpu1.id],
-        { kind: "device", deviceId: gpu1.id },
-      ),
+        [gpu.id],
+        { kind: "device", deviceId: gpu.id },
+      )),
     ],
-    devices: [cpu, gpu0, gpu1],
+    devices: [cpu, ...gpus],
     links: [
-      ...bidirectionalLink(
-        "node0:pcie0",
+      ...gpus.flatMap((_, index) => bidirectionalLink(
+        `node0:pcie${index}`,
         "node0:host",
-        "node0:gpu0:vram",
+        `node0:gpu${index}:vram`,
         "pcie",
         32 * GBps,
         1_500,
-      ),
-      ...bidirectionalLink(
-        "node0:pcie1",
-        "node0:host",
-        "node0:gpu1:vram",
-        "pcie",
-        32 * GBps,
-        1_500,
-      ),
-      ...bidirectionalLink(
-        "node0:nvlink",
-        "node0:gpu0:vram",
-        "node0:gpu1:vram",
-        "nvlink",
-        600 * GBps,
-        500,
-      ),
+      )),
+      ...ringLinks,
     ],
-    placements: [
-      placement("target-shard-0", gpu0.id, ["attention", "ffn", "collective"], [
-        allocation("weights-0", "node0:gpu0:vram", 36 * GiB, "device", "weights"),
-        allocation("kv-0", "node0:gpu0:vram", 8 * GiB, "device", "kv"),
+    placements: gpus.map((gpu, index) => placement(
+      `target-shard-${index}`,
+      gpu.id,
+      ["attention", "ffn", "collective"],
+      [
         allocation(
-          "workspace-0",
-          "node0:gpu0:vram",
+          `weights-${index}`,
+          `node0:gpu${index}:vram`,
+          36 * GiB,
+          "device",
+          "weights",
+        ),
+        allocation(
+          `kv-${index}`,
+          `node0:gpu${index}:vram`,
+          8 * GiB,
+          "device",
+          "kv",
+        ),
+        allocation(
+          `workspace-${index}`,
+          `node0:gpu${index}:vram`,
           128 * MiB,
           "device",
           "workspace",
         ),
-        allocation(
-          "expert-cache-host",
-          "node0:host",
-          256 * MiB,
-          "pinned",
-          "staging",
-        ),
-      ]),
-      placement("target-shard-1", gpu1.id, ["attention", "ffn", "collective"], [
-        allocation("weights-1", "node0:gpu1:vram", 36 * GiB, "device", "weights"),
-        allocation("kv-1", "node0:gpu1:vram", 8 * GiB, "device", "kv"),
-        allocation(
-          "workspace-1",
-          "node0:gpu1:vram",
-          128 * MiB,
-          "device",
-          "workspace",
-        ),
-      ]),
-    ],
+        ...(index === 0
+          ? [
+              allocation(
+                "expert-cache-host",
+                "node0:host",
+                256 * MiB,
+                "pinned",
+                "staging",
+              ),
+            ]
+          : []),
+      ],
+    )),
     transfers: [
       transfer(
         "tensor-parallel",
@@ -323,12 +338,15 @@ function buildMultiGpu(): SimulationScenario {
         64 * 1024 ** 2,
       ),
     ],
-    groups: [group("tp", [[0, gpu0.id], [1, gpu1.id]])],
+    groups: [group(
+      "tp",
+      gpus.map((gpu, index) => [index, gpu.id] as const),
+    )],
     parallelism: {
       composition: "overlap_by_capability",
-      tensor: 2,
+      tensor: gpuCount,
       pipeline: 1,
-      expert: 2,
+      expert: gpuCount,
       data: 1,
     },
   });

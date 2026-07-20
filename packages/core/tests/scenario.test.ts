@@ -3,6 +3,7 @@ import {
   SCENARIO_PRESET_NAMES,
   ScenarioValidationError,
   assertValidScenario,
+  buildMultiGpuRingScenario,
   buildScenarioPreset,
   calculateScenarioMemoryLedger,
   findTransferPath,
@@ -97,6 +98,36 @@ describe("scenario presets", () => {
       "node1:host",
       "node1:gpu0:vram",
     ]);
+  });
+
+  it("builds validated parameterized multi-GPU rings", () => {
+    for (const gpuCount of [2, 4, 8]) {
+      const scenario = buildMultiGpuRingScenario(gpuCount);
+      const targetPlacements = scenario.placements.filter((placement) => (
+        placement.requiredCapabilities.includes("attention")
+      ));
+      const group = scenario.groups.find((candidate) => candidate.id === "tp");
+      const ringLinks = scenario.links.filter((link) => link.kind === "nvlink");
+
+      expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
+      expect(scenario.id).toBe(`multi-gpu-ring-${gpuCount}`);
+      expect(targetPlacements).toHaveLength(gpuCount);
+      expect(group?.orderedRanks).toHaveLength(gpuCount);
+      expect(ringLinks).toHaveLength(gpuCount === 2 ? 2 : gpuCount * 2);
+      expect(scenario.execution.parallelism).toMatchObject({
+        composition: "overlap_by_capability",
+        tensor: gpuCount,
+        expert: gpuCount,
+      });
+    }
+  });
+
+  it("rejects unsafe multi-GPU ring sizes", () => {
+    for (const gpuCount of [1, 2.5, 65, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => buildMultiGpuRingScenario(gpuCount)).toThrow(
+        "multi-GPU ring count must be a safe integer from 2 through 64",
+      );
+    }
   });
 });
 
