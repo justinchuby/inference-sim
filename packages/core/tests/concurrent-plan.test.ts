@@ -250,6 +250,22 @@ describe("concurrent FrozenPlan execution", () => {
     ])).toThrowError("require 6 runtime events, limit is 5");
   });
 
+  it("enforces the same event budget for incremental streaming admission", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const limited = {
+      ...scenario,
+      execution: {
+        ...scenario.execution,
+        maxEvents: 5,
+      },
+    };
+    const runtime = new StreamingConcurrentPlanRuntime(limited);
+
+    runtime.admit(oneStepPlan("execution-a"), 0);
+    expect(() => runtime.admit(oneStepPlan("execution-b"), 0))
+      .toThrowError("require 6 runtime events, limit is 5");
+  });
+
   it("releases constrained steps without reserving resources early", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const constrained = {

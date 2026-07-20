@@ -234,8 +234,11 @@ describe("topology-aware serving", () => {
     expect(expertCache.snapshot.metrics.hotHits)
       .toBe(expertCache.routes.length - 1);
     expect(expertCache.replay.snapshot).toEqual(expertCache.snapshot);
+    const demandLoads = expertCache.trace.filter((event) => (
+      event.kind === "load_start" && event.load.kind === "demand"
+    ));
     expect(result.physical?.execution.trace.admissions).toHaveLength(
-      result.batches.length,
+      result.batches.length + demandLoads.length,
     );
     expect(result.physical?.replay.appliedEvents).toBeGreaterThan(0);
     expect(result.physical?.replay.completedAtNs).toBe(
@@ -268,7 +271,7 @@ describe("topology-aware serving", () => {
       batch.physicalExecution?.executionId
         === batch.topology.plan.executionId
       && batch.foregroundCompletedAtNs
-        <= batch.startedAtNs + batch.durationNs
+        === batch.startedAtNs + batch.durationNs
     ))).toBe(true);
     expect(result.batches.length).toBeGreaterThan(1);
     expect(result.batches[0].expertRoutes[0].sourceTiers).toEqual(["cold"]);
@@ -278,10 +281,38 @@ describe("topology-aware serving", () => {
       ))
     ))).toBe(true);
     expect(result.batches.every((batch) => (
-      batch.durationNs === Math.max(
-        batch.cacheConstraintNs,
-        batch.topology.metrics.totalDurationNs,
-      )
+      batch.durationNs >= batch.cacheConstraintNs
+      && batch.foregroundCompletedAtNs
+        >= batch.startedAtNs + batch.cacheConstraintNs
+    ))).toBe(true);
+    expect(demandLoads).toHaveLength(1);
+    const demandLoad = demandLoads[0].load;
+    const demandRetime = expertCache.trace.find((event) => (
+      event.kind === "load_retime"
+      && event.loadId === demandLoad.loadId
+      && event.physicalCompletesAtNs !== undefined
+    ));
+    const demandExecutionId =
+      `multi-gpu:expert-load:${demandLoad.loadId}`;
+    const demandOperations =
+      result.physical?.execution.trace.operations.filter(({ event }) => (
+        event.executionId === demandExecutionId
+      )) ?? [];
+    expect(demandOperations.length).toBeGreaterThan(0);
+    expect(demandOperations.some(({ event }) => (
+      event.kind === "transfer"
+      && event.resources.some((resource) => (
+        resource.resourceId.endsWith(":storage-read")
+      ))
+    ))).toBe(true);
+    expect(demandRetime?.physicalCompletesAtNs).toBe(
+      Math.max(...demandOperations.map(({ event }) => event.finishNs)),
+    );
+    expect(result.batches.every((batch) => (
+      batch.topology.plan.steps.every((step) => (
+        step.operation.kind !== "transfer"
+        || !step.operation.linkId.endsWith(":storage-read")
+      ))
     ))).toBe(true);
     expect(result.metrics.allToAllOperations).toBeGreaterThan(0);
   });
@@ -333,10 +364,119 @@ describe("topology-aware serving", () => {
       expect(result.batches.every((batch) => (
         batch.topology.execution.status === "succeeded"
       )), scenarioName).toBe(true);
+      const demandLoads = result.expertCache?.trace.filter((event) => (
+        event.kind === "load_start" && event.load.kind === "demand"
+      )) ?? [];
+      expect(demandLoads.length, scenarioName).toBeGreaterThan(0);
+      for (const demand of demandLoads) {
+        expect(demand.load.sourceTier, scenarioName).toBe("cold");
+        const retime = result.expertCache?.trace.find((event) => (
+          event.kind === "load_retime"
+          && event.loadId === demand.load.loadId
+          && event.physicalCompletesAtNs !== undefined
+        ));
+        const executionId =
+          `${result.scenarioId}:expert-load:${demand.load.loadId}`;
+        const operations =
+          result.physical?.execution.trace.operations.filter(({ event }) => (
+            event.executionId === executionId
+          )) ?? [];
+        expect(operations.length, `${scenarioName}:${demand.load.loadId}`)
+          .toBeGreaterThan(0);
+        expect(retime?.physicalCompletesAtNs, scenarioName).toBe(
+          Math.max(...operations.map(({ event }) => event.finishNs)),
+        );
+      }
+      for (const batch of result.batches) {
+        const admission = result.physical?.execution.trace.admissions.find(
+          (event) => (
+            event.executionId === batch.topology.plan.executionId
+          ),
+        );
+        expect(admission?.arrivalNs, `${scenarioName}:batch-${batch.batchId}`)
+          .toBe(batch.startedAtNs + batch.cacheConstraintNs);
+      }
       expect(
         result.metrics.allToAllOperations > 0,
         scenarioName,
       ).toBe(scenarioName === "multi-gpu" || scenarioName === "multi-node");
+    }
+  });
+
+  it("distinguishes local and transported warm demand on every topology", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const localWarmScenarios = new Set(["cpu-only", "unified-memory"]);
+    for (const scenarioName of SCENARIO_PRESET_NAMES) {
+      const result = simulateTopologyServingWorkload(
+        buildScenarioPreset(scenarioName),
+        {
+          requests: [
+            { id: "warm", arrivalNs: 0, promptTokens: 1, outputTokens: 1 },
+          ],
+          maxBatchSize: 1,
+          maxBatchTokens: 1,
+          prefillChunkTokens: 1,
+          maxKvTokens: 1,
+        },
+        undefined,
+        {
+          contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+          cache: {
+            experts: [{ id: "e0", bytes: expertBytes }],
+            hotCapacityBytes: expertBytes,
+            warmCapacityBytes: expertBytes,
+            warmToHotLatencyNs: 9_999_999,
+            coldToHotLatencyNs: 20_000,
+            coldToWarmLatencyNs: 10_000,
+            routingSeed: 7,
+            initialWarmExpertIds: ["e0"],
+          },
+          topK: 1,
+        },
+      );
+      const demand = result.expertCache?.trace.find((event) => (
+        event.kind === "load_start" && event.load.kind === "demand"
+      ));
+      if (demand?.kind !== "load_start") {
+        throw new Error(`missing warm demand for ${scenarioName}`);
+      }
+      expect(demand.load.sourceTier, scenarioName).toBe("warm");
+      const retime = result.expertCache?.trace.find((event) => (
+        event.kind === "load_retime"
+        && event.loadId === demand.load.loadId
+        && event.physicalCompletesAtNs !== undefined
+      ));
+      expect(retime, scenarioName).toBeDefined();
+      expect(
+        (retime?.physicalCompletesAtNs ?? 0) - demand.load.startedAtNs,
+        scenarioName,
+      ).not.toBe(9_999_999);
+      const executionId =
+        `${scenarioName}:expert-load:${demand.load.loadId}`;
+      const operations =
+        result.physical?.execution.trace.operations.filter(({ event }) => (
+          event.executionId === executionId
+        )) ?? [];
+      if (localWarmScenarios.has(scenarioName)) {
+        expect(operations, scenarioName).toHaveLength(0);
+        expect(retime?.physicalCompletesAtNs, scenarioName)
+          .toBe(demand.load.startedAtNs);
+      } else {
+        expect(operations.length, scenarioName).toBeGreaterThan(0);
+        expect(operations.every(({ event }) => (
+          event.kind === "transfer"
+          && !event.resources.some((resource) => (
+            resource.resourceId.endsWith(":storage-read")
+          ))
+        )), scenarioName).toBe(true);
+        expect(retime?.physicalCompletesAtNs, scenarioName).toBe(
+          Math.max(...operations.map(({ event }) => event.finishNs)),
+        );
+      }
+      expect(result.expertCache?.replay.snapshot, scenarioName)
+        .toEqual(result.expertCache?.snapshot);
+      expect(result.physical?.replay.completedAtNs, scenarioName)
+        .toBe(result.physical?.execution.completedAtNs);
     }
   });
 
@@ -417,9 +557,13 @@ describe("topology-aware serving", () => {
       event.kind === "load_start" && event.load.kind === "prefetch"
     ));
     const retimes = trace.filter((event) => event.kind === "load_retime");
-    const physicalRetimes = retimes.filter(
-      (event) => event.physicalCompletesAtNs !== undefined,
-    );
+    const prefetchLoadIds = new Set(prefetchLoads.map(
+      (event) => event.load.loadId,
+    ));
+    const physicalRetimes = retimes.filter((event) => (
+      event.physicalCompletesAtNs !== undefined
+      && prefetchLoadIds.has(event.loadId)
+    ));
     const storageTransfers = result.physical?.execution.trace.operations.filter(
       ({ event }) => (
         event.kind === "transfer"
@@ -430,7 +574,7 @@ describe("topology-aware serving", () => {
     ) ?? [];
 
     expect(prefetchLoads.length).toBeGreaterThan(0);
-    expect(retimes.length).toBe(prefetchLoads.length * 2);
+    expect(retimes.length).toBeGreaterThanOrEqual(prefetchLoads.length * 2);
     expect(physicalRetimes).toHaveLength(prefetchLoads.length);
     expect(storageTransfers.length).toBeGreaterThan(0);
     for (const retime of physicalRetimes) {
@@ -514,6 +658,9 @@ describe("topology-aware serving", () => {
       const physicalRetimes = trace.filter((event) => (
         event.kind === "load_retime"
         && event.physicalCompletesAtNs !== undefined
+        && prefetchLoads.some((load) => (
+          load.load.loadId === event.loadId
+        ))
       ));
 
       expect(prefetchLoads.length, scenarioName).toBeGreaterThan(0);

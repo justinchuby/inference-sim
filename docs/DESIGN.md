@@ -668,32 +668,57 @@ declares that architecture. Per-batch routed FFN work uses the same AllToAllV
 and expert-sharded topology path as standalone expert-cache workloads.
 
 The current bounded baseline serializes cache route decisions inside a batch,
-while the resulting target work remains batched in one topology plan. This is
-conservative about logical cache readiness but retains batched attention and
-FFN launch economics. Demand-load bytes are projected into the topology plan,
-so batch duration is:
+while the resulting target work remains batched in one topology plan. Each
+route is a two-phase transaction. `beginTokenRoute()` identifies new demand
+loads without recording an access. Every new load compiles into its own
+topology plan and is admitted to the same absolute-time streaming runtime:
+
+- a cold load starts at node-local backing storage and reaches every FFN
+  workspace through the declared storage and device links;
+- a warm load starts in the node-local warm domain;
+- CPU-only and unified-memory warm promotion is a same-domain state transition
+  and therefore has no fictitious copy plan;
+- all new loads from one route are admitted before any of their terminals are
+  awaited, preserving resource and lease contention; and
+- cold shards that reuse one node-local staging allocation are explicitly
+  ordered.
+
+The cache completion of each demand load is retimed from the maximum of its
+physical terminal events. `completeTokenRoute()` may record the expert access
+only after those events make every required expert hot. The aggregate target
+plan then carries routed AllToAllV/FFN work but zero demand-load bytes, and is
+admitted at cache readiness. Consequently there is one authoritative time
+line:
 
 ```text
-max(global_foreground_duration, serialized_cache_readiness_constraint)
+route decision
+  -> physical demand terminals
+  -> cache access
+  -> aggregate target-plan admission
+  -> foreground terminal
+
+batch_duration = foreground_terminal_time - scheduler_batch_start_time
 ```
 
-The two terms are constraints, not additive costs; adding them would charge the
-same demand movement twice. The next batch cannot observe cache state until the
-current batch completes. Serving replay reuses the already materialized batch
-result and must match both batch work and scheduler start time, while the full
-expert-cache trace is replayed independently from initialization through final
-residency.
+`cacheConstraintNs` remains trace evidence for the interval from scheduler
+batch start through serialized route readiness; it is not a second duration
+estimate. Demand transfers appear only in their load plans, so the target plan
+cannot charge them again. The next batch cannot observe cache state until the
+current batch foreground completes. Serving replay reuses the already
+materialized batch result and must match both batch work and scheduler start
+time, while the full expert-cache trace is replayed independently from
+initialization through final residency.
 
 Topology results identify the final foreground workload step separately from
 total plan drain. `foregroundDurationNs` is taken from that step's replayed
 trace event; `backgroundDrainNs` is the remaining quiescence tail. Composed
-serving admits each batch plan into one streaming concurrent-plan runtime at
-the scheduler's absolute start time and runs only until that batch's foreground
-terminal before returning its service duration. Resource lanes, physical
-allocation leases, and collective submit ordering remain live for older
-background steps. After the final batch, the runtime drains and the existing
-concurrent-plan verifier independently replays every admission, operation, and
-terminal.
+serving admits demand plans at their route request time and each batch plan at
+its cache-ready time in one streaming concurrent-plan runtime. It runs only
+until that batch's foreground terminal before returning its service duration.
+Resource lanes, physical allocation leases, and collective submit ordering
+remain live for older background steps. After the final batch, the runtime
+drains and the existing concurrent-plan verifier independently replays every
+admission, operation, and terminal.
 
 Serving request completion and resource observation are separate clocks.
 `totalDurationNs` ends when the final request completes, while
@@ -707,10 +732,11 @@ Revision-4 expert-cache traces permit a pending load completion to be retimed
 without changing its reservation. In composed serving, each adaptive
 warm load is first deferred so later routes in the same aggregate batch cannot
 consume a provisional fixed-latency copy. Every step on its physical storage
-path receives an absolute not-before constraint equal to the recorded policy
-decision time. The streaming runtime releases the step only after both that
-time and its DAG dependencies are satisfied; replay receives the same
-per-request constraints and rejects an early submission. This prevents a fast
+path receives an absolute not-before constraint equal to the later of its
+recorded policy decision time and containing-plan admission. The streaming
+runtime releases the step only after both that time and its DAG dependencies
+are satisfied; replay receives the same per-request constraints and rejects an
+early submission. This prevents a fast
 foreground topology from turning an aggregate-batch route into a future
 oracle. Once every per-node transfer terminal is submitted, the load is
 retimed to their latest completion. If that copy finishes while later routes
@@ -1183,11 +1209,13 @@ and that time coordinate. This is the contract needed for future stateful
 cache residency, eviction, and prefetch completion across batch boundaries.
 Revision-2 composed serving preserves one expert-cache instance across
 batches, routes every target token through the selected top-K experts, emits
-routed AllToAllV/FFN plans, and independently replays both scheduler and cache
-traces. Its bounded baseline uses the maximum of global foreground execution
-and serialized cache readiness. Adaptive warm prefetch completion is retimed
-from shared physical storage-transfer terminals and may remain in flight across
-batch boundaries. It composes all six proposer
+routed AllToAllV/FFN plans, and independently replays scheduler, cache, and
+global physical traces. Demand loads now compile into separately admitted
+warm/cold topology plans; cache access and aggregate target-plan admission are
+gated by their physical terminals rather than a second logical latency model.
+Adaptive warm prefetch completion is retimed from shared physical
+storage-transfer terminals and may remain in flight across batch boundaries.
+It composes all six proposer
 contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6

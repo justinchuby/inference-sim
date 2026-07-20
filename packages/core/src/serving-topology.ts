@@ -15,6 +15,7 @@ import {
   type ExpertCacheSnapshot,
   type ExpertCacheTraceEvent,
   type ExpertPendingLoadSnapshot,
+  type ExpertPendingRoute,
   type ExpertRouteResult,
 } from "./expert-cache.js";
 import type {
@@ -23,8 +24,10 @@ import type {
 } from "./scenario-types.js";
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
+  compileTopologyExpertLoadPlan,
   simulateTopologyWorkload,
   type TopologyCostModel,
+  type TopologyExpertLoadPlan,
   type TopologyResourceUtilization,
   type TopologyWorkloadProfile,
   type TopologyWorkloadResult,
@@ -123,6 +126,11 @@ interface PhysicalPrefetchBinding {
   retimed: boolean;
 }
 
+interface PhysicalDemandBinding {
+  readonly load: ExpertPendingLoadSnapshot;
+  readonly topology: TopologyExpertLoadPlan;
+}
+
 export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
   config?: ServingSchedulerConfig["speculative"],
@@ -214,11 +222,27 @@ export function simulateTopologyServingWorkload(
           expertCache.snapshot().currentTimeNs,
         );
         const traceStart = expertCache.traceLength();
-        const route = expertCache.processToken({
+        const pendingRoute = expertCache.beginTokenRoute({
           tokenIndex: nextExpertTokenIndex++,
           topK: expertCacheConfig.topK,
           atNs,
         });
+        if (physicalRuntime === undefined) {
+          throw new Error(
+            "expert-cache serving requires a shared physical runtime",
+          );
+        }
+        retimePhysicalDemandLoads(
+          scenario,
+          costModel,
+          expertCache,
+          physicalRuntime,
+          pendingRoute,
+          physicalRequests,
+        );
+        const route = expertCache.completeTokenRoute(
+          pendingRoute.requestId,
+        );
         batchExpertRoutes.push(route);
         expertRoutes.push(route);
         for (const event of expertCache.traceFrom(traceStart)) {
@@ -247,12 +271,13 @@ export function simulateTopologyServingWorkload(
             work,
             config.speculative,
             batchExpertRoutes,
-            expertCacheConfig?.cache.experts ?? [],
             batchPrefetchLoads,
           ),
       costModel,
     );
-    let foregroundCompletedAtNs = startedAtNs
+    const planArrivalNs = expertCache?.snapshot().currentTimeNs
+      ?? startedAtNs;
+    let foregroundCompletedAtNs = planArrivalNs
       + topology.metrics.foregroundDurationNs;
     if (physicalRuntime !== undefined) {
       const stepNotBeforeNs = registerPhysicalPrefetches(
@@ -260,15 +285,16 @@ export function simulateTopologyServingWorkload(
         batchPrefetchLoads,
         physicalPrefetchByStep,
         physicalPrefetchBindings,
+        planArrivalNs,
       );
       physicalRuntime.admit(
         topology.plan,
-        startedAtNs,
+        planArrivalNs,
         stepNotBeforeNs,
       );
       physicalRequests.push({
         plan: topology.plan,
-        arrivalNs: startedAtNs,
+        arrivalNs: planArrivalNs,
         admissionOrder: physicalRequests.length,
         ...(Object.keys(stepNotBeforeNs).length === 0
           ? {}
@@ -279,11 +305,7 @@ export function simulateTopologyServingWorkload(
         topology.foregroundTerminalStepId,
       ).completedAtNs;
     }
-    const physicalForegroundNs = foregroundCompletedAtNs - startedAtNs;
-    const durationNs = Math.max(
-      physicalForegroundNs,
-      cacheConstraintNs,
-    );
+    const durationNs = foregroundCompletedAtNs - startedAtNs;
     batches.set(work.batchId, {
       batchId: work.batchId,
       startedAtNs,
@@ -343,14 +365,17 @@ export function simulateTopologyServingWorkload(
       ? batch
       : { ...batch, physicalExecution };
   });
-  const planSteps = orderedBatches.reduce(
-    (sum, batch) => checkedMetricAdd(
-      sum,
-      batch.topology.plan.steps.length,
-      "serving plan steps",
-    ),
-    0,
-  );
+  const planSteps = (physical === undefined
+    ? orderedBatches.map((batch) => batch.topology.plan)
+    : physicalRequests.map((request) => request.plan))
+    .reduce(
+      (sum, plan) => checkedMetricAdd(
+        sum,
+        plan.steps.length,
+        "serving plan steps",
+      ),
+      0,
+    );
   const operationEvents = physical === undefined
     ? orderedBatches.flatMap(
         (batch) => batch.topology.execution.trace.operations,
@@ -474,7 +499,7 @@ export function simulateTopologyServingWorkload(
         : "expert routes preserve cache state across batches; routes within each batch are serialized conservatively",
       expertCache === undefined
         ? "batch duration is determined by topology execution"
-        : "composed batch duration is the maximum of global foreground completion and the expert-cache readiness constraint; demand transfer is not added twice",
+        : "expert demand loads complete on the shared physical topology before cache access and batch compute admission",
       expertCache === undefined
         ? "batch plans use isolated relative-time execution"
         : "composed batch plans share one absolute-time resource, lease, and collective timeline through final drain",
@@ -507,6 +532,90 @@ export function simulateTopologyServingWorkload(
       resourceUtilization,
     },
   };
+}
+
+function retimePhysicalDemandLoads(
+  scenario: SimulationScenario,
+  costModel: TopologyCostModel,
+  cache: ExpertCacheSimulator,
+  runtime: StreamingConcurrentPlanRuntime,
+  route: ExpertPendingRoute,
+  requests: ConcurrentPlanRequest[],
+): void {
+  if (runtime.currentTimeNs !== route.requestedAtNs) {
+    throw new Error(
+      `expert route ${route.requestId} at ${route.requestedAtNs}ns does not match physical runtime ${runtime.currentTimeNs}ns`,
+    );
+  }
+  const pendingById = new Map(
+    cache.snapshot().pendingLoads.map((load) => [load.loadId, load]),
+  );
+  const bindings: PhysicalDemandBinding[] = route.newDemandLoadIds.map(
+    (loadId) => {
+      const load = pendingById.get(loadId);
+      if (
+        load === undefined
+        || load.kind !== "demand"
+        || load.targetTier !== "hot"
+      ) {
+        throw new Error(
+          `expert route ${route.requestId} has invalid demand load ${loadId}`,
+        );
+      }
+      return {
+        load,
+        topology: compileTopologyExpertLoadPlan(
+          scenario,
+          {
+            id: load.loadId,
+            sourceTier: load.sourceTier,
+            bytes: load.bytes,
+          },
+          costModel,
+        ),
+      };
+    },
+  );
+
+  for (const binding of bindings) {
+    const plan = binding.topology.plan;
+    if (plan === undefined) {
+      cache.retimePendingLoad(
+        binding.load.loadId,
+        route.requestedAtNs,
+        route.requestedAtNs,
+      );
+      continue;
+    }
+    if (binding.topology.terminalStepIds.length === 0) {
+      throw new Error(
+        `physical demand ${binding.load.loadId} has no terminal steps`,
+      );
+    }
+    runtime.admit(plan, route.requestedAtNs);
+    requests.push({
+      plan,
+      arrivalNs: route.requestedAtNs,
+      admissionOrder: requests.length,
+    });
+  }
+
+  for (const binding of bindings) {
+    const plan = binding.topology.plan;
+    if (plan === undefined) {
+      continue;
+    }
+    const physicalCompletesAtNs = Math.max(
+      ...binding.topology.terminalStepIds.map((stepId) => (
+        runtime.runUntilStep(plan.executionId, stepId).completedAtNs
+      )),
+    );
+    cache.retimePendingLoad(
+      binding.load.loadId,
+      Math.max(physicalCompletesAtNs, cache.snapshot().currentTimeNs),
+      physicalCompletesAtNs,
+    );
+  }
 }
 
 function buildPhysicalResult(
@@ -567,7 +676,6 @@ function topologyProfileFromExpertServingBatch(
   batch: ServingBatchWork,
   speculative: ServingSchedulerConfig["speculative"],
   routes: readonly ExpertRouteResult[],
-  experts: ExpertCacheConfig["experts"],
   prefetchLoads: readonly ExpertPendingLoadSnapshot[],
 ): TopologyWorkloadProfile {
   if (routes.length !== batch.tokenWork || routes.length === 0) {
@@ -576,40 +684,11 @@ function topologyProfileFromExpertServingBatch(
     );
   }
   const base = topologyProfileFromServingBatch(batch, speculative);
-  const expertBytes = new Map(experts.map((expert) => [
-    expert.id,
-    expert.bytes,
-  ]));
   const topK = routes[0].expertIds.length;
   if (routes.some((route) => route.expertIds.length !== topK)) {
     throw new Error(
       `serving batch ${batch.batchId} changed expert topK within the batch`,
     );
-  }
-  let warmLoadBytes = 0;
-  let coldLoadBytes = 0;
-  for (const route of routes) {
-    for (let index = 0; index < route.expertIds.length; index++) {
-      const bytes = expertBytes.get(route.expertIds[index]);
-      if (bytes === undefined) {
-        throw new Error(
-          `serving batch ${batch.batchId} routed unknown expert ${route.expertIds[index]}`,
-        );
-      }
-      if (route.sourceTiers[index] === "warm") {
-        warmLoadBytes = checkedByteAdd(
-          warmLoadBytes,
-          bytes,
-          `serving batch ${batch.batchId} warm expert loads`,
-        );
-      } else if (route.sourceTiers[index] === "cold") {
-        coldLoadBytes = checkedByteAdd(
-          coldLoadBytes,
-          bytes,
-          `serving batch ${batch.batchId} cold expert loads`,
-        );
-      }
-    }
   }
   return {
     ...base,
@@ -618,8 +697,8 @@ function topologyProfileFromExpertServingBatch(
       ...unit,
       activeExperts: topK,
       expertRouted: true,
-      warmLoadBytes,
-      coldLoadBytes,
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
     })),
     backgroundPrefetches: prefetchLoads.map((load) => ({
       id: load.loadId,
@@ -634,6 +713,7 @@ function registerPhysicalPrefetches(
   loads: readonly ExpertPendingLoadSnapshot[],
   byStep: Map<string, PhysicalPrefetchBinding>,
   bindings: PhysicalPrefetchBinding[],
+  planArrivalNs: number,
 ): Readonly<Record<number, number>> {
   const stepNotBeforeNs: Record<number, number> = {};
   for (const load of loads) {
@@ -665,13 +745,14 @@ function registerPhysicalPrefetches(
     }
     for (const terminal of terminals) {
       for (const stepId of terminal.stepIds) {
+        const releaseNs = Math.max(load.startedAtNs, planArrivalNs);
         const prior = stepNotBeforeNs[stepId];
-        if (prior !== undefined && prior !== load.startedAtNs) {
+        if (prior !== undefined && prior !== releaseNs) {
           throw new Error(
             `physical prefetch step ${stepId} has conflicting policy times`,
           );
         }
-        stepNotBeforeNs[stepId] = load.startedAtNs;
+        stepNotBeforeNs[stepId] = releaseNs;
       }
     }
   }
@@ -716,14 +797,6 @@ function applyPhysicalPrefetchSubmission(
 
 function physicalStepKey(executionId: string, stepId: number): string {
   return `${executionId}\u0000${stepId}`;
-}
-
-function checkedByteAdd(left: number, right: number, label: string): number {
-  const result = left + right;
-  if (!Number.isSafeInteger(result) || result < 0) {
-    throw new Error(`${label} exceeds the safe integer range`);
-  }
-  return result;
 }
 
 function checkedMetricAdd(

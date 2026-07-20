@@ -143,6 +143,7 @@ export class StreamingConcurrentPlanRuntime {
     (event: PlanTraceEvent) => void
   >();
   private lastAdmissionNs = 0;
+  private validatedRuntimeEvents = 0;
 
   constructor(private readonly scenario: SimulationScenario) {
     this.resourceLanes = buildResourceLanes(scenario);
@@ -196,7 +197,13 @@ export class StreamingConcurrentPlanRuntime {
         ? {}
         : { stepNotBeforeNs: { ...stepNotBeforeNs } }),
     };
-    validateConcurrentRequests(this.scenario, [...this.requests, request]);
+    const validatedRuntimeEvents = validateStreamingAdmission(
+      this.scenario,
+      request,
+      this.states.has(plan.executionId),
+      this.requests.length,
+      this.validatedRuntimeEvents,
+    );
     this.advanceTo(arrivalNs);
     const state = buildExecutionState(request);
     this.requests.push(request);
@@ -222,6 +229,7 @@ export class StreamingConcurrentPlanRuntime {
     const admission = admissionFor(request);
     this.admissions.push(admission);
     this.lastAdmissionNs = arrivalNs;
+    this.validatedRuntimeEvents = validatedRuntimeEvents;
     this.submitReady(arrivalNs);
     return admission;
   }
@@ -368,6 +376,7 @@ export class StreamingConcurrentPlanRuntime {
           step,
           resourceReadyNs,
           step.operation.durationNs,
+          submittedAtNs,
         );
         const finishNs = checkedAdd(
           startNs,
@@ -796,6 +805,7 @@ export function replayConcurrentPlanTrace(
         step,
         resourceReadyNs,
         step.operation.durationNs,
+        event.submittedAtNs,
       );
       if (event.startNs !== expectedStartNs) {
         replayFail(
@@ -1033,6 +1043,71 @@ function validateConcurrentRequests(
     }
   }
   return ordered;
+}
+
+function validateStreamingAdmission(
+  scenario: SimulationScenario,
+  request: ConcurrentPlanRequest,
+  duplicateExecutionId: boolean,
+  expectedAdmissionOrder: number,
+  priorRuntimeEvents: number,
+): number {
+  if (
+    !Number.isSafeInteger(request.arrivalNs)
+    || request.arrivalNs < 0
+    || !Number.isSafeInteger(request.admissionOrder)
+    || request.admissionOrder !== expectedAdmissionOrder
+  ) {
+    throw new FrozenPlanExecutionError(
+      "streaming arrival must be non-negative and admission order must be contiguous",
+    );
+  }
+  if (duplicateExecutionId) {
+    throw new FrozenPlanExecutionError(
+      `duplicate streaming execution id ${request.plan.executionId}`,
+    );
+  }
+  const validation = validateFrozenPlan(scenario, request.plan);
+  if (!validation.valid) {
+    throw new FrozenPlanExecutionError(
+      `invalid concurrent plan ${request.plan.executionId}: ${
+        validation.issues.map((issue) => issue.message).join("; ")
+      }`,
+    );
+  }
+  const stepIds = new Set(request.plan.steps.map((step) => step.id));
+  let releaseEvents = 0;
+  for (const [stepIdText, releaseNs] of Object.entries(
+    request.stepNotBeforeNs ?? {},
+  )) {
+    const stepId = Number(stepIdText);
+    if (
+      !Number.isSafeInteger(stepId)
+      || !stepIds.has(stepId)
+      || !Number.isSafeInteger(releaseNs)
+      || releaseNs < request.arrivalNs
+    ) {
+      throw new FrozenPlanExecutionError(
+        `invalid not-before constraint ${stepIdText}:${releaseNs} for ${request.plan.executionId}`,
+      );
+    }
+    if (releaseNs > request.arrivalNs) {
+      releaseEvents++;
+    }
+  }
+  const runtimeEvents = priorRuntimeEvents
+    + request.plan.steps.length
+    + 2
+    + releaseEvents;
+  if (
+    !Number.isSafeInteger(runtimeEvents)
+    || runtimeEvents > scenario.execution.maxEvents
+  ) {
+    throw new FrozenPlanExecutionError(
+      `concurrent plans require ${runtimeEvents} runtime events, limit is ${scenario.execution.maxEvents}`,
+    );
+  }
+  return runtimeEvents;
 }
 
 function buildExecutionState(request: ConcurrentPlanRequest): ExecutionState {
@@ -1503,7 +1578,18 @@ class ConcurrentLeaseTimeline {
     step: PlanStep,
     earliestNs: number,
     durationNs: number,
+    completedThroughNs: number,
   ): number {
+    for (const [allocationId] of accessModes(step)) {
+      const active = (this.intervals.get(allocationId) ?? []).filter(
+        (interval) => interval.finishNs > completedThroughNs,
+      );
+      if (active.length === 0) {
+        this.intervals.delete(allocationId);
+      } else {
+        this.intervals.set(allocationId, active);
+      }
+    }
     let startNs = earliestNs;
     while (true) {
       const finishNs = checkedAdd(startNs, durationNs, "lease finish");
