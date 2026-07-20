@@ -48,6 +48,13 @@ describe("topology-aware serving", () => {
       expect(result.metrics.planSteps, scenarioName).toBeGreaterThan(0);
       expect(result.metrics.totalDurationNs, scenarioName).toBeGreaterThan(0);
       expect(result.metrics.idleNs, scenarioName).toBeGreaterThanOrEqual(0);
+      expect(result.metrics.resourceObservationNs, scenarioName).toBe(
+        result.metrics.totalDurationNs,
+      );
+      expect(result.metrics.backgroundDrainNs, scenarioName).toBe(0);
+      expect(result.metrics.resourceUtilization.every((resource) => (
+        resource.utilization >= 0 && resource.utilization <= 1
+      )), scenarioName).toBe(true);
     }
   });
 
@@ -234,6 +241,29 @@ describe("topology-aware serving", () => {
     expect(result.physical?.replay.completedAtNs).toBe(
       result.physical?.execution.completedAtNs,
     );
+    expect(result.metrics.resourceObservationNs).toBe(Math.max(
+      result.metrics.totalDurationNs,
+      result.physical?.execution.completedAtNs ?? 0,
+    ));
+    expect(result.metrics.backgroundDrainNs).toBe(
+      result.metrics.resourceObservationNs - result.metrics.totalDurationNs,
+    );
+    for (const resource of result.metrics.resourceUtilization) {
+      const expectedBusyNs =
+        result.physical?.execution.trace.operations.reduce(
+          (sum, { event }) => (
+            event.resources.some((reservation) => (
+              reservation.resourceId === resource.resourceId
+            ))
+              ? sum + event.finishNs - event.startNs
+              : sum
+          ),
+          0,
+        ) ?? 0;
+      expect(resource.busyNs, resource.resourceId).toBe(expectedBusyNs);
+      expect(resource.utilization, resource.resourceId)
+        .toBeLessThanOrEqual(1);
+    }
     expect(result.batches.every((batch) => (
       batch.physicalExecution?.executionId
         === batch.topology.plan.executionId
@@ -498,6 +528,15 @@ describe("topology-aware serving", () => {
         .toEqual(result.expertCache?.snapshot);
       expect(result.physical?.replay.completedAtNs, scenarioName)
         .toBe(result.physical?.execution.completedAtNs);
+      expect(result.metrics.resourceObservationNs, scenarioName).toBe(
+        Math.max(
+          result.metrics.totalDurationNs,
+          result.physical?.execution.completedAtNs ?? 0,
+        ),
+      );
+      expect(result.metrics.resourceUtilization.every((resource) => (
+        resource.utilization >= 0 && resource.utilization <= 1
+      )), scenarioName).toBe(true);
     }
   });
 

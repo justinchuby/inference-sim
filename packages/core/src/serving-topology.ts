@@ -79,6 +79,8 @@ export interface TopologyServingPhysicalResult {
 
 export interface TopologyServingMetrics {
   readonly totalDurationNs: number;
+  readonly resourceObservationNs: number;
+  readonly backgroundDrainNs: number;
   readonly batchServiceNs: number;
   readonly idleNs: number;
   readonly planSteps: number;
@@ -341,11 +343,24 @@ export function simulateTopologyServingWorkload(
       ? batch
       : { ...batch, physicalExecution };
   });
-  const resourceBusy = new Map<string, {
-    busyNs: number;
-    capacityLanes: number;
-  }>();
-  let planSteps = 0;
+  const planSteps = orderedBatches.reduce(
+    (sum, batch) => checkedMetricAdd(
+      sum,
+      batch.topology.plan.steps.length,
+      "serving plan steps",
+    ),
+    0,
+  );
+  const operationEvents = physical === undefined
+    ? orderedBatches.flatMap(
+        (batch) => batch.topology.execution.trace.operations,
+      )
+    : physical.execution.trace.operations.map(({ event }) => event);
+  if (operationEvents.length !== planSteps) {
+    throw new Error(
+      `serving physical trace has ${operationEvents.length}/${planSteps} operations`,
+    );
+  }
   let computeOperations = 0;
   let transferOperations = 0;
   let collectiveOperations = 0;
@@ -354,38 +369,85 @@ export function simulateTopologyServingWorkload(
   let computeServiceNs = 0;
   let transferServiceNs = 0;
   let collectiveServiceNs = 0;
-  for (const batch of orderedBatches) {
-    const metrics = batch.topology.metrics;
-    planSteps += batch.topology.plan.steps.length;
-    computeServiceNs += metrics.computeServiceNs;
-    transferServiceNs += metrics.transferServiceNs;
-    collectiveServiceNs += metrics.collectiveServiceNs;
-    for (const event of batch.topology.execution.trace.operations) {
-      if (event.kind === "compute") {
-        computeOperations++;
-      } else if (event.kind === "transfer") {
-        transferOperations++;
-      } else {
-        collectiveOperations++;
-        if (event.collectiveAlgorithm === "all_reduce_ring") {
-          allReduceOperations++;
-        } else if (event.collectiveAlgorithm === "all_to_all_v") {
-          allToAllOperations++;
-        }
+  const resourceBusy = new Map<string, number>();
+  for (const event of operationEvents) {
+    const serviceNs = event.finishNs - event.startNs;
+    if (event.kind === "compute") {
+      computeOperations++;
+      computeServiceNs = checkedMetricAdd(
+        computeServiceNs,
+        serviceNs,
+        "serving compute service",
+      );
+    } else if (event.kind === "transfer") {
+      transferOperations++;
+      transferServiceNs = checkedMetricAdd(
+        transferServiceNs,
+        serviceNs,
+        "serving transfer service",
+      );
+    } else {
+      collectiveOperations++;
+      collectiveServiceNs = checkedMetricAdd(
+        collectiveServiceNs,
+        serviceNs,
+        "serving collective service",
+      );
+      if (event.collectiveAlgorithm === "all_reduce_ring") {
+        allReduceOperations++;
+      } else if (event.collectiveAlgorithm === "all_to_all_v") {
+        allToAllOperations++;
       }
     }
-    for (const resource of [
-      ...metrics.computeUtilization,
-      ...metrics.linkUtilization,
-    ]) {
-      const current = resourceBusy.get(resource.resourceId);
-      resourceBusy.set(resource.resourceId, {
-        busyNs: (current?.busyNs ?? 0) + resource.busyNs,
-        capacityLanes: resource.capacityLanes,
-      });
+    for (const reservation of event.resources) {
+      if (
+        !reservation.resourceId.startsWith("compute:")
+        && !reservation.resourceId.startsWith("link:")
+      ) {
+        continue;
+      }
+      resourceBusy.set(
+        reservation.resourceId,
+        checkedMetricAdd(
+          resourceBusy.get(reservation.resourceId) ?? 0,
+          serviceNs,
+          `serving resource ${reservation.resourceId} busy time`,
+        ),
+      );
     }
   }
   const totalDurationNs = serving.metrics.totalDurationNs;
+  const resourceObservationNs = Math.max(
+    totalDurationNs,
+    physical?.execution.completedAtNs ?? totalDurationNs,
+  );
+  const resourceUtilization = [...resourceBusy.entries()]
+    .map(([resourceId, busyNs]) => {
+      const capacityLanes = servingResourceCapacity(scenario, resourceId);
+      const capacityNs = checkedMetricMultiply(
+        resourceObservationNs,
+        capacityLanes,
+        `serving resource ${resourceId} observation capacity`,
+      );
+      const utilization = resourceObservationNs === 0
+        ? 0
+        : busyNs / capacityNs;
+      if (utilization > 1) {
+        throw new Error(
+          `serving resource ${resourceId} utilization ${utilization} exceeds 1`,
+        );
+      }
+      return {
+        resourceId,
+        busyNs,
+        capacityLanes,
+        utilization,
+      };
+    })
+    .sort((left, right) => (
+      right.utilization - left.utilization
+      || left.resourceId.localeCompare(right.resourceId)
+    ));
   const confidence = orderedBatches[0]?.topology.confidence
     ?? costModel.confidence;
   const expertCacheResult: TopologyServingExpertCacheResult | undefined =
@@ -416,6 +478,7 @@ export function simulateTopologyServingWorkload(
       expertCache === undefined
         ? "batch plans use isolated relative-time execution"
         : "composed batch plans share one absolute-time resource, lease, and collective timeline through final drain",
+      "resource utilization is measured from authoritative operation reservations over the request-start-to-global-quiescence observation window",
       expertCache === undefined
         ? "batch plans execute serially while resources inside each plan retain declared concurrency"
         : "batch foregrounds are non-preemptive; background transfers from older plans may overlap later foreground plans",
@@ -428,6 +491,8 @@ export function simulateTopologyServingWorkload(
     ...(physical === undefined ? {} : { physical }),
     metrics: {
       totalDurationNs,
+      resourceObservationNs,
+      backgroundDrainNs: resourceObservationNs - totalDurationNs,
       batchServiceNs: serving.metrics.batchServiceNs,
       idleNs: totalDurationNs - serving.metrics.batchServiceNs,
       planSteps,
@@ -439,19 +504,7 @@ export function simulateTopologyServingWorkload(
       computeServiceNs,
       transferServiceNs,
       collectiveServiceNs,
-      resourceUtilization: [...resourceBusy.entries()]
-        .map(([resourceId, resource]) => ({
-          resourceId,
-          busyNs: resource.busyNs,
-          capacityLanes: resource.capacityLanes,
-          utilization: totalDurationNs === 0
-            ? 0
-            : resource.busyNs / (totalDurationNs * resource.capacityLanes),
-        }))
-        .sort((left, right) => (
-          right.utilization - left.utilization
-          || left.resourceId.localeCompare(right.resourceId)
-        )),
+      resourceUtilization,
     },
   };
 }
@@ -671,6 +724,49 @@ function checkedByteAdd(left: number, right: number, label: string): number {
     throw new Error(`${label} exceeds the safe integer range`);
   }
   return result;
+}
+
+function checkedMetricAdd(
+  left: number,
+  right: number,
+  label: string,
+): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`${label} exceeds the safe integer range`);
+  }
+  return result;
+}
+
+function checkedMetricMultiply(
+  left: number,
+  right: number,
+  label: string,
+): number {
+  const result = left * right;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`${label} exceeds the safe integer range`);
+  }
+  return result;
+}
+
+function servingResourceCapacity(
+  scenario: SimulationScenario,
+  resourceId: string,
+): number {
+  const capacity = resourceId.startsWith("compute:")
+    ? scenario.devices.find(
+        (device) => resourceId === `compute:${device.id}`,
+      )?.maxConcurrentCompute
+    : resourceId.startsWith("link:")
+      ? scenario.links.find(
+          (link) => resourceId === `link:${link.id}`,
+        )?.concurrencyLanes
+      : undefined;
+  if (capacity === undefined || capacity <= 0) {
+    throw new Error(`serving trace reserved unknown resource ${resourceId}`);
+  }
+  return capacity;
 }
 
 function validateExpertCacheComposition(

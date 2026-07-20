@@ -686,6 +686,14 @@ background steps. After the final batch, the runtime drains and the existing
 concurrent-plan verifier independently replays every admission, operation, and
 terminal.
 
+Serving request completion and resource observation are separate clocks.
+`totalDurationNs` ends when the final request completes, while
+`resourceObservationNs` extends through any replay-verified physical
+background drain. Resource busy time, operation counts, and service time are
+derived from the authoritative global operation trace, not by summing
+isolated per-batch utilization. Utilization divides by
+`resourceObservationNs * capacityLanes` and fails closed above one.
+
 Revision-3 expert-cache traces permit a pending prefetch completion to be
 retimed without changing its reservation. In composed serving, each adaptive
 warm load is first deferred so later routes in the same aggregate batch cannot

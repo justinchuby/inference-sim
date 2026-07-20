@@ -199,8 +199,7 @@ function servingDashboardResult(
               serving.physical.execution.maximumConcurrentExecutions,
             physicalDrainNs: Math.max(
               0,
-              serving.physical.execution.completedAtNs
-                - serving.serving.metrics.totalDurationNs,
+              serving.metrics.backgroundDrainNs,
             ),
           }),
       batches: serving.batches.map((batch) => ({
@@ -495,10 +494,7 @@ function summarizeServingTopology(
         (sum, batch) => sum + batch.topology.metrics.foregroundDurationNs,
         0,
       ),
-      backgroundDrainNs: result.batches.reduce(
-        (sum, batch) => sum + batch.topology.metrics.backgroundDrainNs,
-        0,
-      ),
+      backgroundDrainNs: result.metrics.backgroundDrainNs,
       committedTokens: result.serving.metrics.outputTokens,
       tokensPerSecond: result.serving.metrics.throughputTokensPerSecond,
       computeServiceNs: result.metrics.computeServiceNs,

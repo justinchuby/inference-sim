@@ -162,6 +162,12 @@ describe("simulateDashboard", () => {
     );
     expect(result.serving?.physicalReplayEvents).toBeGreaterThan(0);
     expect(result.serving?.maximumConcurrentPlans).toBeGreaterThan(0);
+    expect(result.serving?.physicalDrainNs).toBe(
+      result.topology.metrics.backgroundDrainNs,
+    );
+    expect(result.topology.topResources.every((resource) => (
+      resource.utilization >= 0 && resource.utilization <= 1
+    ))).toBe(true);
     expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
     expect(result.topology.planSteps).toBeGreaterThan(0);
   });
