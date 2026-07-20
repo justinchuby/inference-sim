@@ -37,16 +37,72 @@ export default function ResultCharts({
         <SectionHeading
           title={result.mode === "speculative"
             ? "Acceptance profile"
-            : "Cache outcomes"}
+            : result.mode === "serving"
+              ? "Request latency"
+              : "Cache outcomes"}
           detail={result.mode === "speculative"
             ? "Conditional prefix positions"
-            : "Routed expert accesses"}
+            : result.mode === "serving"
+              ? "First token and completion"
+              : "Routed expert accesses"}
         />
         {result.mode === "speculative"
           ? <AcceptanceChart result={result} />
-          : <CacheOutcomeChart result={result} />}
+          : result.mode === "serving"
+            ? <ServingLatencyChart result={result} />
+            : <CacheOutcomeChart result={result} />}
       </section>
     </>
+  );
+}
+
+function ServingLatencyChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const data = result.serving?.requests.map((request, index) => ({
+    request: `R${index + 1}`,
+    ttft: request.timeToFirstTokenNs / 1_000_000,
+    latency: request.latencyNs / 1_000_000,
+  })) ?? [];
+  return (
+    <div className="chart-frame">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ left: 0, right: 8 }}>
+          <CartesianGrid stroke="#e4e4e7" vertical={false} />
+          <XAxis
+            dataKey="request"
+            interval={Math.max(0, Math.ceil(data.length / 8) - 1)}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            tickFormatter={(value: number) => `${Math.round(value)}ms`}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ChartTooltip
+            formatter={(value) => `${Number(value).toFixed(2)} ms`}
+            contentStyle={chartTooltipStyle}
+          />
+          <Bar
+            dataKey="ttft"
+            name="TTFT"
+            fill="#d97706"
+            radius={[3, 3, 0, 0]}
+          />
+          <Bar
+            dataKey="latency"
+            name="Completion"
+            fill="#0369a1"
+            radius={[3, 3, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

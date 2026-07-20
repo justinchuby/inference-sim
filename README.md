@@ -61,8 +61,9 @@ Phase 3 has an initial speculative workload slice:
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
-speculative and expert-cache controls, modeled latency/throughput, memory,
-resource-utilization and caching charts, and a recent event inspector.
+continuous-serving, speculative, and expert-cache controls, modeled
+latency/throughput, request TTFT/ITL, memory, resource-utilization and caching
+charts, and a recent event inspector.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly.
 

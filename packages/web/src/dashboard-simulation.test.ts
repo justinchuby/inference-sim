@@ -12,6 +12,15 @@ const base: DashboardRunConfig = {
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
   },
+  serving: {
+    requestCount: 8,
+    arrivalGapUs: 100,
+    promptTokens: 128,
+    outputTokens: 16,
+    maxBatchSize: 4,
+    maxBatchTokens: 64,
+    prefillChunkTokens: 32,
+  },
   expertCache: {
     tokenCount: 32,
     topK: 2,
@@ -62,6 +71,18 @@ describe("simulateDashboard", () => {
     expect(first.expertCache?.routes).toHaveLength(32);
     expect(first.expertCache?.metrics.hotHitRate).toBeGreaterThanOrEqual(0);
     expect(first.topology.operationCounts.transfer).toBeGreaterThan(0);
+  });
+
+  it("runs continuous serving with replayed request timing", () => {
+    const config = { ...base, mode: "serving" as const };
+    const result = simulateDashboard(config);
+
+    expect(result.serving?.requests).toHaveLength(8);
+    expect(result.serving?.metrics.outputTokens).toBe(128);
+    expect(result.serving?.metrics.p95TimeToFirstTokenNs).toBeGreaterThan(0);
+    expect(result.serving?.metrics.kvHighWaterTokens).toBeGreaterThan(0);
+    expect(result.serving?.batches.length).toBeGreaterThan(1);
+    expect(result.topology.planSteps).toBeGreaterThan(0);
   });
 
   it("changes modeled latency when the same workload changes topology", () => {

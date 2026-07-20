@@ -835,9 +835,10 @@ used device/link and the next topology epoch.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,
-speculative-family/expert-cache controls, heuristic modeled latency and throughput,
-memory/acceptance/cache/resource-utilization charts, and recent iteration/route
-inspection. Browser compare/search, FrozenPlan file execution/export, ONNX
+continuous-serving/speculative-family/expert-cache controls, request TTFT/ITL,
+heuristic modeled latency and throughput, memory, acceptance, cache, and resource
+utilization charts, and recent request/iteration/route inspection. Browser
+compare/search, FrozenPlan file execution/export, ONNX
 import, trace export, and richer progress phases remain.
 
 ## 16. Testing and Delivery Gates

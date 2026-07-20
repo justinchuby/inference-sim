@@ -6,11 +6,13 @@ import type {
   SpeculativeWorkloadIteration,
   SpeculativeWorkloadMetrics,
   SpeculativeProposerFamily,
+  ServingMetrics,
+  ServingRequestResult,
   TopologyResourceUtilization,
   TopologyWorkloadMetrics,
 } from "@inference-sim/core";
 
-export type WorkloadMode = "speculative" | "expert-cache";
+export type WorkloadMode = "serving" | "speculative" | "expert-cache";
 
 export interface DashboardRunConfig {
   readonly scenarioName:
@@ -27,6 +29,15 @@ export interface DashboardRunConfig {
     readonly outputTokens: number;
     readonly draftWidth: number;
     readonly firstPositionAcceptance: number;
+  };
+  readonly serving: {
+    readonly requestCount: number;
+    readonly arrivalGapUs: number;
+    readonly promptTokens: number;
+    readonly outputTokens: number;
+    readonly maxBatchSize: number;
+    readonly maxBatchTokens: number;
+    readonly prefillChunkTokens: number;
   };
   readonly expertCache: {
     readonly tokenCount: number;
@@ -73,6 +84,18 @@ export interface DashboardResult {
     readonly warmResidentBytes: number;
     readonly hotCapacityBytes: number;
     readonly warmCapacityBytes: number;
+  };
+  readonly serving?: {
+    readonly metrics: ServingMetrics;
+    readonly requests: readonly ServingRequestResult[];
+    readonly batches: readonly {
+      readonly batchId: number;
+      readonly sequenceCount: number;
+      readonly tokenWork: number;
+      readonly prefillSequences: number;
+      readonly decodeSequences: number;
+      readonly durationNs: number;
+    }[];
   };
 }
 

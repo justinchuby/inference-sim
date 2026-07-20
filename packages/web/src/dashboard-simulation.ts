@@ -5,6 +5,7 @@ import {
   defaultSpeculativeEligibility,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -38,6 +39,26 @@ export function simulateDashboard(
       speculative: workload.dashboard,
     };
   }
+  if (config.mode === "serving") {
+    const serving = runServing(config, scenario);
+    return {
+      scenario: scenarioSummary,
+      mode: config.mode,
+      topology: summarizeServingTopology(serving),
+      serving: {
+        metrics: serving.serving.metrics,
+        requests: serving.serving.requests,
+        batches: serving.batches.map((batch) => ({
+          batchId: batch.batchId,
+          sequenceCount: batch.work.sequenceCount,
+          tokenWork: batch.work.tokenWork,
+          prefillSequences: batch.work.prefill.length,
+          decodeSequences: batch.work.decodeRequestIds.length,
+          durationNs: batch.topology.metrics.totalDurationNs,
+        })),
+      },
+    };
+  }
   const workload = runExpertCache(config);
   return {
     scenario: scenarioSummary,
@@ -48,6 +69,43 @@ export function simulateDashboard(
     )),
     expertCache: workload.dashboard,
   };
+}
+
+function runServing(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+) {
+  const requestCount = clampInteger(config.serving.requestCount, 1, 32);
+  const promptTokens = clampInteger(config.serving.promptTokens, 16, 4096);
+  const outputTokens = clampInteger(config.serving.outputTokens, 1, 512);
+  const peakPerRequest = promptTokens + outputTokens - 1;
+  return simulateTopologyServingWorkload(
+    scenario,
+    {
+      requests: Array.from({ length: requestCount }, (_, index) => ({
+        id: `request-${index}`,
+        arrivalNs: index * clampInteger(
+          config.serving.arrivalGapUs,
+          0,
+          10_000,
+        ) * 1_000,
+        promptTokens,
+        outputTokens,
+      })),
+      maxBatchSize: clampInteger(config.serving.maxBatchSize, 1, 16),
+      maxBatchTokens: clampInteger(
+        config.serving.maxBatchTokens,
+        8,
+        512,
+      ),
+      prefillChunkTokens: clampInteger(
+        config.serving.prefillChunkTokens,
+        8,
+        512,
+      ),
+      maxKvTokens: requestCount * peakPerRequest,
+    },
+  );
 }
 
 function runSpeculative(
@@ -178,6 +236,38 @@ function summarizeTopology(
         || left.resourceId.localeCompare(right.resourceId)
       ))
       .slice(0, 8),
+  };
+}
+
+function summarizeServingTopology(
+  result: ReturnType<typeof simulateTopologyServingWorkload>,
+): DashboardResult["topology"] {
+  const computeUtilization = result.metrics.resourceUtilization.filter(
+    (resource) => resource.resourceId.startsWith("compute:"),
+  );
+  const linkUtilization = result.metrics.resourceUtilization.filter(
+    (resource) => resource.resourceId.startsWith("link:"),
+  );
+  return {
+    confidence: result.confidence,
+    assumptions: result.assumptions,
+    planSteps: result.metrics.planSteps,
+    operationCounts: {
+      compute: result.metrics.computeOperations,
+      transfer: result.metrics.transferOperations,
+      collective: result.metrics.collectiveOperations,
+    },
+    metrics: {
+      totalDurationNs: result.metrics.totalDurationNs,
+      committedTokens: result.serving.metrics.outputTokens,
+      tokensPerSecond: result.serving.metrics.throughputTokensPerSecond,
+      computeServiceNs: result.metrics.computeServiceNs,
+      transferServiceNs: result.metrics.transferServiceNs,
+      collectiveServiceNs: result.metrics.collectiveServiceNs,
+      computeUtilization,
+      linkUtilization,
+    },
+    topResources: result.metrics.resourceUtilization.slice(0, 8),
   };
 }
 

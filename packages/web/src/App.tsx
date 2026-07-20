@@ -84,6 +84,15 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
   },
+  serving: {
+    requestCount: 12,
+    arrivalGapUs: 250,
+    promptTokens: 512,
+    outputTokens: 64,
+    maxBatchSize: 8,
+    maxBatchTokens: 128,
+    prefillChunkTokens: 64,
+  },
   expertCache: {
     tokenCount: 96,
     topK: 2,
@@ -315,10 +324,100 @@ function ConfigurationPanel({
         value={config.mode}
         onValueChange={(mode) => setMode(mode as WorkloadMode)}
       >
-        <TabsList className="mb-4 w-full">
-          <TabsTrigger value="speculative">Speculative</TabsTrigger>
-          <TabsTrigger value="expert-cache">Expert cache</TabsTrigger>
+        <TabsList className="mb-4 w-full grid-cols-3">
+          <TabsTrigger value="serving">Serving</TabsTrigger>
+          <TabsTrigger value="speculative" aria-label="Speculative">
+            Spec
+          </TabsTrigger>
+          <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
+        <TabsContent value="serving" className="space-y-5">
+          <SliderField
+            label="Requests"
+            value={config.serving.requestCount}
+            minimum={1}
+            maximum={32}
+            step={1}
+            disabled={disabled}
+            onChange={(requestCount) => onChange({
+              ...config,
+              serving: { ...config.serving, requestCount },
+            })}
+          />
+          <SliderField
+            label="Arrival gap"
+            value={config.serving.arrivalGapUs}
+            suffix=" us"
+            minimum={0}
+            maximum={5000}
+            step={50}
+            disabled={disabled}
+            onChange={(arrivalGapUs) => onChange({
+              ...config,
+              serving: { ...config.serving, arrivalGapUs },
+            })}
+          />
+          <SliderField
+            label="Prompt tokens"
+            value={config.serving.promptTokens}
+            minimum={64}
+            maximum={2048}
+            step={64}
+            disabled={disabled}
+            onChange={(promptTokens) => onChange({
+              ...config,
+              serving: { ...config.serving, promptTokens },
+            })}
+          />
+          <SliderField
+            label="Output tokens"
+            value={config.serving.outputTokens}
+            minimum={8}
+            maximum={256}
+            step={8}
+            disabled={disabled}
+            onChange={(outputTokens) => onChange({
+              ...config,
+              serving: { ...config.serving, outputTokens },
+            })}
+          />
+          <SliderField
+            label="Batch sequences"
+            value={config.serving.maxBatchSize}
+            minimum={1}
+            maximum={16}
+            step={1}
+            disabled={disabled}
+            onChange={(maxBatchSize) => onChange({
+              ...config,
+              serving: { ...config.serving, maxBatchSize },
+            })}
+          />
+          <SliderField
+            label="Batch token budget"
+            value={config.serving.maxBatchTokens}
+            minimum={16}
+            maximum={512}
+            step={16}
+            disabled={disabled}
+            onChange={(maxBatchTokens) => onChange({
+              ...config,
+              serving: { ...config.serving, maxBatchTokens },
+            })}
+          />
+          <SliderField
+            label="Prefill chunk"
+            value={config.serving.prefillChunkTokens}
+            minimum={16}
+            maximum={512}
+            step={16}
+            disabled={disabled}
+            onChange={(prefillChunkTokens) => onChange({
+              ...config,
+              serving: { ...config.serving, prefillChunkTokens },
+            })}
+          />
+        </TabsContent>
         <TabsContent value="speculative" className="space-y-5">
           <Field label="Proposer family">
             <Select
@@ -465,7 +564,9 @@ function ConfigurationPanel({
 function Results({ result }: { readonly result: DashboardResult }): React.JSX.Element {
   const metrics = result.mode === "speculative"
     ? speculativeMetrics(result)
-    : expertMetrics(result);
+    : result.mode === "serving"
+      ? servingMetrics(result)
+      : expertMetrics(result);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
@@ -488,6 +589,9 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
                     : ""}
                 </Badge>
               )
+            : null}
+          {result.serving
+            ? <Badge variant="neutral">continuous batch</Badge>
             : null}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -541,6 +645,14 @@ function Inspector({ result }: { readonly result?: DashboardResult }): React.JSX
         primary: route.expertIds.join(", "),
         secondary: route.sourceTiers.join(" · "),
         value: formatDuration(route.stallNs),
+      }));
+    }
+    if (result?.serving) {
+      return result.serving.requests.slice(-12).reverse().map((request) => ({
+        id: request.id,
+        primary: `TTFT ${formatDuration(request.timeToFirstTokenNs)}`,
+        secondary: `${request.tokenTimestampsNs.length} tokens`,
+        value: formatDuration(request.latencyNs),
       }));
     }
     return [];
@@ -755,6 +867,36 @@ function expertMetrics(result: DashboardResult) {
       value: formatBytes(metrics.bytesMoved),
       detail: `${metrics.evictions} evictions · ${formatDuration(metrics.stallNs)} cache stall`,
       icon: <Network className="size-4 text-amber-700" />,
+    },
+  ];
+}
+
+function servingMetrics(result: DashboardResult) {
+  const metrics = result.serving!.metrics;
+  return [
+    {
+      label: "P95 TTFT",
+      value: formatDuration(metrics.p95TimeToFirstTokenNs),
+      detail: `${metrics.requests} requests`,
+      icon: <Clock3 className="size-4 text-amber-700" />,
+    },
+    {
+      label: "P95 ITL",
+      value: formatDuration(metrics.p95InterTokenLatencyNs),
+      detail: `${metrics.batches} continuous batches`,
+      icon: <Gauge className="size-4 text-sky-700" />,
+    },
+    {
+      label: "Throughput",
+      value: formatRate(metrics.throughputTokensPerSecond),
+      detail: `${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
+    },
+    {
+      label: "KV high water",
+      value: `${metrics.kvHighWaterTokens.toLocaleString()} tok`,
+      detail: `${(metrics.sequenceBatchUtilization * 100).toFixed(1)}% sequence slots`,
+      icon: <Database className="size-4 text-sky-700" />,
     },
   ];
 }
