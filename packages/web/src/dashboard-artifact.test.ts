@@ -14,7 +14,10 @@ import { parseCalibrationFileText } from "./calibration-import.js";
 import { simulateDashboardExecution } from "./dashboard-simulation.js";
 import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
 import { parseTokenTraceFileText } from "./token-trace-import.js";
-import type { DashboardRunConfig } from "./types.js";
+import type {
+  DashboardRunConfig,
+  WorkerRunProgress,
+} from "./types.js";
 
 const config: DashboardRunConfig = {
   scenarioName: "multi-gpu",
@@ -159,6 +162,25 @@ describe("dashboard result artifact import", () => {
         parsed.expectation.artifactFingerprint,
       );
     }
+  });
+
+  it("reports execution-bound progress without changing the artifact", async () => {
+    const progress: WorkerRunProgress[] = [];
+    const baseline = executeDashboardWorkerRun(config);
+    const observed = executeDashboardWorkerRun(
+      config,
+      undefined,
+      (update) => progress.push(update),
+    );
+
+    assertMonotonicProgress(progress);
+    expect(observed.summary).toEqual(baseline.summary);
+    expect(observed.artifact.artifactFingerprint).toBe(
+      baseline.artifact.artifactFingerprint,
+    );
+    expect(await observed.artifact.blob.text()).toBe(
+      await baseline.artifact.blob.text(),
+    );
   });
 
   it("restores embedded calibration and token evidence before replay", async () => {
@@ -316,3 +338,19 @@ describe("dashboard result artifact import", () => {
       .toThrow("must use .json");
   });
 });
+
+function assertMonotonicProgress(
+  progress: readonly WorkerRunProgress[],
+): void {
+  expect(progress.length).toBeGreaterThan(0);
+  expect(progress.at(-1)).toEqual({
+    progress: 94,
+    phase: "Finalizing replay evidence",
+  });
+  expect(progress.every((entry, index) => (
+    entry.phase.length > 0
+    && entry.progress >= 0
+    && entry.progress <= 99
+    && (index === 0 || entry.progress > progress[index - 1]!.progress)
+  ))).toBe(true);
+}

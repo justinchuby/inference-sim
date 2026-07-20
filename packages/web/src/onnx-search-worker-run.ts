@@ -8,6 +8,7 @@ import type {
   OnnxSearchBrowserConfig,
   OnnxSearchBrowserResult,
   OnnxStaticBrowserConfig,
+  WorkerRunProgressReporter,
 } from "./types.js";
 
 const ALL_HARDWARE: readonly OnnxStaticBrowserConfig["hardwarePreset"][] = [
@@ -24,8 +25,11 @@ export function executeOnnxSearchWorkerRun(
   sourceFileName: string,
   baseConfig: OnnxStaticBrowserConfig,
   searchConfig: OnnxSearchBrowserConfig,
+  reportProgress: WorkerRunProgressReporter = () => {},
 ): OnnxSearchBrowserResult {
+  reportProgress({ progress: 8, phase: "Validating ONNX manifest" });
   const manifest = parseOnnxManifestFileText(artifactText, sourceFileName);
+  reportProgress({ progress: 18, phase: "Resolving model profile" });
   const model = resolveOnnxModelProfile(manifest, {
     kvCacheQuantization: baseConfig.kvCacheQuantization,
     activationQuantization: baseConfig.activationQuantization,
@@ -54,6 +58,7 @@ export function executeOnnxSearchWorkerRun(
   const offloadStrategies = searchConfig.offloadScope === "none_partial"
     ? ["none", "partial"] as const
     : [baseConfig.memory.offloadStrategy];
+  reportProgress({ progress: 25, phase: "Validating finite search space" });
   const result = searchStaticConfigurations(model, {
     objective: searchConfig.objective,
     topK: searchConfig.topK,
@@ -81,7 +86,15 @@ export function executeOnnxSearchWorkerRun(
         offloadStrategy,
       })),
     },
+  }, ({ completedCandidates, totalCandidates }) => {
+    reportProgress({
+      progress: 28 + Math.floor(
+        completedCandidates / totalCandidates * 60,
+      ),
+      phase: `Evaluating candidates ${completedCandidates.toLocaleString()} / ${totalCandidates.toLocaleString()}`,
+    });
   });
+  reportProgress({ progress: 94, phase: "Preparing candidate ranking" });
   return {
     sourceFileName,
     manifest: {

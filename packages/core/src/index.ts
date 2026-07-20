@@ -33,6 +33,7 @@ export {
   type StaticSearchCandidate,
   type StaticSearchConstraints,
   type StaticSearchObjective,
+  type StaticSearchProgress,
   type StaticSearchRequest,
   type StaticSearchResult,
   type StaticSearchSpace,

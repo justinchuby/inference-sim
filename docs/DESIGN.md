@@ -1609,13 +1609,18 @@ least-recently-opened eviction, a 20-entry limit, and a 256 MiB aggregate
 limit. History timestamps are UI metadata, not artifact evidence. Replay reads
 the original bytes and repeats strict revision, contract, and fingerprint
 validation before Worker execution; history storage failures never relabel a
-successful simulation. Richer progress phases remain. Calibration YAML/JSON
+successful simulation. Worker progress is emitted at actual validation,
+resolution, execution, replay, ranking, and artifact-construction boundaries;
+static search additionally reports bounded candidate completion. Progress and
+wall-clock timing remain UI-only and never enter deterministic evidence.
+Calibration YAML/JSON
 import shares the core parser and fit contract with the CLI, enforces a 1 MiB
 input limit, refits in the Worker, and reports the dataset fingerprint, compute
 diagnostics, and transport-curve diagnostics in the result view.
 
 New browser controls must extend the existing React and shadcn/Radix component
-layer. Core placement, routing, replay, and timing semantics remain in
+layer, using its primitives instead of duplicating controls. Core placement,
+routing, replay, and timing semantics remain in
 `@inference-sim/core`; the UI may select declared contracts but must not
 reimplement owner assignment or simulation state.
 

@@ -341,6 +341,15 @@ export interface OnnxSearchBrowserResult {
   readonly result: StaticSearchResult;
 }
 
+export interface WorkerRunProgress {
+  readonly progress: number;
+  readonly phase: string;
+}
+
+export type WorkerRunProgressReporter = (
+  update: WorkerRunProgress,
+) => void;
+
 export type WorkerRequest =
   | {
       readonly type: "run";

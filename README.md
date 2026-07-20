@@ -131,7 +131,10 @@ past 20 entries or 256 MiB, and replay re-runs the strict artifact parser
 before Worker execution. UI timestamps are storage metadata only and never
 enter deterministic simulation evidence.
 The dashboard is React-based and extends the existing shadcn/Radix component
-layer. Its expert-placement selector and the CLI's `placement_strategy` feed
+layer rather than duplicating UI primitives. Worker progress is tied to actual
+validation, execution, replay, search, and artifact boundaries and remains
+outside deterministic evidence. Its expert-placement selector and the CLI's
+`placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
 reimplements owner semantics. Cache slot controls are per EP owner for hot
 residency and per node for warm residency; result snapshots expose both

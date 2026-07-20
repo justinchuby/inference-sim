@@ -11,6 +11,7 @@ import type {
   DashboardArtifactDownload,
   DashboardResult,
   DashboardRunConfig,
+  WorkerRunProgressReporter,
 } from "./types.js";
 
 export interface DashboardWorkerRunResult {
@@ -22,16 +23,32 @@ export interface DashboardWorkerRunResult {
 export function executeDashboardWorkerRun(
   config: DashboardRunConfig,
   expectedArtifact?: DashboardArtifactExpectation,
+  reportProgress: WorkerRunProgressReporter = () => {},
 ): DashboardWorkerRunResult {
-  const output = simulateDashboardExecution(config);
+  const output = simulateDashboardExecution(config, reportProgress);
+  reportProgress({
+    progress: 84,
+    phase: "Creating deterministic result artifact",
+  });
   const artifact = createDashboardArtifact(config, output);
+  reportProgress({
+    progress: 89,
+    phase: "Serializing result artifact",
+  });
+  const blob = new Blob(
+    [serializeSimulationResultArtifact(artifact, true)],
+    { type: "application/json" },
+  );
+  reportProgress({
+    progress: 94,
+    phase: expectedArtifact === undefined
+      ? "Finalizing replay evidence"
+      : "Comparing artifact fingerprints",
+  });
   return {
     summary: output.summary,
     artifact: {
-      blob: new Blob(
-        [serializeSimulationResultArtifact(artifact, true)],
-        { type: "application/json" },
-      ),
+      blob,
       fileName: dashboardArtifactFileName(artifact),
       artifactFingerprint: artifact.artifactFingerprint,
     },

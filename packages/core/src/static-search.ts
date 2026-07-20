@@ -83,6 +83,11 @@ export interface StaticSearchResult {
   };
 }
 
+export interface StaticSearchProgress {
+  readonly completedCandidates: number;
+  readonly totalCandidates: number;
+}
+
 interface CandidateConfig {
   readonly topology: StaticSearchTopology;
   readonly kvCacheQuantization: QuantType;
@@ -97,6 +102,7 @@ interface CandidateConfig {
 export function searchStaticConfigurations(
   model: ModelProfile,
   request: StaticSearchRequest,
+  onProgress?: (progress: StaticSearchProgress) => void,
 ): StaticSearchResult {
   validateSearchRequest(request);
   const axes = request.space;
@@ -118,14 +124,36 @@ export function searchStaticConfigurations(
       `static search declares ${declaredCandidateCount} candidates, exceeding maxCandidates ${request.maxCandidates}`,
     );
   }
+  onProgress?.({
+    completedCandidates: 0,
+    totalCandidates: declaredCandidateCount,
+  });
 
   const rejectionCounts = new Map<string, number>();
   const accepted: Omit<StaticSearchCandidate, "rank">[] = [];
   let evaluatedCandidateCount = 0;
+  let completedCandidateCount = 0;
+  const progressInterval = Math.max(
+    1,
+    Math.floor(declaredCandidateCount / 20),
+  );
+  const reportCandidateProgress = () => {
+    completedCandidateCount++;
+    if (
+      completedCandidateCount === declaredCandidateCount
+      || completedCandidateCount % progressInterval === 0
+    ) {
+      onProgress?.({
+        completedCandidates: completedCandidateCount,
+        totalCandidates: declaredCandidateCount,
+      });
+    }
+  };
   for (const candidate of enumerateCandidates(axes)) {
     const invalidReason = validateCandidate(model, candidate);
     if (invalidReason !== undefined) {
       increment(rejectionCounts, invalidReason);
+      reportCandidateProgress();
       continue;
     }
     evaluatedCandidateCount++;
@@ -149,6 +177,7 @@ export function searchStaticConfigurations(
     );
     if (constraintReason !== undefined) {
       increment(rejectionCounts, constraintReason);
+      reportCandidateProgress();
       continue;
     }
     const identity = candidateIdentity(candidate);
@@ -171,6 +200,7 @@ export function searchStaticConfigurations(
       deviceUsedFraction,
       analysis,
     });
+    reportCandidateProgress();
   }
   accepted.sort((left, right) => (
     Number(right.feasible) - Number(left.feasible)

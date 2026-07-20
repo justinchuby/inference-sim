@@ -8,6 +8,7 @@ import {
 } from "@inference-sim/core";
 import { parseFrozenPlanArtifactFileText } from "./frozen-plan-import.js";
 import { executeFrozenPlanWorkerRun } from "./frozen-plan-worker-run.js";
+import type { WorkerRunProgress } from "./types.js";
 
 function fixtureText(tokenCount = 3): string {
   const scenario = buildMultiGpuRingScenario(4);
@@ -48,6 +49,31 @@ describe("FrozenPlan browser import", () => {
     });
     expect(result.plan.operationCounts.collective).toBe(8);
     expect(result.execution.operationPreview.length).toBeLessThanOrEqual(100);
+  });
+
+  it("reports replay phases without changing execution evidence", () => {
+    const progress: WorkerRunProgress[] = [];
+    const baseline = executeFrozenPlanWorkerRun(
+      fixtureText(8),
+      "decode-plan.json",
+    );
+    const observed = executeFrozenPlanWorkerRun(
+      fixtureText(8),
+      "decode-plan.json",
+      (update) => progress.push(update),
+    );
+
+    expect(observed).toEqual(baseline);
+    expect(progress.at(-1)).toEqual({
+      progress: 94,
+      phase: "Preparing FrozenPlan report",
+    });
+    expect(progress.every((entry, index) => (
+      entry.phase.length > 0
+      && entry.progress >= 0
+      && entry.progress <= 99
+      && (index === 0 || entry.progress > progress[index - 1]!.progress)
+    ))).toBe(true);
   });
 
   it("rejects wrong extensions and tampering before execution", () => {

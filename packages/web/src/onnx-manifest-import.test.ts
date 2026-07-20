@@ -11,6 +11,7 @@ import { executeOnnxSearchWorkerRun } from "./onnx-search-worker-run.js";
 import type {
   OnnxSearchBrowserConfig,
   OnnxStaticBrowserConfig,
+  WorkerRunProgress,
 } from "./types.js";
 
 function manifestText(): string {
@@ -115,6 +116,21 @@ describe("ONNX manifest browser import", () => {
     expect(result.analysis.feasible).toBe(true);
   });
 
+  it("reports static-analysis phases without changing the result", () => {
+    const text = manifestText();
+    const progress: WorkerRunProgress[] = [];
+    const baseline = executeOnnxStaticWorkerRun(text, "tiny.json", config);
+    const observed = executeOnnxStaticWorkerRun(
+      text,
+      "tiny.json",
+      config,
+      (update) => progress.push(update),
+    );
+
+    expect(observed).toEqual(baseline);
+    assertMonotonicProgress(progress, 92, "Preparing model report");
+  });
+
   it("rejects stale revisions and non-JSON files", () => {
     const stale = JSON.parse(manifestText()) as Record<string, unknown>;
     stale.revision = 1;
@@ -151,4 +167,47 @@ describe("ONNX manifest browser import", () => {
     expect(first.result.candidates.every((candidate) => candidate.feasible))
       .toBe(true);
   });
+
+  it("reports bounded candidate progress without changing search ranking", () => {
+    const text = manifestText();
+    const progress: WorkerRunProgress[] = [];
+    const baseline = executeOnnxSearchWorkerRun(
+      text,
+      "tiny.json",
+      config,
+      searchConfig,
+    );
+    const observed = executeOnnxSearchWorkerRun(
+      text,
+      "tiny.json",
+      config,
+      searchConfig,
+      (update) => progress.push(update),
+    );
+
+    expect(observed).toEqual(baseline);
+    assertMonotonicProgress(progress, 94, "Preparing candidate ranking");
+    expect(progress.some((entry) => (
+      entry.progress === 88
+      && entry.phase.startsWith("Evaluating candidates ")
+    ))).toBe(true);
+  });
 });
+
+function assertMonotonicProgress(
+  progress: readonly WorkerRunProgress[],
+  finalProgress: number,
+  finalPhase: string,
+): void {
+  expect(progress.length).toBeGreaterThan(0);
+  expect(progress.at(-1)).toEqual({
+    progress: finalProgress,
+    phase: finalPhase,
+  });
+  expect(progress.every((entry, index) => (
+    entry.phase.length > 0
+    && entry.progress >= 0
+    && entry.progress <= 99
+    && (index === 0 || entry.progress > progress[index - 1]!.progress)
+  ))).toBe(true);
+}

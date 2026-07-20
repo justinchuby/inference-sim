@@ -103,4 +103,33 @@ describe("static configuration search", () => {
     expect(() => searchStaticConfigurations(model, duplicated))
       .toThrow("batchSizes values must be unique");
   });
+
+  it("reports monotonic candidate progress without changing the result", () => {
+    const model = buildModelProfile("llama-3-8b");
+    const progress: Array<{
+      completedCandidates: number;
+      totalCandidates: number;
+    }> = [];
+    const withProgress = searchStaticConfigurations(
+      model,
+      request(),
+      (update) => progress.push(update),
+    );
+    const withoutProgress = searchStaticConfigurations(model, request());
+
+    expect(withProgress).toEqual(withoutProgress);
+    expect(progress[0]).toEqual({
+      completedCandidates: 0,
+      totalCandidates: 32,
+    });
+    expect(progress.at(-1)).toEqual({
+      completedCandidates: 32,
+      totalCandidates: 32,
+    });
+    expect(progress.every((entry, index) => (
+      index === 0
+      || entry.completedCandidates
+        > progress[index - 1].completedCandidates
+    ))).toBe(true);
+  });
 });

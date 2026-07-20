@@ -28,6 +28,7 @@ import type {
   DashboardArtifactOutput,
   DashboardResult,
   DashboardRunConfig,
+  WorkerRunProgressReporter,
 } from "./types.js";
 
 export function simulateDashboard(
@@ -38,7 +39,12 @@ export function simulateDashboard(
 
 export function simulateDashboardExecution(
   config: DashboardRunConfig,
+  reportProgress: WorkerRunProgressReporter = () => {},
 ): DashboardArtifactOutput {
+  reportProgress({ progress: 10, phase: "Validating dashboard input" });
+  if (config.calibration !== undefined) {
+    reportProgress({ progress: 18, phase: "Fitting calibration evidence" });
+  }
   const calibration = config.calibration === undefined
     ? undefined
     : fitTopologyCostModel(config.calibration);
@@ -61,12 +67,14 @@ export function simulateDashboardExecution(
         }),
   });
   if (config.mode === "serving" && config.serving.compareTopologies) {
+    reportProgress({ progress: 30, phase: "Building comparison workloads" });
     const comparison = compareTopologyServingWorkloads(
       SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
       buildServingConfig(config),
       costModel,
       buildServingExpertCacheConfig(config),
     );
+    reportProgress({ progress: 74, phase: "Ranking topology replays" });
     const fastest = comparison.runs[0];
     if (!fastest) {
       throw new Error("serving comparison produced no topology runs");
@@ -74,6 +82,7 @@ export function simulateDashboardExecution(
     const scenario = buildScenarioPreset(
       fastest.result.scenarioId as ScenarioPresetName,
     );
+    reportProgress({ progress: 80, phase: "Summarizing serving comparison" });
     return {
       summary: attachCalibration(servingDashboardResult(
         config,
@@ -87,15 +96,24 @@ export function simulateDashboardExecution(
       },
     };
   }
+  reportProgress({ progress: 26, phase: "Building selected scenario" });
   const scenario = buildSelectedScenario(config);
   const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
+    reportProgress({
+      progress: 38,
+      phase: config.speculative.trace
+        ? "Verifying speculative token trace"
+        : "Simulating speculative iterations",
+    });
     const workload = runSpeculative(config);
+    reportProgress({ progress: 62, phase: "Replaying topology workload" });
     const topology = simulateTopologyWorkload(
       scenario,
       topologyProfileFromSpeculative(workload.result),
       costModel,
     );
+    reportProgress({ progress: 78, phase: "Summarizing speculative evidence" });
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
@@ -111,7 +129,9 @@ export function simulateDashboardExecution(
     };
   }
   if (config.mode === "serving") {
+    reportProgress({ progress: 38, phase: "Simulating continuous batches" });
     const serving = runServing(config, scenario, costModel);
+    reportProgress({ progress: 78, phase: "Summarizing serving evidence" });
     return {
       summary: attachCalibration(servingDashboardResult(
         config,
@@ -124,7 +144,9 @@ export function simulateDashboardExecution(
       },
     };
   }
+  reportProgress({ progress: 38, phase: "Simulating expert cache routes" });
   const workload = runExpertCache(config, scenario);
+  reportProgress({ progress: 62, phase: "Replaying topology workload" });
   const topology = simulateTopologyWorkload(
     scenario,
     topologyProfileFromExpertCache(
@@ -133,6 +155,7 @@ export function simulateDashboardExecution(
     ),
     costModel,
   );
+  reportProgress({ progress: 78, phase: "Summarizing expert cache evidence" });
   return {
     summary: attachCalibration({
       scenario: scenarioSummary,

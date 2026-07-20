@@ -5,23 +5,31 @@ import {
   type PlanReplayResult,
 } from "@inference-sim/core";
 import { parseFrozenPlanArtifactFileText } from "./frozen-plan-import.js";
-import type { FrozenPlanBrowserResult } from "./types.js";
+import type {
+  FrozenPlanBrowserResult,
+  WorkerRunProgressReporter,
+} from "./types.js";
 
 export function executeFrozenPlanWorkerRun(
   artifactText: string,
   sourceFileName: string,
+  reportProgress: WorkerRunProgressReporter = () => {},
 ): FrozenPlanBrowserResult {
+  reportProgress({ progress: 12, phase: "Validating FrozenPlan artifact" });
   const artifact = parseFrozenPlanArtifactFileText(
     artifactText,
     sourceFileName,
   );
+  reportProgress({ progress: 35, phase: "Executing frozen operations" });
   const execution = executeFrozenPlan(artifact.scenario, artifact.plan);
+  reportProgress({ progress: 68, phase: "Replaying plan trace" });
   const replay = replayPlanTrace(
     artifact.scenario,
     artifact.plan,
     execution.trace,
   );
   assertExecutionReplayParity(execution, replay);
+  reportProgress({ progress: 88, phase: "Summarizing rank terminals" });
 
   const operationCounts = {
     compute: 0,
@@ -31,6 +39,7 @@ export function executeFrozenPlanWorkerRun(
   for (const operation of execution.trace.operations) {
     operationCounts[operation.kind]++;
   }
+  reportProgress({ progress: 94, phase: "Preparing FrozenPlan report" });
   return {
     sourceFileName,
     artifact: {
