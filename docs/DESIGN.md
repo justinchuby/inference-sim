@@ -591,6 +591,12 @@ tiers are independent cache copies, so one expert may be present in both.
 Loads retain the source copy and reserve exact target-tier bytes before
 transfer completion. Resident plus reserved bytes may never exceed capacity.
 Completed copies become visible only at their deterministic completion event.
+Physical tier capacity and resource-manager permission are separate evidence.
+Hot, warm, and backing footprints must fit the relevant domain's
+`resourceLimitBytes`, even when more VRAM, RAM, or SSD is physically installed.
+With `ssdStreaming=false`, already resident hot/warm experts remain usable, but
+any route that needs a cold expert and every SSD-backed prefetch is rejected.
+The simulator never treats disabling streaming as a zero-latency fallback.
 
 Eviction is byte-capacity LRU with expert identity as the stable tie-breaker.
 Experts selected by an in-flight route are protected until access. Prefetch is
@@ -624,12 +630,13 @@ history and rejects changed, omitted, or relabeled decisions. This policy can
 reduce future cold misses, but its copies, evictions, and bandwidth remain
 fully charged in the cache protocol's latency and byte ledger.
 
-Current scenario contract revision 4 retains revision 3's explicit
+Current scenario contract revision 5 retains revision 4's explicit
 cold-storage domain on every preset node, local CPU endpoint, authoritative
 expert-backing allocation, warm-cache allocation, directed storage-read link,
 and device/unified hot-expert cache allocation on every FFN placement. Revision
-4 changes physical routing from minimum hop count to a deterministic
-message-size-aware minimum-duration path:
+5 adds per-domain resource-manager limits and an explicit SSD-streaming feature
+policy. Revision 4 changed physical routing from minimum hop count to a
+deterministic message-size-aware minimum-duration path:
 
 ```text
 declared_route_duration(bytes) =
@@ -909,10 +916,14 @@ interface SimulationScenario {
 }
 ```
 
-Each memory domain declares physical capacity, host/device accessibility,
-coherence, allocation classes, and governor owner. Each directed link declares
-endpoints, bandwidth/latency curves, concurrency lanes, staging requirement,
-and evidence provenance.
+Each memory domain declares both physical `capacityBytes` and a
+`resourceLimitBytes` ceiling owned by the resource manager, plus host/device
+accessibility, coherence, allocation classes, and governor owner. Reducing a
+resource limit does not rewrite installed hardware. Execution policy declares
+`features.ssdStreaming`; disabling it removes storage from the allocatable
+ledger and makes every cold expert load or storage prefetch fail closed. Each
+directed link declares endpoints, bandwidth/latency curves, concurrency lanes,
+staging requirement, and evidence provenance.
 
 Validation proves:
 
@@ -922,7 +933,8 @@ Validation proves:
 - Cartesian or capability-overlap parallelism semantics correspond to concrete
   participants;
 - discrete copies use distinct physical identities until commit;
-- unified aliases preserve one physical identity; and
+- unified aliases preserve one physical identity;
+- every resource limit is positive and no larger than physical capacity; and
 - fixed workspaces, staging, checkpoint snapshots, KV, speculative sidecars,
   and warm/hot expert caches fit their owning domains.
 
@@ -1195,7 +1207,7 @@ aggregate device-memory bandwidth divided by active weight bytes per token.
 It applies no utilization factor. The existing planning estimate remains
 separate and applies its documented MFU/MBU assumptions.
 
-The package/topology view cannot calculate a compute roofline because revision-4
+The package/topology view cannot calculate a compute roofline because revision-5
 `SimulationScenario` does not declare peak FLOP/s. It therefore reports only a
 batch-1 weight-streaming ceiling. The bandwidth numerator contains each unique
 hot memory domain visible to a device with attention, FFN, or draft capability;
@@ -1273,7 +1285,7 @@ Product views retained from the original design:
 #### 14.3.1 Topology Projection
 
 The browser topology graph is a deterministic read-only projection of the
-validated revision-4 `SimulationScenario`. It must not own an independently
+validated revision-5 `SimulationScenario`. It must not own an independently
 editable graph model or feed coordinates back into simulation evidence.
 Configuration, editor draft, and result views project the scenario applicable
 to that view, so imported and parameterized multi-GPU topologies use the same
@@ -1581,11 +1593,12 @@ weights, expert residency, KV, activation, and free capacity alongside the
 manifest inventory and profile assumptions.
 
 The topology surface resolves the selected preset, parameterized multi-GPU
-ring, or imported scenario into the same revision-4 `SimulationScenario` used
+ring, or imported scenario into the same revision-5 `SimulationScenario` used
 by CLI and Worker execution. Its editor mutates existing compute devices,
-memory domains, and directed links: execution provider, capabilities, dtypes,
-compute lanes, capacity, local bandwidth/latency/coherence, endpoints,
-transport kind, link bandwidth/latency, and concurrency lanes. It deliberately
+memory domains, resource-manager limits, SSD-streaming policy, and directed
+links: execution provider, capabilities, dtypes, compute lanes, physical and
+allocatable capacity, local bandwidth/latency/coherence, endpoints, transport
+kind, link bandwidth/latency, and concurrency lanes. It deliberately
 does not create unplaced devices: a device without placement and communicator
 ownership would appear in topology counts while doing no workload, which is a
 misleading simulation. Arbitrary structural composition remains available
@@ -1612,7 +1625,7 @@ static analyzer's roofline assumptions; it describes the declared search space
 and is not a global optimum claim.
 All CLI commands that consume one scenario resolve a shared scenario-target
 grammar: a fixed preset name, `multi-gpu-ring-N` for `N=2..64`, or a
-revision-4 scenario YAML/JSON file. Custom files use the same strict structural
+revision-5 scenario YAML/JSON file. Custom files use the same strict structural
 boundary as embedded FrozenPlan scenarios, reject unknown fields and enum
 values, and complete semantic topology, placement, route, memory-ledger, and
 parallelism validation before execution. Scenario materialization, workload
@@ -1743,7 +1756,7 @@ layer, using its primitives instead of duplicating controls. Core placement,
 routing, replay, and timing semantics remain in
 `@inference-sim/core`; the UI may select declared contracts but must not
 reimplement owner assignment or simulation state.
-The topology selector also accepts a bounded revision-4 scenario YAML/JSON
+The topology selector also accepts a bounded revision-5 scenario YAML/JSON
 file. The main thread performs a strict structural and semantic parse for
 immediate feedback, the Worker repeats that parse before simulation, and
 dashboard artifacts bind the complete scenario. Local filenames remain UI

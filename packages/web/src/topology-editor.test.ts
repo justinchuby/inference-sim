@@ -34,6 +34,31 @@ describe("topology editor boundary", () => {
     expect(edited.links[0].provenance.source).toContain("user-edited");
   });
 
+  it("preserves physical capacity while applying resource limits and features", () => {
+    const preset = buildScenarioPreset("single-gpu-cpu");
+    const gpuDomain = preset.memoryDomains.find(
+      (domain) => domain.kind === "device",
+    )!;
+    const edited = finalizeEditedTopology({
+      ...preset,
+      memoryDomains: preset.memoryDomains.map((domain) => (
+        domain.id === gpuDomain.id
+          ? { ...domain, resourceLimitBytes: 24 * 1024 ** 3 }
+          : domain
+      )),
+      execution: {
+        ...preset.execution,
+        features: { ssdStreaming: false },
+      },
+    });
+    const constrained = edited.memoryDomains.find(
+      (domain) => domain.id === gpuDomain.id,
+    )!;
+    expect(constrained.capacityBytes).toBe(gpuDomain.capacityBytes);
+    expect(constrained.resourceLimitBytes).toBe(24 * 1024 ** 3);
+    expect(edited.execution.features.ssdStreaming).toBe(false);
+  });
+
   it("rejects invalid edits through the shared scenario parser", () => {
     const preset = buildScenarioPreset("single-gpu-cpu");
     expect(() => finalizeEditedTopology({

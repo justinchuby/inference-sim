@@ -151,6 +151,8 @@ export function buildTopologyGraph(
       });
     });
     domains.forEach((domain, index) => {
+      const enabled = domain.kind !== "storage"
+        || scenario.execution.features.ssdStreaming;
       const localPosition = {
         x: GROUP_PADDING_X + centeredColumn(index, domains.length, columns),
         y: MEMORY_Y,
@@ -172,7 +174,9 @@ export function buildTopologyGraph(
           nodeId,
           accent: domain.kind,
           details: [
-            `${formatBytes(domain.capacityBytes)} capacity`,
+            enabled
+              ? `${formatBytes(domain.resourceLimitBytes)} allocatable / ${formatBytes(domain.capacityBytes)} physical`
+              : `disabled / ${formatBytes(domain.capacityBytes)} physical`,
             `${formatRate(domain.bandwidthBytesPerSec)} local`,
             `${formatDuration(domain.latencyNs)} latency`,
             domain.coherent ? "coherent" : "non-coherent",

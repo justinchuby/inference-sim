@@ -157,13 +157,18 @@ The dashboard is React-based and extends the existing shadcn/Radix component
 layer rather than duplicating UI primitives. Worker progress is tied to actual
 validation, execution, replay, search, and artifact boundaries and remains
 outside deterministic evidence. The topology selector accepts a bounded local
-revision-4 scenario YAML/JSON file, validates it before selection, repeats the
+revision-5 scenario YAML/JSON file, validates it before selection, repeats the
 same strict parse in the Worker, and embeds the complete scenario in exported
 run evidence. The local filename is UI metadata only. Built-in and imported
 topologies can be opened in a responsive editor that exposes every device's
 execution provider, compute concurrency, dtypes, capabilities, accessible
 memory capacity/bandwidth/latency/coherence, and every directed link's
-endpoints, kind, bandwidth, latency, and lanes. Applying an edit marks the
+endpoints, kind, bandwidth, latency, and lanes. Its Resources view preserves
+installed capacity while setting independent per-domain allocation limits for
+VRAM, RAM, unified memory, and SSD. SSD streaming is an explicit execution
+feature: disabling it removes storage from the allocatable ledger and rejects
+cold expert loads or storage prefetches rather than silently falling back.
+Applying an edit marks the
 scenario custom, advances `topologyEpoch`, replaces topology provenance with
 explicit user-edited heuristic evidence, and validates the complete scenario
 through the shared core parser before it can run. The selected topology is
@@ -282,7 +287,7 @@ AllToAllV signatures use the GCD-reduced source-rank to expert-owner matrix, so
 proportional message sizes share a curve while different skew shapes do not.
 
 CLI commands that take one scenario accept a listed preset,
-`multi-gpu-ring-N` for `N=2..64`, or a revision-4 scenario YAML/JSON file.
+`multi-gpu-ring-N` for `N=2..64`, or a revision-5 scenario YAML/JSON file.
 Custom files pass the same strict unknown-field, enum, safe-integer, topology,
 placement, route, memory-ledger, and parallelism validation used by embedded
 FrozenPlan scenarios before any workload executes. `compare` and

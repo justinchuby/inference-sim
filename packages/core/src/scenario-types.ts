@@ -1,4 +1,4 @@
-export const SCENARIO_SCHEMA_VERSION = 4;
+export const SCENARIO_SCHEMA_VERSION = 5;
 
 export type ConfidenceClass = "exact" | "bounded" | "calibrated" | "heuristic";
 export type SimDeviceKind = "cpu" | "gpu" | "npu";
@@ -35,6 +35,7 @@ export interface MemoryDomainSpec {
   readonly nodeId: string;
   readonly kind: MemoryDomainKind;
   readonly capacityBytes: number;
+  readonly resourceLimitBytes: number;
   readonly bandwidthBytesPerSec: number;
   readonly latencyNs: number;
   readonly coherent: boolean;
@@ -143,6 +144,9 @@ export interface ScenarioExecutionPolicy {
   readonly topologyEpoch: number;
   readonly seed: number;
   readonly maxEvents: number;
+  readonly features: {
+    readonly ssdStreaming: boolean;
+  };
   readonly parallelism: {
     readonly composition: "cartesian" | "overlap_by_capability";
     readonly tensor: number;
@@ -198,7 +202,13 @@ export interface ScenarioValidationResult {
 
 export interface ScenarioMemoryLedgerEntry {
   readonly domainId: string;
+  readonly enabled: boolean;
+  readonly physicalCapacityBytes: number;
   readonly capacityBytes: number;
   readonly reservedBytes: number;
   readonly freeBytes: number;
+}
+
+export interface ScenarioMemoryLedgerOptions {
+  readonly allocationBytes?: Readonly<Record<string, number>>;
 }

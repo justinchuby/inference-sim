@@ -53,6 +53,7 @@ export function simulateDashboardExecution(
   const costModel = calibration?.costModel ?? DEFAULT_TOPOLOGY_COST_MODEL;
   const configuredScenario = buildSelectedScenario(config);
   validateModelCapacity(config, configuredScenario);
+  validateResourceManager(config, configuredScenario);
   const attachCalibration = (
     result: Omit<DashboardResult, "durationMs" | "calibration">,
   ): Omit<DashboardResult, "durationMs"> => ({
@@ -76,6 +77,7 @@ export function simulateDashboardExecution(
       SCENARIO_PRESET_NAMES.map((name) => {
         const scenario = buildScenarioPreset(name);
         validateModelCapacity(config, scenario);
+        validateResourceManager(config, scenario);
         return scenario;
       }),
       buildServingConfig(config),
@@ -107,7 +109,7 @@ export function simulateDashboardExecution(
   }
   reportProgress({ progress: 26, phase: "Building selected scenario" });
   const scenario = configuredScenario;
-  const scenarioSummary = summarizeScenario(scenario);
+  const scenarioSummary = summarizeScenario(scenario, config);
   if (config.mode === "speculative") {
     reportProgress({
       progress: 38,
@@ -204,23 +206,101 @@ function validateModelCapacity(
       .map((allocation) => allocation.domainId)));
   const capacityBytes = scenario.memoryDomains
     .filter((domain) => targetDomains.has(domain.id))
-    .reduce((sum, domain) => sum + domain.capacityBytes, 0);
+    .reduce((sum, domain) => sum + domain.resourceLimitBytes, 0);
   const seenAllocations = new Set<string>();
+  const allocationBytes = allocationBytesForDashboard(config, scenario);
   const reservedNonWeightBytes = scenario.placements
     .flatMap((placement) => placement.allocations)
     .filter((allocation) => (
       targetDomains.has(allocation.domainId)
       && allocation.purpose !== "weights"
+      && (
+        allocation.purpose !== "cache"
+        || isExpertCacheEnabled(config)
+      )
       && !seenAllocations.has(allocation.physicalAllocationId)
       && seenAllocations.add(allocation.physicalAllocationId)
     ))
-    .reduce((sum, allocation) => sum + allocation.bytes, 0);
+    .reduce(
+      (sum, allocation) => (
+        sum
+        + (
+          allocationBytes[allocation.physicalAllocationId]
+          ?? allocation.bytes
+        )
+      ),
+      0,
+    );
   const availableBytes = capacityBytes - reservedNonWeightBytes;
   if (binding.weightBytes > availableBytes) {
     throw new Error(
       `model ${binding.displayName} requires ${formatGiB(binding.weightBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains`,
     );
   }
+}
+
+function validateResourceManager(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): void {
+  const expertCacheEnabled = isExpertCacheEnabled(config);
+  if (!expertCacheEnabled) {
+    assertLedgerWithinResourceLimits(config, scenario);
+    return;
+  }
+  const expertCount = clampInteger(config.expertCache.expertCount, 4, 64);
+  const hotSlots = clampInteger(
+    config.expertCache.hotSlots,
+    config.expertCache.topK,
+    expertCount,
+  );
+  const warmSlots = clampInteger(
+    config.expertCache.warmSlots,
+    0,
+    expertCount,
+  );
+  const coldExperts = Math.max(0, expertCount - hotSlots - warmSlots);
+  if (
+    coldExperts > 0
+    && !scenario.execution.features.ssdStreaming
+  ) {
+    throw new Error(
+      `expert cache leaves ${coldExperts} experts cold but SSD streaming is disabled`,
+    );
+  }
+  if (coldExperts === 0) {
+    assertLedgerWithinResourceLimits(config, scenario);
+    return;
+  }
+  const requiredBackingBytes = expertCount * 64 * 1024 * 1024;
+  const availableBackingBytes = scenario.memoryDomains
+    .filter((domain) => domain.kind === "storage")
+    .reduce((sum, domain) => sum + domain.resourceLimitBytes, 0);
+  if (requiredBackingBytes > availableBackingBytes) {
+    throw new Error(
+      `expert backing requires ${formatGiB(requiredBackingBytes)} GiB but the resource manager allows ${formatGiB(availableBackingBytes)} GiB of SSD`,
+    );
+  }
+  assertLedgerWithinResourceLimits(config, scenario);
+}
+
+function assertLedgerWithinResourceLimits(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): void {
+  const overcommitted = calculateScenarioMemoryLedger(scenario, {
+    allocationBytes: allocationBytesForDashboard(config, scenario),
+  }).find((entry) => entry.freeBytes < 0);
+  if (overcommitted !== undefined) {
+    throw new Error(
+      `resource manager allows ${formatGiB(overcommitted.capacityBytes)} GiB on ${overcommitted.domainId} but active allocations require ${formatGiB(overcommitted.reservedBytes)} GiB`,
+    );
+  }
+}
+
+function isExpertCacheEnabled(config: DashboardRunConfig): boolean {
+  return config.mode === "expert-cache"
+    || (config.mode === "serving" && config.serving.useExpertCache);
 }
 
 function formatGiB(bytes: number): string {
@@ -355,7 +435,7 @@ function servingDashboardResult(
   comparison?: ReturnType<typeof compareTopologyServingWorkloads>,
 ): Omit<DashboardResult, "durationMs"> {
   return {
-    scenario: summarizeScenario(scenario),
+    scenario: summarizeScenario(scenario, config),
     ...(modelSummary(config) === undefined
       ? {}
       : { model: modelSummary(config)! }),
@@ -446,14 +526,127 @@ function modelSummary(
 
 function summarizeScenario(
   scenario: ReturnType<typeof buildScenarioPreset>,
+  config: DashboardRunConfig,
 ): DashboardResult["scenario"] {
   return {
     id: scenario.id,
     family: scenario.family,
     deviceCount: scenario.devices.length,
     linkCount: scenario.links.length,
-    memoryLedger: calculateScenarioMemoryLedger(scenario),
+    memoryLedger: calculateScenarioMemoryLedger(scenario, {
+      allocationBytes: allocationBytesForDashboard(config, scenario),
+    }),
   };
+}
+
+function allocationBytesForDashboard(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): Readonly<Record<string, number>> {
+  const allocations = scenario.placements.flatMap(
+    (placement) => placement.allocations,
+  );
+  const result: Record<string, number> = {};
+  const weightAllocations = allocations.filter(
+    (allocation) => allocation.purpose === "weights",
+  );
+  distributeAllocationBytes(
+    result,
+    weightAllocations,
+    config.mode === "expert-cache"
+      ? 0
+      : config.modelBinding?.weightBytes,
+  );
+
+  const cacheAllocations = allocations.filter(
+    (allocation) => allocation.purpose === "cache",
+  );
+  distributeAllocationBytes(result, cacheAllocations, 0);
+  const backingAllocations = allocations.filter(
+    (allocation) => allocation.purpose === "backing",
+  );
+  distributeAllocationBytes(result, backingAllocations, 0);
+  if (!isExpertCacheEnabled(config)) {
+    return result;
+  }
+
+  const expert = buildDashboardExpertCache(config, true);
+  const placement = {
+    strategy: config.expertCache.placementStrategy,
+    expertIds: expert.cache.experts.map((candidate) => candidate.id),
+  } as const;
+  const topologyCache = expertCacheConfigForTopology(
+    scenario,
+    expert.cache,
+    placement,
+  );
+  distributeAllocationBytes(
+    result,
+    cacheAllocations.filter((allocation) => (
+      allocation.physicalAllocationId.startsWith("expert-hot-cache:")
+    )),
+    topologyCache.hotCapacityBytes,
+  );
+  distributeAllocationBytes(
+    result,
+    cacheAllocations.filter((allocation) => (
+      allocation.physicalAllocationId.startsWith("expert-warm-cache:")
+    )),
+    topologyCache.warmCapacityBytes,
+  );
+  const coldExperts = Math.max(
+    0,
+    clampInteger(config.expertCache.expertCount, 4, 64)
+      - clampInteger(
+        config.expertCache.hotSlots,
+        config.expertCache.topK,
+        clampInteger(config.expertCache.expertCount, 4, 64),
+      )
+      - clampInteger(
+        config.expertCache.warmSlots,
+        0,
+        clampInteger(config.expertCache.expertCount, 4, 64),
+      ),
+  );
+  distributeAllocationBytes(
+    result,
+    backingAllocations,
+    coldExperts === 0
+      ? 0
+      : expert.cache.experts.reduce(
+          (sum, candidate) => sum + candidate.bytes,
+          0,
+        ),
+  );
+  return result;
+}
+
+function distributeAllocationBytes(
+  target: Record<string, number>,
+  allocations: readonly {
+    readonly physicalAllocationId: string;
+    readonly bytes: number;
+  }[],
+  totalBytes: number | undefined,
+): void {
+  if (totalBytes === undefined || allocations.length === 0) {
+    return;
+  }
+  const ordered = [...allocations].sort((left, right) => (
+    left.physicalAllocationId.localeCompare(right.physicalAllocationId)
+  ));
+  const declaredTotal = ordered.reduce(
+    (sum, allocation) => sum + allocation.bytes,
+    0,
+  );
+  let remaining = totalBytes;
+  ordered.forEach((allocation, index) => {
+    const bytes = index === ordered.length - 1
+      ? remaining
+      : Math.floor(totalBytes * (allocation.bytes / declaredTotal));
+    target[allocation.physicalAllocationId] = bytes;
+    remaining -= bytes;
+  });
 }
 
 function runSpeculative(

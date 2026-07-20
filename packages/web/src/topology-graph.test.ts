@@ -84,4 +84,32 @@ describe("topology graph projection", () => {
     expect(formatDuration(500)).toBe("500 ns");
     expect(formatDuration(1_500)).toBe("1.5 us");
   });
+
+  it("shows resource limits separately from physical capacity", () => {
+    const preset = buildScenarioPreset("single-gpu-cpu");
+    const scenario = {
+      ...preset,
+      memoryDomains: preset.memoryDomains.map((domain) => (
+        domain.kind === "device"
+          ? { ...domain, resourceLimitBytes: 24 * 1024 ** 3 }
+          : domain
+      )),
+      execution: {
+        ...preset.execution,
+        features: { ssdStreaming: false },
+      },
+    };
+    const graph = buildTopologyGraph(scenario);
+    expect(graph.nodes.find((node) => node.id === "node0:gpu0:vram")?.data)
+      .toMatchObject({
+        details: [
+          "24.0 GiB allocatable / 80.0 GiB physical",
+          "2,000 GB/s local",
+          "80 ns latency",
+          "non-coherent",
+        ],
+      });
+    expect(graph.nodes.find((node) => node.id === "node0:storage")?.data
+      .details[0]).toBe("disabled / 2.0 TiB physical");
+  });
 });

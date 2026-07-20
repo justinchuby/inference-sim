@@ -624,6 +624,9 @@ export function simulateTopologyWorkload(
       profile.modelWork === undefined
         ? "no executable model profile is bound; compute timing is synthetic normalized work"
         : `model ${profile.modelWork.modelName} contributes an active-weight bandwidth floor for every target attention and FFN invocation`,
+      scenario.execution.features.ssdStreaming
+        ? "SSD streaming is enabled; cold expert loads may use declared storage domains within resource-manager limits"
+        : "SSD streaming is disabled; any cold expert load or storage prefetch fails closed",
       "family-specific proposer multipliers are heuristic and provenance-labeled",
       costModel.transportCurves === undefined
         ? "transport timing uses declared directed-link bandwidth and latency"
@@ -848,6 +851,9 @@ class WorkloadPlanCompiler {
           `expert load ${load.id} has unknown target ${targetDomainId}`,
         );
       }
+      if (load.sourceTier === "cold") {
+        this.requireSsdStreaming(`expert load ${load.id}`);
+      }
       const sourceDomainId = load.sourceTier === "warm"
         ? this.cacheSourceDomain(targetDomainId)
         : this.scenario.memoryDomains.find((domain) => (
@@ -957,6 +963,7 @@ class WorkloadPlanCompiler {
         this.cacheSourceDomain(workspaceDomain(placement))
       )));
       for (const targetDomainId of targets) {
+        this.requireSsdStreaming(`background prefetch ${prefetch.id}`);
         const localPlacementCount = targetPlacements.filter((placement) => (
           this.cacheSourceDomain(workspaceDomain(placement)) === targetDomainId
         )).length;
@@ -1591,6 +1598,7 @@ class WorkloadPlanCompiler {
       }
     }
     if (coldBytes > 0) {
+      this.requireSsdStreaming(`routed unit ${unit.id}`);
       const nodeId = this.device(placement.deviceId).nodeId;
       const storage = this.scenario.memoryDomains.find((domain) => (
         domain.nodeId === nodeId && domain.kind === "storage"
@@ -1990,6 +1998,14 @@ class WorkloadPlanCompiler {
       "model weight stream duration",
     );
     return Math.ceil(idealDuration / 0.7);
+  }
+
+  private requireSsdStreaming(context: string): void {
+    if (!this.scenario.execution.features.ssdStreaming) {
+      throw new TopologyWorkloadError(
+        `${context} requires SSD streaming but scenario ${this.scenario.id} disables it`,
+      );
+    }
   }
 
   private groupForPlacements(

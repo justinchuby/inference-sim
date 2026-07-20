@@ -107,14 +107,14 @@ describe("scenario presets", () => {
     const scenario = buildScenarioPreset("single-gpu-cpu");
     const result = validateScenario({
       ...scenario,
-      schemaVersion: 3 as typeof scenario.schemaVersion,
+      schemaVersion: 4 as typeof scenario.schemaVersion,
     });
 
     expect(result.valid).toBe(false);
     expect(result.issues).toContainEqual({
       code: "schema_version",
       path: "schemaVersion",
-      message: "expected 4, got 3",
+      message: "expected 5, got 4",
     });
   });
 
@@ -142,17 +142,94 @@ describe("scenario presets", () => {
     expect(calculateScenarioMemoryLedger(scenario)).toEqual([
       {
         domainId: "node0:storage",
+        enabled: true,
+        physicalCapacityBytes: 2 * 1024 ** 4,
         capacityBytes: 2 * 1024 ** 4,
         reservedBytes: 512 * 1024 ** 3,
         freeBytes: 1536 * 1024 ** 3,
       },
       {
         domainId: "node0:unified",
+        enabled: true,
+        physicalCapacityBytes: 128 * 1024 ** 3,
         capacityBytes: 128 * 1024 ** 3,
         reservedBytes: 92 * 1024 ** 3 + 256 * 1024 ** 2,
         freeBytes: 36 * 1024 ** 3 - 256 * 1024 ** 2,
       },
     ]);
+  });
+
+  it("separates physical memory capacity from resource-manager limits", () => {
+    const base = buildScenarioPreset("cpu-only");
+    const host = base.memoryDomains.find((domain) => domain.kind === "host")!;
+    const constrained = {
+      ...base,
+      memoryDomains: base.memoryDomains.map((domain) => (
+        domain.id === host.id
+          ? { ...domain, resourceLimitBytes: 96 * 1024 ** 3 }
+          : domain
+      )),
+    };
+    expect(validateScenario(constrained)).toEqual({ valid: true, issues: [] });
+    expect(calculateScenarioMemoryLedger(constrained).find(
+      (entry) => entry.domainId === host.id,
+    )).toMatchObject({
+      enabled: true,
+      physicalCapacityBytes: 128 * 1024 ** 3,
+      capacityBytes: 96 * 1024 ** 3,
+    });
+
+    const invalid = {
+      ...base,
+      memoryDomains: base.memoryDomains.map((domain) => (
+        domain.id === host.id
+          ? {
+              ...domain,
+              resourceLimitBytes: domain.capacityBytes + 1,
+            }
+          : domain
+      )),
+    };
+    expect(validateScenario(invalid).issues).toContainEqual({
+      code: "resource_limit",
+      path: "memoryDomains[0].resourceLimitBytes",
+      message: `resource limit ${host.capacityBytes + 1} exceeds physical capacity ${host.capacityBytes}`,
+    });
+  });
+
+  it("removes disabled SSD storage from the allocatable ledger", () => {
+    const base = buildScenarioPreset("cpu-only");
+    const disabled = {
+      ...base,
+      execution: {
+        ...base.execution,
+        features: { ssdStreaming: false },
+      },
+    };
+    expect(calculateScenarioMemoryLedger(disabled).find(
+      (entry) => entry.domainId === "node0:storage",
+    )).toMatchObject({
+      enabled: false,
+      physicalCapacityBytes: 2 * 1024 ** 4,
+      capacityBytes: 0,
+      reservedBytes: 0,
+      freeBytes: 0,
+    });
+  });
+
+  it("reports a missing resource feature policy without crashing", () => {
+    const base = buildScenarioPreset("cpu-only");
+    const { features: _features, ...legacyExecution } = base.execution;
+    const result = validateScenario({
+      ...base,
+      execution:
+        legacyExecution as unknown as SimulationScenario["execution"],
+    });
+    expect(result.issues).toContainEqual({
+      code: "invalid_feature",
+      path: "execution.features",
+      message: "must declare resource-manager features",
+    });
   });
 
   it("finds mandatory pinned staging for GPU/NPU and multi-node transfers", () => {

@@ -67,6 +67,7 @@ function parseMemoryDomains(value: unknown, scenarioLabel: string): void {
         "nodeId",
         "kind",
         "capacityBytes",
+        "resourceLimitBytes",
         "bandwidthBytesPerSec",
         "latencyNs",
         "coherent",
@@ -78,7 +79,12 @@ function parseMemoryDomains(value: unknown, scenarioLabel: string): void {
       requireStrings(domain, ["id", "nodeId", "kind"], label);
       requireNumbers(
         domain,
-        ["capacityBytes", "bandwidthBytesPerSec", "latencyNs"],
+        [
+          "capacityBytes",
+          "resourceLimitBytes",
+          "bandwidthBytesPerSec",
+          "latencyNs",
+        ],
         label,
       );
       requireBoolean(domain.coherent, `${label} coherent`);
@@ -271,11 +277,15 @@ function parseExecution(value: unknown, scenarioLabel: string): void {
   const execution = requireRecord(value, label);
   assertKeys(
     execution,
-    ["topologyEpoch", "seed", "maxEvents", "parallelism"],
+    ["topologyEpoch", "seed", "maxEvents", "features", "parallelism"],
     [],
     label,
   );
   requireNumbers(execution, ["topologyEpoch", "seed", "maxEvents"], label);
+  const featuresLabel = `${label} features`;
+  const features = requireRecord(execution.features, featuresLabel);
+  assertKeys(features, ["ssdStreaming"], [], featuresLabel);
+  requireBoolean(features.ssdStreaming, `${featuresLabel} ssdStreaming`);
   const parallelismLabel = `${label} parallelism`;
   const parallelism = requireRecord(
     execution.parallelism,

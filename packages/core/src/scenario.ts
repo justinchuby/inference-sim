@@ -4,6 +4,7 @@ import {
   type AllocationReservation,
   type MemoryDomainSpec,
   type ScenarioMemoryLedgerEntry,
+  type ScenarioMemoryLedgerOptions,
   type ScenarioValidationIssue,
   type ScenarioValidationResult,
   type SimLinkSpec,
@@ -153,6 +154,19 @@ export function validateScenario(
     "execution.maxEvents",
     add,
   );
+  if (scenario.execution.features === undefined) {
+    add(
+      "invalid_feature",
+      "execution.features",
+      "must declare resource-manager features",
+    );
+  } else if (typeof scenario.execution.features.ssdStreaming !== "boolean") {
+    add(
+      "invalid_feature",
+      "execution.features.ssdStreaming",
+      "must be boolean",
+    );
+  }
   for (const key of ["tensor", "pipeline", "expert", "data"] as const) {
     const value = scenario.execution.parallelism[key];
     validatePositiveInteger(value, `execution.parallelism.${key}`, add);
@@ -174,6 +188,18 @@ export function validateScenario(
     validateEnum(domain.kind, MEMORY_DOMAIN_KINDS, `${path}.kind`, add);
     validateProvenance(domain.provenance, `${path}.provenance`, add);
     validatePositiveInteger(domain.capacityBytes, `${path}.capacityBytes`, add);
+    validatePositiveInteger(
+      domain.resourceLimitBytes,
+      `${path}.resourceLimitBytes`,
+      add,
+    );
+    if (domain.resourceLimitBytes > domain.capacityBytes) {
+      add(
+        "resource_limit",
+        `${path}.resourceLimitBytes`,
+        `resource limit ${domain.resourceLimitBytes} exceeds physical capacity ${domain.capacityBytes}`,
+      );
+    }
     validatePositiveInteger(
       domain.bandwidthBytesPerSec,
       `${path}.bandwidthBytesPerSec`,
@@ -1153,13 +1179,40 @@ export function domainSupportsClass(
 
 export function calculateScenarioMemoryLedger(
   scenario: SimulationScenario,
+  options: ScenarioMemoryLedgerOptions = {},
 ): readonly ScenarioMemoryLedgerEntry[] {
   assertValidScenario(scenario);
+  const allocationIds = new Set(scenario.placements.flatMap(
+    (placement) => placement.allocations.map(
+      (allocation) => allocation.physicalAllocationId,
+    ),
+  ));
+  for (const [allocationId, bytes] of Object.entries(
+    options.allocationBytes ?? {},
+  )) {
+    if (!allocationIds.has(allocationId)) {
+      throw new ScenarioValidationError([{
+        code: "unknown_allocation",
+        path: `allocationBytes.${allocationId}`,
+        message: `unknown allocation ${allocationId}`,
+      }]);
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new ScenarioValidationError([{
+        code: "invalid_allocation_override",
+        path: `allocationBytes.${allocationId}`,
+        message: "allocation override must be a non-negative safe integer",
+      }]);
+    }
+  }
   const reserved = new Map<string, number>();
   for (const placement of scenario.placements) {
     for (const allocation of placement.allocations) {
+      const allocationBytes = options.allocationBytes?.[
+        allocation.physicalAllocationId
+      ] ?? allocation.bytes;
       const current = reserved.get(allocation.domainId) ?? 0;
-      const total = current + allocation.bytes;
+      const total = current + allocationBytes;
       if (!Number.isSafeInteger(total)) {
         throw new ScenarioValidationError([{
           code: "integer_overflow",
@@ -1172,12 +1225,17 @@ export function calculateScenarioMemoryLedger(
   }
   return scenario.memoryDomains
     .map((domain) => {
-      const reservedBytes = reserved.get(domain.id) ?? 0;
+      const enabled = domain.kind !== "storage"
+        || scenario.execution.features.ssdStreaming;
+      const reservedBytes = enabled ? reserved.get(domain.id) ?? 0 : 0;
+      const capacityBytes = enabled ? domain.resourceLimitBytes : 0;
       return {
         domainId: domain.id,
-        capacityBytes: domain.capacityBytes,
+        enabled,
+        physicalCapacityBytes: domain.capacityBytes,
+        capacityBytes,
         reservedBytes,
-        freeBytes: domain.capacityBytes - reservedBytes,
+        freeBytes: capacityBytes - reservedBytes,
       };
     })
     .sort((left, right) => left.domainId.localeCompare(right.domainId));

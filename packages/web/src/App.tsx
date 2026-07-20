@@ -2374,11 +2374,25 @@ function ConfigurationPanel({
                               {selectedScenario.links.length} directed links · epoch{" "}
                               {selectedScenario.execution.topologyEpoch}
                             </div>
+                            <div className="truncate text-[11px] font-medium text-zinc-600">
+                              SSD streaming{" "}
+                              {selectedScenario.execution.features.ssdStreaming
+                                ? "on"
+                                : "off"} ·{" "}
+                              {formatBytes(selectedScenario.memoryDomains
+                                .filter((domain) => domain.kind === "storage")
+                                .reduce(
+                                  (sum, domain) => (
+                                    sum + domain.resourceLimitBytes
+                                  ),
+                                  0,
+                                ))} SSD limit
+                            </div>
                           </div>
                         </div>
                         <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                           {selectedScenario.devices.map((device) => {
-                            const capacity = selectedScenario.memoryDomains
+                            const localDomains = selectedScenario.memoryDomains
                               .filter((domain) => (
                                 device.memoryDomainIds.includes(domain.id)
                                 && domain.kind !== "storage"
@@ -2390,11 +2404,15 @@ function ConfigurationPanel({
                                       : domain.kind === "device"
                                   )
                                 )
-                              ))
-                              .reduce(
-                                (sum, domain) => sum + domain.capacityBytes,
-                                0,
-                              );
+                              ));
+                            const physicalCapacity = localDomains.reduce(
+                              (sum, domain) => sum + domain.capacityBytes,
+                              0,
+                            );
+                            const resourceLimit = localDomains.reduce(
+                              (sum, domain) => sum + domain.resourceLimitBytes,
+                              0,
+                            );
                             return (
                               <div
                                 key={device.id}
@@ -2404,7 +2422,9 @@ function ConfigurationPanel({
                                   {device.id}
                                 </div>
                                 <div className="truncate text-zinc-500">
-                                  {device.kind.toUpperCase()} · {formatBytes(capacity)}
+                                  {device.kind.toUpperCase()} ·{" "}
+                                  {formatBytes(resourceLimit)} /{" "}
+                                  {formatBytes(physicalCapacity)}
                                 </div>
                               </div>
                             );

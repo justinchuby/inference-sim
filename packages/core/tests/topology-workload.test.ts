@@ -124,6 +124,32 @@ describe("topology-aware workload execution", () => {
     }
   });
 
+  it("fails closed on cold loads when SSD streaming is disabled", () => {
+    const base = buildScenarioPreset("single-gpu-cpu");
+    const scenario = {
+      ...base,
+      execution: {
+        ...base.execution,
+        features: { ssdStreaming: false },
+      },
+    };
+    expect(() => compileTopologyExpertLoadPlan(scenario, {
+      id: "cold-disabled",
+      expertId: "e0",
+      sourceTier: "cold",
+      bytes: 64 * 1024 ** 2,
+      placement: expertPlacement(),
+    })).toThrow(
+      "expert load cold-disabled requires SSD streaming but scenario single-gpu-cpu disables it",
+    );
+    expect(
+      simulateTopologyWorkload(scenario, targetOnlyTopologyProfile(1))
+        .assumptions,
+    ).toContain(
+      "SSD streaming is disabled; any cold expert load or storage prefetch fails closed",
+    );
+  });
+
   it("rejects malformed physical expert loads", () => {
     const scenario = buildScenarioPreset("single-gpu-cpu");
 

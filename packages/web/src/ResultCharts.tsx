@@ -235,11 +235,13 @@ function MemoryChart({
 }: {
   readonly result: DashboardResult;
 }): React.JSX.Element {
-  const data = result.scenario.memoryLedger.map((entry) => ({
-    name: shortDomain(entry.domainId),
-    used: entry.reservedBytes / entry.capacityBytes * 100,
-    free: entry.freeBytes / entry.capacityBytes * 100,
-  }));
+  const data = result.scenario.memoryLedger
+    .filter((entry) => entry.enabled)
+    .map((entry) => ({
+      name: shortDomain(entry.domainId),
+      used: entry.reservedBytes / entry.capacityBytes * 100,
+      free: entry.freeBytes / entry.capacityBytes * 100,
+    }));
   return (
     <div className="chart-frame">
       <ResponsiveContainer width="100%" height="100%">

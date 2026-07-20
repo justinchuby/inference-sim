@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Check,
   Cpu,
+  Gauge,
+  HardDrive,
   Link2,
   MemoryStick,
   Network,
@@ -52,7 +54,9 @@ export default function TopologyEditorDialog({
   readonly onSave: (scenario: SimulationScenario) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState(scenario);
-  const [view, setView] = useState<"map" | "devices" | "links">("map");
+  const [view, setView] = useState<
+    "map" | "resources" | "devices" | "links"
+  >("map");
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -126,6 +130,14 @@ export default function TopologyEditorDialog({
             </Button>
             <Button
               type="button"
+              variant={view === "resources" ? "secondary" : "ghost"}
+              onClick={() => setView("resources")}
+            >
+              <Gauge className="size-4" />
+              Resources
+            </Button>
+            <Button
+              type="button"
               variant={view === "devices" ? "secondary" : "ghost"}
               onClick={() => setView("devices")}
             >
@@ -148,6 +160,25 @@ export default function TopologyEditorDialog({
                   <TopologyGraph
                     scenario={draft}
                     className="h-[min(65vh,620px)]"
+                  />
+                )
+              : view === "resources"
+              ? (
+                  <ResourceManagerEditor
+                    scenario={draft}
+                    onSsdStreamingChange={(ssdStreaming) => {
+                      setDraft((current) => ({
+                        ...current,
+                        execution: {
+                          ...current.execution,
+                          features: {
+                            ...current.execution.features,
+                            ssdStreaming,
+                          },
+                        },
+                      }));
+                    }}
+                    onDomainChange={updateDomain}
                   />
                 )
               : view === "devices"
@@ -326,7 +357,7 @@ function DeviceEditor({
             <Badge variant="neutral">{domain.kind}</Badge>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <EditorField label="Capacity GiB">
+            <EditorField label="Physical capacity GiB">
               <NumberInput
                 value={bytesToGibibytes(domain.capacityBytes)}
                 minimum={0.001}
@@ -334,6 +365,10 @@ function DeviceEditor({
                 onChange={(value) => onDomainChange(domain.id, (current) => ({
                   ...current,
                   capacityBytes: gibibytesToBytes(value),
+                  resourceLimitBytes: Math.min(
+                    current.resourceLimitBytes,
+                    gibibytesToBytes(value),
+                  ),
                 }))}
               />
             </EditorField>
@@ -379,6 +414,102 @@ function DeviceEditor({
       ))}
     </section>
   );
+}
+
+function ResourceManagerEditor({
+  scenario,
+  onSsdStreamingChange,
+  onDomainChange,
+}: {
+  readonly scenario: SimulationScenario;
+  readonly onSsdStreamingChange: (enabled: boolean) => void;
+  readonly onDomainChange: (
+    id: string,
+    update: (domain: MemoryDomainSpec) => MemoryDomainSpec,
+  ) => void;
+}): React.JSX.Element {
+  return (
+    <div className="space-y-4">
+      <section className="border border-zinc-200 bg-white p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <HardDrive className="size-5 shrink-0 text-zinc-600" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold">SSD streaming</h3>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                Allow cold weights and background prefetches to read from SSD.
+              </p>
+            </div>
+          </div>
+          <Switch
+            aria-label="SSD streaming"
+            checked={scenario.execution.features.ssdStreaming}
+            onCheckedChange={onSsdStreamingChange}
+          />
+        </div>
+      </section>
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        {scenario.memoryDomains.map((domain) => {
+          const limitRatio = domain.resourceLimitBytes / domain.capacityBytes;
+          const disabled = domain.kind === "storage"
+            && !scenario.execution.features.ssdStreaming;
+          return (
+            <section
+              key={domain.id}
+              className="border border-zinc-200 bg-white p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-bold">{domain.id}</h3>
+                  <div className="mt-0.5 text-[11px] text-zinc-500">
+                    {formatDomainKind(domain.kind)} ·{" "}
+                    {bytesToGibibytes(domain.capacityBytes).toLocaleString(
+                      "en-US",
+                      { maximumFractionDigits: 2 },
+                    )} GiB physical
+                  </div>
+                </div>
+                <Badge variant={disabled ? "neutral" : "success"}>
+                  {disabled ? "disabled" : `${Math.round(limitRatio * 100)}%`}
+                </Badge>
+              </div>
+              <div className="mt-4">
+                <EditorField label="Allocation limit GiB">
+                  <NumberInput
+                    value={bytesToGibibytes(domain.resourceLimitBytes)}
+                    minimum={0.001}
+                    maximum={bytesToGibibytes(domain.capacityBytes)}
+                    step={1}
+                    onChange={(value) => onDomainChange(
+                      domain.id,
+                      (current) => ({
+                        ...current,
+                        resourceLimitBytes: gibibytesToBytes(value),
+                      }),
+                    )}
+                  />
+                </EditorField>
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatDomainKind(kind: MemoryDomainSpec["kind"]): string {
+  switch (kind) {
+    case "device":
+      return "VRAM";
+    case "host":
+      return "RAM";
+    case "unified":
+      return "Unified memory";
+    case "storage":
+      return "SSD";
+  }
 }
 
 function LinkEditor({
@@ -538,11 +669,13 @@ function TextInput({
 function NumberInput({
   value,
   minimum,
+  maximum,
   step,
   onChange,
 }: {
   readonly value: number;
   readonly minimum: number;
+  readonly maximum?: number;
   readonly step: number;
   readonly onChange: (value: number) => void;
 }): React.JSX.Element {
@@ -551,6 +684,7 @@ function NumberInput({
       type="number"
       value={value}
       min={minimum}
+      max={maximum}
       step={step}
       onChange={(event) => {
         const next = Number(event.currentTarget.value);

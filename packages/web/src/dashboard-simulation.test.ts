@@ -283,6 +283,89 @@ describe("simulateDashboard", () => {
     );
   });
 
+  it("uses resource-manager limits instead of physical capacity", () => {
+    const preset = buildScenarioPreset("cpu-only");
+    const customScenario = {
+      ...preset,
+      id: "cpu-limited",
+      family: "custom" as const,
+      memoryDomains: preset.memoryDomains.map((domain) => (
+        domain.kind === "host"
+          ? { ...domain, resourceLimitBytes: 16 * 1024 ** 3 }
+          : domain
+      )),
+    };
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario,
+      modelBinding: createBuiltinModelBinding("llama-3-8b"),
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        useExpertCache: false,
+        decodeMode: "target_only",
+      },
+    })).toThrow(
+      "model Llama-3-8B requires",
+    );
+  });
+
+  it("fails closed when expert routing needs disabled SSD streaming", () => {
+    const preset = buildScenarioPreset("single-gpu-cpu");
+    const customScenario = {
+      ...preset,
+      id: "ssd-disabled",
+      family: "custom" as const,
+      execution: {
+        ...preset.execution,
+        features: { ssdStreaming: false },
+      },
+    };
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario,
+      mode: "expert-cache",
+      expertCache: {
+        ...base.expertCache,
+        expertCount: 32,
+        hotSlots: 4,
+        warmSlots: 0,
+      },
+    })).toThrow(
+      "expert cache leaves 28 experts cold but SSD streaming is disabled",
+    );
+  });
+
+  it("enforces the SSD allocation limit for expert backing", () => {
+    const preset = buildScenarioPreset("single-gpu-cpu");
+    const customScenario = {
+      ...preset,
+      id: "ssd-limited",
+      family: "custom" as const,
+      memoryDomains: preset.memoryDomains.map((domain) => (
+        domain.kind === "storage"
+          ? { ...domain, resourceLimitBytes: 1024 ** 3 }
+          : domain
+      )),
+    };
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario,
+      mode: "expert-cache",
+      expertCache: {
+        ...base.expertCache,
+        expertCount: 32,
+        hotSlots: 4,
+        warmSlots: 0,
+      },
+    })).toThrow(
+      "expert backing requires 2.0 GiB but the resource manager allows 1.0 GiB of SSD",
+    );
+  });
+
   it("rejects missing, irrelevant, and malformed custom scenarios", () => {
     expect(() => simulateDashboard({
       ...base,

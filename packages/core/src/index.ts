@@ -293,6 +293,7 @@ export {
   type ScenarioValidationIssue,
   type ScenarioValidationResult,
   type ScenarioMemoryLedgerEntry,
+  type ScenarioMemoryLedgerOptions,
   type ScenarioWorkloadSpec,
   type SimDeviceKind,
   type SimDeviceSpec,
