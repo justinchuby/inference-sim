@@ -84,10 +84,14 @@ self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it
 before execution, reruns the fit inside the Worker, and displays its stable
 fingerprint plus NRMSE/P95 diagnostics.
-The Spec view also imports revisioned token-trace YAML/JSON, previews structural
-and value parity, reruns the oracle and composite state replay inside the
-Worker, and surfaces parity or the first target-only token mismatch without
-converting a mismatch into a generic execution failure.
+The Spec view primarily imports a pair of independently emitted target-only and
+speculative runtime captures. It binds their provenance, reconstructs and
+checks every speculative commit, then derives the revisioned token trace used
+by the Worker. A preassembled token-trace YAML/JSON remains available as a
+secondary debugging and compatibility path. Both paths preview structural and
+value parity, rerun the oracle and composite state replay inside the Worker,
+and surface parity or the first target-only token mismatch without converting a
+well-formed mismatch into a generic execution failure.
 
 ## Direction
 

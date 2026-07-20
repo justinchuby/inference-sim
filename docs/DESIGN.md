@@ -989,12 +989,23 @@ The `speculative-capture` command binds separate target-only and speculative
 runtime artifacts, verifies the runtime's iteration-level commit claims, then
 runs the same token, state, and optional topology checks.
 
-The React workbench imports the same token-trace contract in the Spec view.
-Parsing and an immediate preview provide file-level feedback; the authoritative
+The React workbench makes paired runtime capture import the primary evidence
+path in the Spec view. The two selected artifacts are role-ordered by their
+validated contents, not by filename or selection order. The browser requires
+exactly one target-only and one speculative artifact, applies the same strict
+revision/provenance/iteration binding as the CLI, and derives the revision-2
+token trace only after that binding succeeds. Importing a preassembled token
+trace remains a secondary debugging and compatibility path; it is not
+equivalent evidence that the runtime independently emitted both sides.
+
+Parsing and an immediate preview provide file-level feedback. The authoritative
 run repeats token-value verification, composite state replay, and topology
 execution in the Worker. Controls derived from imported evidence replace the
 heuristic sliders for that run. Parity and first-mismatch results remain visible
-alongside provenance rather than being collapsed into a generic error state.
+alongside both runtime capture identities rather than being collapsed into a
+generic error state. Failed replacement imports preserve the last valid
+evidence and report the new failure; they never partially install one member of
+a pair.
 
 The `serving` command executes arrival-driven target-only or speculative
 continuous batching on a selected topology and reports request timing,

@@ -34,6 +34,11 @@ import {
   parseTokenTraceFileText,
   type ParsedTokenTraceFile,
 } from "./token-trace-import.js";
+import {
+  MAX_RUNTIME_CAPTURE_FILE_BYTES,
+  parseRuntimeCapturePairFileTexts,
+  type ParsedRuntimeCapturePair,
+} from "./runtime-capture-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import { Progress } from "./components/ui/progress.js";
@@ -147,6 +152,7 @@ interface CalibrationSelection {
 interface TokenTraceSelection {
   readonly fileName?: string;
   readonly parsed?: ParsedTokenTraceFile;
+  readonly runtimePair?: ParsedRuntimeCapturePair;
   readonly error?: string;
 }
 
@@ -234,6 +240,51 @@ export function App(): React.JSX.Element {
       setTokenTrace((current) => ({
         ...current,
         ...(current.parsed ? {} : { fileName: file.name }),
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [changeConfig, config]);
+
+  const importRuntimeCaptures = useCallback(async (
+    files: readonly File[],
+  ) => {
+    try {
+      if (files.length !== 2) {
+        throw new Error("runtime evidence import requires exactly two files");
+      }
+      if (files.some((file) => file.size > MAX_RUNTIME_CAPTURE_FILE_BYTES)) {
+        throw new Error("runtime capture file exceeds the 1 MiB limit");
+      }
+      const runtimePair = await parseRuntimeCapturePairFileTexts(
+        await Promise.all(files.map(async (file) => ({
+          fileName: file.name,
+          text: await file.text(),
+        }))),
+      );
+      const parsed: ParsedTokenTraceFile = {
+        trace: runtimePair.trace,
+        preview: runtimePair.preview,
+      };
+      changeConfig({
+        ...config,
+        mode: "speculative",
+        speculative: {
+          ...config.speculative,
+          family: parsed.trace.family,
+          outputTokens: parsed.trace.expectedOutputTokenIds.length,
+          draftWidth: parsed.trace.maxAdditionalTokens,
+          trace: parsed.trace,
+        },
+      });
+      setTokenTrace({
+        fileName:
+          `${runtimePair.targetOnly.fileName} + ${runtimePair.speculative.fileName}`,
+        parsed,
+        runtimePair,
+      });
+    } catch (error) {
+      setTokenTrace((current) => ({
+        ...current,
         error: error instanceof Error ? error.message : String(error),
       }));
     }
@@ -366,6 +417,7 @@ export function App(): React.JSX.Element {
               onClearCalibration={clearCalibration}
               tokenTrace={tokenTrace}
               onTokenTraceFile={importTokenTrace}
+              onRuntimeCaptureFiles={importRuntimeCaptures}
               onClearTokenTrace={clearTokenTrace}
               onRun={() => run(config)}
               onCancel={cancel}
@@ -398,6 +450,7 @@ function ConfigurationPanel({
   onClearCalibration,
   tokenTrace,
   onTokenTraceFile,
+  onRuntimeCaptureFiles,
   onClearTokenTrace,
   onRun,
   onCancel,
@@ -411,6 +464,7 @@ function ConfigurationPanel({
   readonly onClearCalibration: () => void;
   readonly tokenTrace: TokenTraceSelection;
   readonly onTokenTraceFile: (file: File) => void;
+  readonly onRuntimeCaptureFiles: (files: readonly File[]) => void;
   readonly onClearTokenTrace: () => void;
   readonly onRun: () => void;
   readonly onCancel: () => void;
@@ -418,6 +472,7 @@ function ConfigurationPanel({
 }): React.JSX.Element {
   const calibrationInput = useRef<HTMLInputElement | null>(null);
   const tokenTraceInput = useRef<HTMLInputElement | null>(null);
+  const runtimeCaptureInput = useRef<HTMLInputElement | null>(null);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
@@ -764,6 +819,21 @@ function ConfigurationPanel({
                 }
               }}
             />
+            <input
+              ref={runtimeCaptureInput}
+              type="file"
+              multiple
+              accept=".yaml,.yml,.json,application/json,text/yaml"
+              className="sr-only"
+              disabled={disabled}
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                event.currentTarget.value = "";
+                if (files.length > 0) {
+                  onRuntimeCaptureFiles(files);
+                }
+              }}
+            />
             {tokenTrace.parsed
               ? (
                   <div className="flex min-w-0 items-center gap-2">
@@ -773,8 +843,9 @@ function ConfigurationPanel({
                         {tokenTrace.fileName}
                       </div>
                       <div className="truncate text-[11px] text-zinc-500">
-                        {tokenTrace.parsed.trace.id} ·{" "}
-                        {tokenTrace.parsed.trace.provenance.source}
+                        {tokenTrace.runtimePair
+                          ? `${tokenTrace.runtimePair.targetOnly.capture.id} + ${tokenTrace.runtimePair.speculative.capture.id}`
+                          : `${tokenTrace.parsed.trace.id} · ${tokenTrace.parsed.trace.provenance.source}`}
                       </div>
                     </div>
                     <Tooltip>
@@ -784,14 +855,24 @@ function ConfigurationPanel({
                           variant="ghost"
                           size="icon"
                           className="size-8"
-                          aria-label="Replace token trace"
+                          aria-label={tokenTrace.runtimePair
+                            ? "Replace runtime captures"
+                            : "Replace token trace"}
                           disabled={disabled}
-                          onClick={() => tokenTraceInput.current?.click()}
+                          onClick={() => (
+                            tokenTrace.runtimePair
+                              ? runtimeCaptureInput.current?.click()
+                              : tokenTraceInput.current?.click()
+                          )}
                         >
                           <Upload className="size-4" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>Replace token trace</TooltipContent>
+                      <TooltipContent>
+                        {tokenTrace.runtimePair
+                          ? "Replace runtime captures"
+                          : "Replace token trace"}
+                      </TooltipContent>
                     </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -812,16 +893,28 @@ function ConfigurationPanel({
                   </div>
                 )
               : (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="w-full"
-                    disabled={disabled}
-                    onClick={() => tokenTraceInput.current?.click()}
-                  >
-                    <Upload className="size-4" />
-                    Import token trace
-                  </Button>
+                  <div className="grid gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="w-full"
+                      disabled={disabled}
+                      onClick={() => runtimeCaptureInput.current?.click()}
+                    >
+                      <FileCheck2 className="size-4" />
+                      Import runtime captures
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full"
+                      disabled={disabled}
+                      onClick={() => tokenTraceInput.current?.click()}
+                    >
+                      <Upload className="size-4" />
+                      Import assembled trace
+                    </Button>
+                  </div>
                 )}
             {tokenTrace.error
               ? (
