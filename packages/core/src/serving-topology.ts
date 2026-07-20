@@ -22,6 +22,7 @@ import {
 
 export interface TopologyServingBatchResult {
   readonly batchId: number;
+  readonly startedAtNs: number;
   readonly work: ServingBatchWork;
   readonly topology: TopologyWorkloadResult;
 }
@@ -99,12 +100,18 @@ export function simulateTopologyServingWorkload(
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
 ): TopologyServingResult {
   const batches = new Map<number, TopologyServingBatchResult>();
-  const estimateDuration = (work: ServingBatchWork): number => {
+  const estimateDuration = (
+    work: ServingBatchWork,
+    startedAtNs: number,
+  ): number => {
     const existing = batches.get(work.batchId);
     if (existing) {
-      if (JSON.stringify(existing.work) !== JSON.stringify(work)) {
+      if (
+        existing.startedAtNs !== startedAtNs
+        || JSON.stringify(existing.work) !== JSON.stringify(work)
+      ) {
         throw new Error(
-          `serving batch ${work.batchId} changed between simulation and replay`,
+          `serving batch ${work.batchId} timing/work changed between simulation and replay`,
         );
       }
       return existing.topology.metrics.totalDurationNs;
@@ -114,7 +121,12 @@ export function simulateTopologyServingWorkload(
       topologyProfileFromServingBatch(work, config.speculative),
       costModel,
     );
-    batches.set(work.batchId, { batchId: work.batchId, work, topology });
+    batches.set(work.batchId, {
+      batchId: work.batchId,
+      startedAtNs,
+      work,
+      topology,
+    });
     return topology.metrics.totalDurationNs;
   };
   const serving = simulateServingWorkload(config, estimateDuration);

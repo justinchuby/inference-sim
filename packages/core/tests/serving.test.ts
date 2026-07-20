@@ -82,6 +82,26 @@ describe("continuous serving scheduler", () => {
     );
   });
 
+  it("binds duration estimation and replay to the batch start time", () => {
+    const calls: Array<{ batchId: number; startedAtNs: number }> = [];
+    const timedDuration: ServingBatchDurationEstimator = (
+      batch,
+      startedAtNs,
+    ) => {
+      calls.push({ batchId: batch.batchId, startedAtNs });
+      return duration(batch, startedAtNs);
+    };
+    const result = simulateServingWorkload(config(), timedDuration);
+    const starts = result.trace.flatMap((event) => (
+      event.kind === "batch_start"
+        ? [{ batchId: event.batch.batchId, startedAtNs: event.atNs }]
+        : []
+    ));
+
+    expect(calls).toEqual([...starts, ...starts]);
+    expect(starts.some((start) => start.startedAtNs > 0)).toBe(true);
+  });
+
   it("rejects the shortest mutated scheduler decision", () => {
     const result = simulateServingWorkload(config(), duration);
     const index = result.trace.findIndex((event) => event.kind === "batch_start");

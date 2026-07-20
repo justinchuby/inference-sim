@@ -1098,7 +1098,11 @@ and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.
 Continuous serving now models arrival-time dispatch, decode-first batching,
 chunked prefill, exact KV admission/release, TTFT/ITL, and per-batch topology
-execution with independent replay. It composes all six proposer contracts with
+execution with independent replay. Batch duration estimation receives the
+authoritative scheduler start time, and replay must reproduce both batch work
+and that time coordinate. This is the contract needed for future stateful
+cache residency, eviction, and prefetch completion across batch boundaries.
+It composes all six proposer contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
 topology execution matrix. Revisioned calibration import now preserves repeated

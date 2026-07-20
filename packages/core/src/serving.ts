@@ -102,6 +102,7 @@ export interface ServingBatchWork {
 
 export type ServingBatchDurationEstimator = (
   batch: ServingBatchWork,
+  startedAtNs: number,
 ) => number;
 
 export interface ServingTokenEmission {
@@ -399,7 +400,7 @@ class ServingSimulator {
       }
       return;
     }
-    const durationNs = this.estimateDuration(work);
+    const durationNs = this.estimateDuration(work, atNs);
     assertPositiveSafeInteger(durationNs, `batch ${work.batchId} duration`);
     const finishNs = checkedAdd(atNs, durationNs, "batch finish time");
     for (const entry of work.prefill) {
@@ -756,7 +757,7 @@ export function replayServingTrace(
       if (!expected || !equalBatch(expected, event.batch)) {
         replayFail(`batch ${event.batch.batchId} violates scheduler decision`);
       }
-      const durationNs = estimateDuration(expected);
+      const durationNs = estimateDuration(expected, event.atNs);
       const transientKvTokens = checkedAdd(
         kvTokens,
         batchKvReservation(expected),
