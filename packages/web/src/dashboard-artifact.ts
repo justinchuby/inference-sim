@@ -312,6 +312,7 @@ function parseModelBinding(
     "totalParameters",
     "weightBytes",
     "executionProfile",
+    "executionCoverage",
     "pipelineStrategy",
     "speculativeFamilies",
   ], "modelBinding");
@@ -371,8 +372,61 @@ function parseModelBinding(
       "modelBinding weightBytes",
     ),
     executionProfile: parseModelExecutionProfile(binding.executionProfile),
+    executionCoverage: parseModelExecutionCoverage(
+      binding.executionCoverage,
+    ),
     ...(pipelineStrategy === undefined ? {} : { pipelineStrategy }),
     speculativeFamilies,
+  };
+}
+
+function parseModelExecutionCoverage(
+  input: unknown,
+): NonNullable<
+  DashboardRunConfig["modelBinding"]
+>["executionCoverage"] {
+  const coverage = requireRecord(
+    input,
+    "modelBinding executionCoverage",
+  );
+  assertOnlyKeys(coverage, [
+    "fidelity",
+    "scope",
+    "modeledComponentIds",
+    "unmodeledComponentIds",
+    "limitations",
+  ], "modelBinding executionCoverage");
+  const modeledComponentIds = requireStringArray(
+    coverage.modeledComponentIds,
+    "modelBinding executionCoverage modeledComponentIds",
+  );
+  if (modeledComponentIds.length === 0) {
+    throw new Error(
+      "modelBinding executionCoverage modeledComponentIds must not be empty",
+    );
+  }
+  const unmodeledComponentIds = requireStringArray(
+    coverage.unmodeledComponentIds,
+    "modelBinding executionCoverage unmodeledComponentIds",
+  );
+  const limitations = requireStringArray(
+    coverage.limitations,
+    "modelBinding executionCoverage limitations",
+  );
+  return {
+    fidelity: requireEnum(
+      coverage.fidelity,
+      ["complete", "partial"] as const,
+      "modelBinding executionCoverage fidelity",
+    ),
+    scope: requireEnum(
+      coverage.scope,
+      ["full_model", "target_component_only"] as const,
+      "modelBinding executionCoverage scope",
+    ),
+    modeledComponentIds,
+    unmodeledComponentIds,
+    limitations,
   };
 }
 

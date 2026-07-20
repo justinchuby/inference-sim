@@ -1574,6 +1574,17 @@ Worker execution independently rejects a speculative family absent from it.
 `eagle` is not silently treated as `eagle3`, and generic draft heads do not
 imply MTP or EAGLE without a family declaration.
 
+The execution binding also carries an explicit coverage statement. A
+single-target dense model may report `complete/full_model`. A composite,
+independent-draft, or model-bound MoE package reports `partial` until every
+declared invocation, weight charge, placement, and transfer is compiled into
+the executable workload. In the current implementation, multi-model import
+preserves the DAG and phase gates but schedules only the selected target;
+generic EP and proposer events are not evidence that imported expert or draft
+profiles were bound. The UI and deterministic artifact list modeled and
+unmodeled component IDs plus machine-readable limitations. See
+`REPRESENTATIVE_MODEL_VALIDATION.md`.
+
 The dashboard defaults to an explicit built-in Llama 3 8B target-only model;
 model selection and local folder/file import are first-class controls. Every
 serving/speculative result names the bound model, parameters, weight bytes, and

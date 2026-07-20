@@ -47,8 +47,17 @@ export interface DashboardModelBinding {
   readonly totalParameters: number;
   readonly weightBytes: number;
   readonly executionProfile: DashboardModelExecutionProfile;
+  readonly executionCoverage: DashboardModelExecutionCoverage;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
+}
+
+export interface DashboardModelExecutionCoverage {
+  readonly fidelity: "complete" | "partial";
+  readonly scope: "full_model" | "target_component_only";
+  readonly modeledComponentIds: readonly string[];
+  readonly unmodeledComponentIds: readonly string[];
+  readonly limitations: readonly string[];
 }
 
 export interface DashboardModelExecutionProfile {

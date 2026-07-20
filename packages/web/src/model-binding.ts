@@ -23,6 +23,9 @@ export function createBuiltinModelBinding(
   preset: DashboardModelPreset,
 ): DashboardModelBinding {
   const model = buildModelProfile(preset);
+  const moeLimitations = model.moe === undefined
+    ? []
+    : ["model_moe_routing_not_bound_to_expert_workload"];
   return {
     source: "builtin_model",
     displayName: model.name,
@@ -32,6 +35,13 @@ export function createBuiltinModelBinding(
     totalParameters: model.totalParams,
     weightBytes: totalModelWeightBytes(model),
     executionProfile: executionProfile(model, `builtin:${preset}`),
+    executionCoverage: {
+      fidelity: moeLimitations.length === 0 ? "complete" : "partial",
+      scope: "full_model",
+      modeledComponentIds: [preset],
+      unmodeledComponentIds: [],
+      limitations: moeLimitations,
+    },
     speculativeFamilies: [],
   };
 }
@@ -42,6 +52,16 @@ export function createImportedModelBinding(
   const target = selectTargetModel(modelPackage);
   const model = resolveOnnxModelProfile(target.manifest);
   const fingerprint = target.manifest.manifestFingerprint;
+  const assessedCoverage = assessImportedModelExecutionCoverage(
+    modelPackage,
+    target.componentIds,
+  );
+  const executionCoverage = model.moe === undefined
+    ? assessedCoverage
+    : addCoverageLimitation(
+        assessedCoverage,
+        "model_moe_routing_not_bound_to_expert_workload",
+      );
   return {
     source: "local_model_package",
     displayName: model.name,
@@ -54,11 +74,96 @@ export function createImportedModelBinding(
     totalParameters: model.totalParams,
     weightBytes: target.manifest.totals.initializerLogicalBytes,
     executionProfile: executionProfile(model, fingerprint),
+    executionCoverage,
     ...(modelPackage.metadata.pipelineStrategy === undefined
       ? {}
       : { pipelineStrategy: modelPackage.metadata.pipelineStrategy }),
     speculativeFamilies:
       modelPackage.metadata.speculative.availableFamilies,
+  };
+}
+
+function addCoverageLimitation(
+  coverage: DashboardModelBinding["executionCoverage"],
+  limitation: string,
+): DashboardModelBinding["executionCoverage"] {
+  return coverage.limitations.includes(limitation)
+    ? coverage
+    : {
+        ...coverage,
+        fidelity: "partial",
+        limitations: [...coverage.limitations, limitation],
+      };
+}
+
+export function assessImportedModelExecutionCoverage(
+  modelPackage: ImportedModelPackage,
+  targetComponentIds?: readonly string[],
+): DashboardModelBinding["executionCoverage"] {
+  const allComponentIds = modelPackage.metadata.components.length > 0
+    ? modelPackage.metadata.components.map((component) => component.id)
+    : modelPackage.models.flatMap((model) => (
+        model.componentIds.length > 0 ? model.componentIds : [model.fileName]
+      ));
+  const componentType = new Map(modelPackage.metadata.components.map(
+    (component) => [component.id, component.type.toLowerCase()] as const,
+  ));
+  const selectedIds = targetComponentIds ?? selectTargetModel(
+    modelPackage,
+  ).componentIds;
+  const modeledComponentIds = selectedIds.filter((id) => {
+    const type = componentType.get(id);
+    return type === undefined
+      || type === "decoder"
+      || type === "target"
+      || type === "model";
+  });
+  if (modeledComponentIds.length === 0 && modelPackage.models.length === 1) {
+    modeledComponentIds.push(
+      selectedIds[0] ?? modelPackage.models[0]!.fileName,
+    );
+  }
+  const modeled = new Set(modeledComponentIds);
+  const unmodeledComponentIds = allComponentIds
+    .filter((id) => !modeled.has(id))
+    .sort();
+  const limitations: string[] = [];
+  if (unmodeledComponentIds.length > 0) {
+    limitations.push("non_target_components_not_scheduled");
+    limitations.push("non_target_weights_not_capacity_checked");
+  }
+  if (modelPackage.metadata.edges.length > 0) {
+    limitations.push("pipeline_dataflow_transfers_not_scheduled");
+  }
+  if (modelPackage.metadata.components.some(
+    (component) => component.devicePreference !== undefined,
+  )) {
+    limitations.push("component_device_preferences_not_enforced");
+  }
+  if (
+    modelPackage.metadata.components.some(
+      (component) => component.type.toLowerCase() === "draft",
+    )
+  ) {
+    limitations.push("draft_model_profile_not_bound_to_proposer_cost");
+  }
+  const hardware = modelPackage.metadata.hardware;
+  if (
+    hardware.minimumMemoryGiB !== undefined
+    || hardware.minimumTensorParallelDegree !== undefined
+    || hardware.supportsTensorParallel !== undefined
+    || hardware.requiredDtypes.length > 0
+  ) {
+    limitations.push("metadata_hardware_requirements_not_enforced");
+  }
+  return {
+    fidelity: limitations.length === 0 ? "complete" : "partial",
+    scope: unmodeledComponentIds.length === 0
+      ? "full_model"
+      : "target_component_only",
+    modeledComponentIds: [...new Set(modeledComponentIds)].sort(),
+    unmodeledComponentIds,
+    limitations,
   };
 }
 

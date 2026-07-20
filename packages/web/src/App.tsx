@@ -76,6 +76,7 @@ import {
 import { importModelPackage } from "./model-import-client.js";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import {
+  assessImportedModelExecutionCoverage,
   createBuiltinModelBinding,
   createImportedModelBinding,
   DASHBOARD_MODEL_PRESETS,
@@ -2167,6 +2168,22 @@ function ConfigurationPanel({
                 </div>
               )
             : null}
+          {config.modelBinding?.executionCoverage.fidelity === "partial"
+            ? (
+                <div className="mt-2 flex gap-2 border-l-2 border-amber-500 bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-900">
+                  <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    {config.modelBinding.executionCoverage.scope
+                      === "target_component_only"
+                      ? `Target-component timing. Not scheduled: ${
+                          config.modelBinding.executionCoverage
+                            .unmodeledComponentIds.join(", ")
+                        }.`
+                      : "Partial model binding. Model-specific parallel routing is not yet enforced."}
+                  </span>
+                </div>
+              )
+            : null}
           {modelPackage.result
             && (
               modelPackage.result.metadata.edges.length > 0
@@ -4221,6 +4238,10 @@ function ModelPackageOverview({
     () => summarizeModelPackage(modelPackage, scenario),
     [modelPackage, scenario],
   );
+  const coverage = useMemo(
+    () => assessImportedModelExecutionCoverage(modelPackage),
+    [modelPackage],
+  );
   const components = modelPackage.metadata.components.length > 0
     ? modelPackage.metadata.components
     : modelPackage.models.map((model) => ({
@@ -4246,6 +4267,37 @@ function ModelPackageOverview({
           </Badge>
         </div>
       </div>
+      <section className={coverage.fidelity === "partial"
+        ? "border-l-2 border-amber-500 bg-amber-50 px-4 py-3"
+        : "border-l-2 border-emerald-600 bg-emerald-50 px-4 py-3"}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold">Simulation coverage</h2>
+          <Badge variant={coverage.fidelity === "complete"
+            ? "success"
+            : "warning"}
+          >
+            {coverage.fidelity === "complete"
+              ? "full model"
+              : coverage.scope === "target_component_only"
+                ? "target component only"
+                : "partial model binding"}
+          </Badge>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-zinc-700">
+          Modeled: {coverage.modeledComponentIds.join(", ")}.
+          {coverage.unmodeledComponentIds.length > 0
+            ? ` Not scheduled or capacity-checked: ${coverage.unmodeledComponentIds.join(", ")}.`
+            : " All declared components are represented by the execution binding."}
+        </p>
+        {coverage.limitations.length > 0
+          ? (
+              <div className="mt-2 text-[11px] leading-5 text-zinc-600">
+                {coverage.limitations.map(modelCoverageLimitationLabel).join(" · ")}
+              </div>
+            )
+          : null}
+      </section>
       <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-5">
         <OnnxMetric
           label="Package size"
@@ -4430,6 +4482,27 @@ function ModelPackageOverview({
       </section>
     </div>
   );
+}
+
+function modelCoverageLimitationLabel(limitation: string): string {
+  switch (limitation) {
+    case "non_target_components_not_scheduled":
+      return "encoder, projector, or draft invocations are metadata-only";
+    case "non_target_weights_not_capacity_checked":
+      return "non-target weights are excluded from fit checks";
+    case "pipeline_dataflow_transfers_not_scheduled":
+      return "pipeline edges do not reserve links";
+    case "component_device_preferences_not_enforced":
+      return "component device preferences are not placement constraints";
+    case "draft_model_profile_not_bound_to_proposer_cost":
+      return "draft work uses a family heuristic, not imported draft weights";
+    case "metadata_hardware_requirements_not_enforced":
+      return "metadata hardware requirements are not execution constraints";
+    case "model_moe_routing_not_bound_to_expert_workload":
+      return "model expert count and top-k do not configure EP routing";
+    default:
+      return limitation;
+  }
 }
 
 function ComponentArchitecture({

@@ -53,6 +53,9 @@ describe("inference metadata", () => {
       "decoder",
       "encoder",
     ]);
+    expect(parsed.components.find(
+      (component) => component.id === "decoder",
+    )?.runOn).toBeUndefined();
     expect(parsed.edges[0]).toMatchObject({
       fromComponent: "encoder",
       toComponent: "decoder",
@@ -66,6 +69,26 @@ describe("inference metadata", () => {
     ]);
     expect(parsed.hardware.minimumMemoryGiB).toBe(24);
     expect(parsed.speculative.availableFamilies).toEqual([]);
+  });
+
+  it("preserves component phase gates for execution planning", () => {
+    const parsed = parseInferenceMetadata({
+      pipeline: {
+        models: {
+          vision: { filename: "vision.onnx", type: "vision_encoder" },
+          decoder: { filename: "decoder.onnx", type: "decoder" },
+        },
+        phases: {
+          vision: { run_on: "prompt_only" },
+          decoder: { run_on: "every_step" },
+        },
+      },
+    });
+
+    expect(parsed.components).toMatchObject([
+      { id: "decoder", runOn: "every_step" },
+      { id: "vision", runOn: "prompt_only" },
+    ]);
   });
 
   it("maps only explicit supported speculative evidence", () => {

@@ -6,6 +6,7 @@ export interface InferencePipelineComponent {
   readonly type: string;
   readonly tokenizer?: string;
   readonly devicePreference?: string;
+  readonly runOn?: string;
 }
 
 export interface InferencePipelineEdge {
@@ -72,24 +73,22 @@ export function parseInferenceMetadata(
   const root = record(input, "inference metadata");
   const warnings: string[] = [];
   const pipeline = optionalRecord(root.pipeline, "pipeline");
-  const components = parseComponents(pipeline?.models);
-  const componentIds = new Set(components.map((component) => component.id));
+  const parsedComponents = parseComponents(pipeline?.models);
+  const componentIds = new Set(
+    parsedComponents.map((component) => component.id),
+  );
+  const phaseRunOn = parsePhases(pipeline?.phases, componentIds);
+  const components = parsedComponents.map((component) => ({
+    ...component,
+    ...(phaseRunOn.get(component.id) === undefined
+      ? {}
+      : { runOn: phaseRunOn.get(component.id)! }),
+  }));
   const edges = parseEdges(pipeline?.dataflow, componentIds);
   const strategy = optionalRecord(pipeline?.strategy, "pipeline.strategy");
   const stages = strategy === undefined
     ? []
     : parsePipelineStrategy(strategy, "pipeline.strategy", componentIds);
-  const phases = optionalRecord(pipeline?.phases, "pipeline.phases");
-  if (phases !== undefined) {
-    for (const [componentId, value] of Object.entries(phases)) {
-      if (!componentIds.has(componentId)) {
-        fail(`pipeline.phases references unknown component ${componentId}`);
-      }
-      const phase = record(value, `pipeline.phases.${componentId}`);
-      nonEmptyString(phase.run_on, `pipeline.phases.${componentId}.run_on`);
-    }
-  }
-
   const evidence: InferenceMetadataSpeculativeEvidence[] = [];
   const unrecognizedDeclarations: string[] = [];
   parseStandaloneSpeculative(root, evidence, unrecognizedDeclarations);
@@ -149,6 +148,31 @@ export function parseInferenceMetadata(
     },
     warnings,
   };
+}
+
+function parsePhases(
+  input: unknown,
+  componentIds: ReadonlySet<string>,
+): ReadonlyMap<string, string> {
+  const phases = optionalRecord(input, "pipeline.phases");
+  if (phases === undefined) {
+    return new Map();
+  }
+  const result = new Map<string, string>();
+  for (const [componentId, value] of Object.entries(phases)) {
+    if (!componentIds.has(componentId)) {
+      fail(`pipeline.phases references unknown component ${componentId}`);
+    }
+    const phase = record(value, `pipeline.phases.${componentId}`);
+    result.set(
+      componentId,
+      nonEmptyString(
+        phase.run_on,
+        `pipeline.phases.${componentId}.run_on`,
+      ),
+    );
+  }
+  return result;
 }
 
 function parseComponents(

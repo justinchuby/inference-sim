@@ -4,13 +4,17 @@ import {
   buildScenarioPreset,
   buildTopology,
   createOnnxModelManifest,
+  parseInferenceMetadata,
 } from "@inference-sim/core";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import {
   calculateIdealRoofline,
   summarizeModelPackage,
 } from "./model-metrics.js";
-import { createImportedModelBinding } from "./model-binding.js";
+import {
+  createBuiltinModelBinding,
+  createImportedModelBinding,
+} from "./model-binding.js";
 
 describe("model UI metrics", () => {
   it("keeps exact inventory separate from heuristic work and bandwidth bounds", () => {
@@ -86,8 +90,157 @@ describe("model UI metrics", () => {
       binding.executionProfile.attentionWeightBytesPerToken
         + binding.executionProfile.ffnWeightBytesPerToken,
     ).toBe(4_000);
+    expect(binding.executionCoverage).toMatchObject({
+      fidelity: "complete",
+      scope: "full_model",
+      unmodeledComponentIds: [],
+    });
+  });
+
+  it("reports Gemma 4 VLM prompt components as unmodeled execution", () => {
+    const modelPackage = packageWithComponents({
+      metadata: {
+        pipeline: {
+          models: {
+            vision_encoder: {
+              filename: "vision.onnx",
+              type: "vision_encoder",
+              device_preference: "cuda",
+            },
+            embedding: {
+              filename: "embedding.onnx",
+              type: "encoder",
+            },
+            decoder: {
+              filename: "decoder.onnx",
+              type: "decoder",
+            },
+          },
+          phases: {
+            vision_encoder: { run_on: "prompt_only" },
+            embedding: { run_on: "prompt_only" },
+            decoder: { run_on: "every_step" },
+          },
+          dataflow: [
+            {
+              from: "vision_encoder.image_features",
+              to: "embedding.image_features",
+              device_transfer: true,
+            },
+            {
+              from: "embedding.inputs_embeds",
+              to: "decoder.inputs_embeds",
+              device_transfer: true,
+            },
+          ],
+          strategy: {
+            kind: "composite",
+            stages: [
+              {
+                name: "vision",
+                strategy: { kind: "single_pass", model: "vision_encoder" },
+                run_on: "prompt_only",
+              },
+              {
+                name: "fusion",
+                strategy: { kind: "single_pass", model: "embedding" },
+                run_on: "prompt_only",
+              },
+              {
+                name: "decode",
+                strategy: { kind: "autoregressive", decoder: "decoder" },
+                run_on: "every_step",
+              },
+            ],
+          },
+        },
+      },
+      components: [
+        ["vision.onnx", "vision_encoder"],
+        ["embedding.onnx", "embedding"],
+        ["decoder.onnx", "decoder"],
+      ],
+    });
+
+    const binding = createImportedModelBinding(modelPackage);
+
+    expect(binding.executionCoverage).toMatchObject({
+      fidelity: "partial",
+      scope: "target_component_only",
+      modeledComponentIds: ["decoder"],
+      unmodeledComponentIds: ["embedding", "vision_encoder"],
+    });
+    expect(binding.executionCoverage.limitations).toEqual(expect.arrayContaining([
+      "non_target_components_not_scheduled",
+      "pipeline_dataflow_transfers_not_scheduled",
+      "component_device_preferences_not_enforced",
+    ]));
+  });
+
+  it("reports an independent draft model as heuristic proposer work", () => {
+    const modelPackage = packageWithComponents({
+      metadata: {
+        strategy: {
+          kind: "speculative",
+          draft: { producer: "draft_model", session: "draft" },
+          tokens_per_step: 4,
+        },
+        pipeline: {
+          models: {
+            target: { filename: "target.onnx", type: "target" },
+            draft: { filename: "draft.onnx", type: "draft" },
+          },
+        },
+      },
+      components: [
+        ["target.onnx", "target"],
+        ["draft.onnx", "draft"],
+      ],
+    });
+
+    const binding = createImportedModelBinding(modelPackage);
+
+    expect(binding.speculativeFamilies).toContain("draft_model");
+    expect(binding.executionCoverage.unmodeledComponentIds).toEqual(["draft"]);
+    expect(binding.executionCoverage.limitations).toContain(
+      "draft_model_profile_not_bound_to_proposer_cost",
+    );
+  });
+
+  it("does not claim model-bound EP for representative MoE presets", () => {
+    for (const preset of ["mixtral-8x22b", "deepseek-v2"] as const) {
+      const binding = createBuiltinModelBinding(preset);
+      expect(binding.executionCoverage).toMatchObject({
+        fidelity: "partial",
+        scope: "full_model",
+      });
+      expect(binding.executionCoverage.limitations).toContain(
+        "model_moe_routing_not_bound_to_expert_workload",
+      );
+    }
   });
 });
+
+function packageWithComponents({
+  metadata,
+  components,
+}: {
+  readonly metadata: unknown;
+  readonly components: readonly (readonly [string, string])[];
+}): ImportedModelPackage {
+  const base = packageWithDenseModel();
+  return {
+    ...base,
+    metadata: parseInferenceMetadata(metadata),
+    models: components.map(([fileName, componentId]) => ({
+      ...base.models[0]!,
+      fileName,
+      componentIds: [componentId],
+    })),
+    fileCount: components.length,
+    unboundOnnxFiles: [],
+  };
+}
 
 function packageWithDenseModel(): ImportedModelPackage {
   const manifest = createOnnxModelManifest({
