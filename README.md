@@ -57,13 +57,17 @@ Phase 3 has an initial speculative workload slice:
 - arrival-driven, decode-first continuous batching with same-time dispatch
   barriers, chunked prefill, priority ordering, and exact KV admission; and
 - independent serving-trace replay plus TTFT/ITL/latency/utilization metrics
-  across all six topology presets.
+  across all six topology presets; and
+- speculative serving with per-request acceptance streams, transactional
+  target/proposer state, transient candidate-KV admission, burst emission, and
+  a six-proposer by six-topology execution matrix.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
-continuous-serving, speculative, and expert-cache controls, modeled
-latency/throughput, request TTFT/ITL, memory, resource-utilization and caching
-charts, and a recent event inspector.
+continuous-serving, speculative, and expert-cache controls, including
+target-only versus proposer-family serving, modeled latency/throughput, request
+TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
+inspector.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly.
 
@@ -98,6 +102,7 @@ pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
+pnpm sim serving multi-gpu examples/serving-speculative.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml

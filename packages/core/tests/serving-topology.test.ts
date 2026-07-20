@@ -136,4 +136,40 @@ describe("topology-aware serving", () => {
       }
     }
   });
+
+  it("can trade proposer work for fewer target forwards", () => {
+    const base: ServingSchedulerConfig = {
+      requests: [
+        { id: "r0", arrivalNs: 0, promptTokens: 8, outputTokens: 16 },
+        { id: "r1", arrivalNs: 0, promptTokens: 8, outputTokens: 16 },
+      ],
+      maxBatchSize: 2,
+      maxBatchTokens: 8,
+      prefillChunkTokens: 8,
+      maxKvTokens: 46,
+    };
+    const scenario = buildScenarioPreset("multi-gpu");
+    const targetOnly = simulateTopologyServingWorkload(scenario, base);
+    const speculative = simulateTopologyServingWorkload(scenario, {
+      ...base,
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 3,
+        acceptance: {
+          kind: "conditional_empirical",
+          matchProbabilityByPosition: [1, 1, 1],
+          seed: 1,
+        },
+      },
+    });
+
+    expect(speculative.serving.metrics.targetForwards).toBeLessThan(
+      targetOnly.serving.metrics.targetForwards,
+    );
+    expect(speculative.serving.metrics.proposedDraftTokens).toBeGreaterThan(0);
+    expect(speculative.metrics.totalDurationNs).toBeLessThan(
+      targetOnly.metrics.totalDurationNs,
+    );
+  });
 });

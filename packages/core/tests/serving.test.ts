@@ -139,6 +139,23 @@ describe("continuous serving scheduler", () => {
     }, duration)).toThrow("requires 8 KV tokens");
     expect(() => simulateServingWorkload(config(), () => 0))
       .toThrowError(ServingProtocolError);
+    expect(() => simulateServingWorkload({
+      ...config(),
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 1,
+        acceptance: {
+          kind: "replay",
+          acceptedDraftTokensByRequest: {
+            a: [0],
+            b: [0],
+            priority: [0],
+            typo: [0],
+          },
+        },
+      },
+    }, duration)).toThrow("unknown request typo");
   });
 
   it("commits speculative bursts through per-request transactions", () => {

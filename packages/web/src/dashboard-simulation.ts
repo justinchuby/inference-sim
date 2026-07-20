@@ -7,6 +7,7 @@ import {
   simulateSpeculativeWorkload,
   simulateTopologyServingWorkload,
   simulateTopologyWorkload,
+  speculativeFamilyContract,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
   type ScenarioPresetName,
@@ -46,6 +47,10 @@ export function simulateDashboard(
       mode: config.mode,
       topology: summarizeServingTopology(serving),
       serving: {
+        decodeMode: config.serving.decodeMode,
+        support: config.serving.decodeMode === "target_only"
+          ? "target_only"
+          : speculativeFamilyContract(config.serving.decodeMode).support,
         metrics: serving.serving.metrics,
         requests: serving.serving.requests,
         batches: serving.batches.map((batch) => ({
@@ -79,6 +84,12 @@ function runServing(
   const promptTokens = clampInteger(config.serving.promptTokens, 16, 4096);
   const outputTokens = clampInteger(config.serving.outputTokens, 1, 512);
   const peakPerRequest = promptTokens + outputTokens - 1;
+  const draftWidth = clampInteger(config.serving.draftWidth, 1, 8);
+  const first = clamp(
+    config.serving.firstPositionAcceptance,
+    0.05,
+    0.99,
+  );
   return simulateTopologyServingWorkload(
     scenario,
     {
@@ -104,6 +115,25 @@ function runServing(
         512,
       ),
       maxKvTokens: requestCount * peakPerRequest,
+      ...(config.serving.decodeMode === "target_only"
+        ? {}
+        : {
+            speculative: {
+              family: config.serving.decodeMode,
+              eligibility: defaultSpeculativeEligibility(
+                config.serving.decodeMode,
+              ),
+              maxAdditionalTokens: draftWidth,
+              acceptance: {
+                kind: "conditional_heuristic" as const,
+                matchProbabilityByPosition: Array.from(
+                  { length: draftWidth },
+                  (_, index) => Math.max(0.05, first * 0.86 ** index),
+                ),
+                seed: clampInteger(config.seed, 0, 0xffff_ffff),
+              },
+            },
+          }),
     },
   );
 }

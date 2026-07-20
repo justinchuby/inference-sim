@@ -85,6 +85,9 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     firstPositionAcceptance: 0.82,
   },
   serving: {
+    decodeMode: "mtp",
+    draftWidth: 4,
+    firstPositionAcceptance: 0.82,
     requestCount: 12,
     arrivalGapUs: 250,
     promptTokens: 512,
@@ -292,38 +295,39 @@ function ConfigurationPanel({
 }): React.JSX.Element {
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
-    <div className="mx-auto max-w-md lg:max-w-none">
-      <div className="mb-4">
-        <h2 className="text-sm font-bold">Run configuration</h2>
-        <p className="mt-0.5 text-xs text-zinc-500">Seed {config.seed}</p>
-      </div>
+    <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
+      <div className="configuration-scroll">
+        <div className="mb-4">
+          <h2 className="text-sm font-bold">Run configuration</h2>
+          <p className="mt-0.5 text-xs text-zinc-500">Seed {config.seed}</p>
+        </div>
 
-      <Field label="Device topology">
-        <Select
-          value={config.scenarioName}
-          disabled={disabled}
-          onValueChange={(scenarioName) => onChange({
-            ...config,
-            scenarioName: scenarioName as DashboardRunConfig["scenarioName"],
-          })}
+        <Field label="Device topology">
+          <Select
+            value={config.scenarioName}
+            disabled={disabled}
+            onValueChange={(scenarioName) => onChange({
+              ...config,
+              scenarioName: scenarioName as DashboardRunConfig["scenarioName"],
+            })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SCENARIOS.map((scenario) => (
+                <SelectItem key={scenario.value} value={scenario.value}>
+                  {scenario.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+
+        <Tabs
+          value={config.mode}
+          onValueChange={(mode) => setMode(mode as WorkloadMode)}
         >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SCENARIOS.map((scenario) => (
-              <SelectItem key={scenario.value} value={scenario.value}>
-                {scenario.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
-
-      <Tabs
-        value={config.mode}
-        onValueChange={(mode) => setMode(mode as WorkloadMode)}
-      >
         <TabsList className="mb-4 w-full grid-cols-3">
           <TabsTrigger value="serving">Serving</TabsTrigger>
           <TabsTrigger value="speculative" aria-label="Speculative">
@@ -332,6 +336,68 @@ function ConfigurationPanel({
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
         <TabsContent value="serving" className="space-y-5">
+          <Field label="Decode mode">
+            <Select
+              value={config.serving.decodeMode}
+              disabled={disabled}
+              onValueChange={(decodeMode) => onChange({
+                ...config,
+                serving: {
+                  ...config.serving,
+                  decodeMode:
+                    decodeMode as DashboardRunConfig["serving"]["decodeMode"],
+                },
+              })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="target_only">Target only</SelectItem>
+                {SPECULATIVE_FAMILIES.map((family) => (
+                  <SelectItem key={family.value} value={family.value}>
+                    {family.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          {config.serving.decodeMode === "target_only"
+            ? null
+            : (
+                <>
+                  <SliderField
+                    label="Draft width"
+                    value={config.serving.draftWidth}
+                    minimum={1}
+                    maximum={8}
+                    step={1}
+                    disabled={disabled}
+                    onChange={(draftWidth) => onChange({
+                      ...config,
+                      serving: { ...config.serving, draftWidth },
+                    })}
+                  />
+                  <SliderField
+                    label="Position 1 acceptance"
+                    value={Math.round(
+                      config.serving.firstPositionAcceptance * 100,
+                    )}
+                    suffix="%"
+                    minimum={20}
+                    maximum={98}
+                    step={1}
+                    disabled={disabled}
+                    onChange={(acceptance) => onChange({
+                      ...config,
+                      serving: {
+                        ...config.serving,
+                        firstPositionAcceptance: acceptance / 100,
+                      },
+                    })}
+                  />
+                </>
+              )}
           <SliderField
             label="Requests"
             value={config.serving.requestCount}
@@ -540,9 +606,10 @@ function ConfigurationPanel({
             })}
           />
         </TabsContent>
-      </Tabs>
+        </Tabs>
+      </div>
 
-      <div className="mt-6 flex gap-2 border-t border-zinc-200 pt-4">
+      <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
         {running
           ? (
             <Button className="w-full" variant="destructive" onClick={onCancel}>
@@ -592,6 +659,19 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
             : null}
           {result.serving
             ? <Badge variant="neutral">continuous batch</Badge>
+            : null}
+          {result.serving && result.serving.decodeMode !== "target_only"
+            ? (
+                <Badge variant={result.serving.support === "design_only"
+                  ? "warning"
+                  : "neutral"}
+                >
+                  {result.serving.decodeMode.replaceAll("_", " ")}
+                  {result.serving.support === "design_only"
+                    ? " · design only"
+                    : ""}
+                </Badge>
+              )
             : null}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -872,7 +952,9 @@ function expertMetrics(result: DashboardResult) {
 }
 
 function servingMetrics(result: DashboardResult) {
-  const metrics = result.serving!.metrics;
+  const serving = result.serving!;
+  const metrics = serving.metrics;
+  const speculative = serving.decodeMode !== "target_only";
   return [
     {
       label: "P95 TTFT",
@@ -883,19 +965,25 @@ function servingMetrics(result: DashboardResult) {
     {
       label: "P95 ITL",
       value: formatDuration(metrics.p95InterTokenLatencyNs),
-      detail: `${metrics.batches} continuous batches`,
+      detail: speculative
+        ? `${metrics.targetForwards} target verifications`
+        : `${metrics.batches} continuous batches`,
       icon: <Gauge className="size-4 text-sky-700" />,
     },
     {
       label: "Throughput",
       value: formatRate(metrics.throughputTokensPerSecond),
-      detail: `${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
+      detail: speculative
+        ? `${metrics.committedTokensPerTargetForward.toFixed(2)} tokens / target`
+        : `${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
     {
       label: "KV high water",
       value: `${metrics.kvHighWaterTokens.toLocaleString()} tok`,
-      detail: `${(metrics.sequenceBatchUtilization * 100).toFixed(1)}% sequence slots`,
+      detail: speculative
+        ? `${metrics.acceptedDraftTokens}/${metrics.proposedDraftTokens} drafts accepted`
+        : `${(metrics.sequenceBatchUtilization * 100).toFixed(1)}% sequence slots`,
       icon: <Database className="size-4 text-sky-700" />,
     },
   ];

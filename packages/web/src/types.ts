@@ -31,6 +31,9 @@ export interface DashboardRunConfig {
     readonly firstPositionAcceptance: number;
   };
   readonly serving: {
+    readonly decodeMode: "target_only" | SpeculativeProposerFamily;
+    readonly draftWidth: number;
+    readonly firstPositionAcceptance: number;
     readonly requestCount: number;
     readonly arrivalGapUs: number;
     readonly promptTokens: number;
@@ -86,6 +89,8 @@ export interface DashboardResult {
     readonly warmCapacityBytes: number;
   };
   readonly serving?: {
+    readonly decodeMode: "target_only" | SpeculativeProposerFamily;
+    readonly support: "onnx_genai_current" | "design_only" | "target_only";
     readonly metrics: ServingMetrics;
     readonly requests: readonly ServingRequestResult[];
     readonly batches: readonly {

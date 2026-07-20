@@ -29,9 +29,11 @@ import {
   type ScenarioPresetName,
   type SimulationScenario,
   type SpeculativeAcceptanceModel,
+  type SpeculativeEligibility,
   type SpeculativeProposerFamily,
   type SpeculativeWorkloadConfig,
   type ServingSchedulerConfig,
+  type ServingSpeculativeConfig,
   type TopologyServingResult,
   type TopologyWorkloadProfile,
 } from "@inference-sim/core";
@@ -326,78 +328,13 @@ function parseSpeculativeConfig(
   const family = requireFamily(
       requireString(speculative, "family", "speculative"),
   );
-  const eligibilityDefaults = defaultSpeculativeEligibility(family);
-  const eligibilityConfig = speculative.eligibility === undefined
-    ? {}
-    : requireRecord(speculative.eligibility, "speculative.eligibility");
-  const decoding = optionalString(
-    eligibilityConfig,
-    "decoding",
-    eligibilityDefaults.decoding,
-    "speculative.eligibility",
-  );
-  if (decoding !== "greedy" && decoding !== "sampling") {
-    throw new Error(
-      "speculative.eligibility.decoding must be greedy or sampling",
-    );
-  }
   return {
     family,
-    eligibility: {
-      proposerAvailable: optionalBoolean(
-        eligibilityConfig,
-        "proposer_available",
-        eligibilityDefaults.proposerAvailable,
-        "speculative.eligibility",
-      ),
-      decoding,
-      grammarActive: optionalBoolean(
-        eligibilityConfig,
-        "grammar_active",
-        eligibilityDefaults.grammarActive,
-        "speculative.eligibility",
-      ),
-      targetKvAvailable: optionalBoolean(
-        eligibilityConfig,
-        "target_kv_available",
-        eligibilityDefaults.targetKvAvailable,
-        "speculative.eligibility",
-      ),
-      targetHiddenOutputCount: optionalNumber(
-        eligibilityConfig,
-        "target_hidden_output_count",
-        eligibilityDefaults.targetHiddenOutputCount,
-        "speculative.eligibility",
-      ),
-      sharedKvGroupCount: optionalNumber(
-        eligibilityConfig,
-        "shared_kv_group_count",
-        eligibilityDefaults.sharedKvGroupCount,
-        "speculative.eligibility",
-      ),
-      ...(family === "self_speculative"
-        ? {
-            targetLayerCount: optionalNumber(
-              eligibilityConfig,
-              "target_layer_count",
-              eligibilityDefaults.targetLayerCount ?? 32,
-              "speculative.eligibility",
-            ),
-            earlyExitLayer: optionalNumber(
-              eligibilityConfig,
-              "early_exit_layer",
-              eligibilityDefaults.earlyExitLayer ?? 16,
-              "speculative.eligibility",
-            ),
-            allowDesignOnly: optionalBoolean(
-              eligibilityConfig,
-              "allow_design_only",
-              eligibilityDefaults.allowDesignOnly ?? false,
-              "speculative.eligibility",
-            ),
-          }
-        : {}),
-    },
+    eligibility: parseSpeculativeEligibility(
+      family,
+      speculative,
+      "speculative",
+    ),
     initialTokenLength,
     outputTokenCount,
     maxAdditionalTokens,
@@ -590,6 +527,13 @@ function parseServingConfig(
       "serving",
     ),
     maxKvTokens: requireNumber(serving, "max_kv_tokens", "serving"),
+    ...(serving.speculative === undefined
+      ? {}
+      : {
+          speculative: parseServingSpeculativeConfig(
+            requireRecord(serving.speculative, "serving.speculative"),
+          ),
+        }),
     maxEvents: optionalNumber(
       serving,
       "max_events",
@@ -597,6 +541,145 @@ function parseServingConfig(
       "serving",
     ),
   };
+}
+
+function parseServingSpeculativeConfig(
+  speculative: Record<string, unknown>,
+): ServingSpeculativeConfig {
+  const family = requireFamily(
+    requireString(speculative, "family", "serving.speculative"),
+  );
+  const acceptanceConfig = requireRecord(
+    speculative.acceptance,
+    "serving.speculative.acceptance",
+  );
+  return {
+    family,
+    eligibility: parseSpeculativeEligibility(
+      family,
+      speculative,
+      "serving.speculative",
+    ),
+    maxAdditionalTokens: requireNumber(
+      speculative,
+      "max_additional_tokens",
+      "serving.speculative",
+    ),
+    acceptance: parseServingAcceptance(acceptanceConfig),
+  };
+}
+
+function parseSpeculativeEligibility(
+  family: SpeculativeProposerFamily,
+  parent: Record<string, unknown>,
+  context: string,
+): SpeculativeEligibility {
+  const defaults = defaultSpeculativeEligibility(family);
+  const eligibilityContext = `${context}.eligibility`;
+  const eligibility = parent.eligibility === undefined
+    ? {}
+    : requireRecord(parent.eligibility, eligibilityContext);
+  const decoding = optionalString(
+    eligibility,
+    "decoding",
+    defaults.decoding,
+    eligibilityContext,
+  );
+  if (decoding !== "greedy" && decoding !== "sampling") {
+    throw new Error(`${eligibilityContext}.decoding must be greedy or sampling`);
+  }
+  return {
+    proposerAvailable: optionalBoolean(
+      eligibility,
+      "proposer_available",
+      defaults.proposerAvailable,
+      eligibilityContext,
+    ),
+    decoding,
+    grammarActive: optionalBoolean(
+      eligibility,
+      "grammar_active",
+      defaults.grammarActive,
+      eligibilityContext,
+    ),
+    targetKvAvailable: optionalBoolean(
+      eligibility,
+      "target_kv_available",
+      defaults.targetKvAvailable,
+      eligibilityContext,
+    ),
+    targetHiddenOutputCount: optionalNumber(
+      eligibility,
+      "target_hidden_output_count",
+      defaults.targetHiddenOutputCount,
+      eligibilityContext,
+    ),
+    sharedKvGroupCount: optionalNumber(
+      eligibility,
+      "shared_kv_group_count",
+      defaults.sharedKvGroupCount,
+      eligibilityContext,
+    ),
+    ...(family === "self_speculative"
+      ? {
+          targetLayerCount: optionalNumber(
+            eligibility,
+            "target_layer_count",
+            defaults.targetLayerCount ?? 32,
+            eligibilityContext,
+          ),
+          earlyExitLayer: optionalNumber(
+            eligibility,
+            "early_exit_layer",
+            defaults.earlyExitLayer ?? 16,
+            eligibilityContext,
+          ),
+          allowDesignOnly: optionalBoolean(
+            eligibility,
+            "allow_design_only",
+            defaults.allowDesignOnly ?? false,
+            eligibilityContext,
+          ),
+        }
+      : {}),
+  };
+}
+
+function parseServingAcceptance(
+  config: Record<string, unknown>,
+): ServingSpeculativeConfig["acceptance"] {
+  const context = "serving.speculative.acceptance";
+  const kind = requireString(config, "kind", context);
+  if (kind === "replay") {
+    return {
+      kind,
+      acceptedDraftTokensByRequest: Object.fromEntries(
+        Object.entries(requireRecord(
+          config.accepted_draft_tokens_by_request,
+          `${context}.accepted_draft_tokens_by_request`,
+        )).map(([requestId, values]) => [
+          requestId,
+          requireNumberArray(
+            { values },
+            "values",
+            `${context}.${requestId}`,
+          ),
+        ]),
+      ),
+    };
+  }
+  if (kind === "conditional_empirical" || kind === "conditional_heuristic") {
+    return {
+      kind,
+      matchProbabilityByPosition: requireNumberArray(
+        config,
+        "match_probability_by_position",
+        context,
+      ),
+      seed: optionalNumber(config, "seed", 42, context),
+    };
+  }
+  throw new Error(`unsupported serving speculative acceptance kind ${kind}`);
 }
 
 function buildTopologyProfile(

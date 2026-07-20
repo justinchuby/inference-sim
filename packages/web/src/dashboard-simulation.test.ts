@@ -13,6 +13,9 @@ const base: DashboardRunConfig = {
     firstPositionAcceptance: 0.82,
   },
   serving: {
+    decodeMode: "mtp",
+    draftWidth: 4,
+    firstPositionAcceptance: 0.82,
     requestCount: 8,
     arrivalGapUs: 100,
     promptTokens: 128,
@@ -81,8 +84,24 @@ describe("simulateDashboard", () => {
     expect(result.serving?.metrics.outputTokens).toBe(128);
     expect(result.serving?.metrics.p95TimeToFirstTokenNs).toBeGreaterThan(0);
     expect(result.serving?.metrics.kvHighWaterTokens).toBeGreaterThan(0);
+    expect(result.serving?.decodeMode).toBe("mtp");
+    expect(result.serving?.metrics.proposedDraftTokens).toBeGreaterThan(0);
+    expect(result.serving?.metrics.acceptedDraftTokens).toBeGreaterThan(0);
     expect(result.serving?.batches.length).toBeGreaterThan(1);
     expect(result.topology.planSteps).toBeGreaterThan(0);
+  });
+
+  it("preserves an explicit target-only serving baseline", () => {
+    const result = simulateDashboard({
+      ...base,
+      mode: "serving",
+      serving: { ...base.serving, decodeMode: "target_only" },
+    });
+
+    expect(result.serving?.support).toBe("target_only");
+    expect(result.serving?.metrics.proposedDraftTokens).toBe(0);
+    expect(result.serving?.metrics.acceptedDraftTokens).toBe(0);
+    expect(result.serving?.metrics.committedTokensPerTargetForward).toBe(1);
   });
 
   it("changes modeled latency when the same workload changes topology", () => {

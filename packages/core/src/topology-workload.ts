@@ -31,7 +31,7 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 2;
+export const TOPOLOGY_COST_MODEL_REVISION = 3;
 
 export interface TopologyWorkUnit {
   readonly id: string;
@@ -52,6 +52,7 @@ export interface TopologyWorkloadProfile {
 }
 
 export interface DeviceCapabilityCost {
+  readonly invocationOverheadNs: number;
   readonly attentionNsPerToken: number;
   readonly ffnNsPerToken: number;
   readonly draftNsPerToken: number;
@@ -119,18 +120,21 @@ export const DEFAULT_TOPOLOGY_COST_MODEL: TopologyCostModel = {
     "illustrative normalized decode costs; calibrate against backend traces before hardware claims",
   deviceCosts: {
     cpu: {
+      invocationOverheadNs: 400_000,
       attentionNsPerToken: 220_000,
       ffnNsPerToken: 300_000,
       draftNsPerToken: 110_000,
       lookupNsPerToken: 8_000,
     },
     gpu: {
+      invocationOverheadNs: 120_000,
       attentionNsPerToken: 28_000,
       ffnNsPerToken: 38_000,
       draftNsPerToken: 17_000,
       lookupNsPerToken: 8_000,
     },
     npu: {
+      invocationOverheadNs: 100_000,
       attentionNsPerToken: 22_000,
       ffnNsPerToken: 52_000,
       draftNsPerToken: 24_000,
@@ -238,7 +242,7 @@ export function simulateTopologyWorkload(
     assumptions: [
       costModel.source,
       "decode-only plan; prefill and request batching are outside this profile",
-      "compute costs scale linearly with batch and verified token width",
+      "compute costs include one device-kind invocation overhead plus linear token work",
       "family-specific proposer multipliers are heuristic and provenance-labeled",
       "transfer duration uses declared directed-link bandwidth and latency",
       "expert-load bytes are evenly sharded across FFN placements",
@@ -754,9 +758,13 @@ class WorkloadPlanCompiler {
     const expertDegree = capability === "ffn"
       ? this.scenario.execution.parallelism.expert
       : 1;
-    return Math.ceil(
-      unshardedDuration
-      / checkedMultiply(tensorDegree, expertDegree, "compute shard degree"),
+    return checkedAdd(
+      costs.invocationOverheadNs,
+      Math.ceil(
+        unshardedDuration
+        / checkedMultiply(tensorDegree, expertDegree, "compute shard degree"),
+      ),
+      "compute invocation duration",
     );
   }
 
@@ -959,6 +967,10 @@ function validateInputs(
   }
   for (const kind of ["cpu", "gpu", "npu"] as const) {
     const costs = costModel.deviceCosts[kind];
+    assertPositiveSafeInteger(
+      costs.invocationOverheadNs,
+      `${kind} invocation overhead`,
+    );
     assertPositiveSafeInteger(
       costs.attentionNsPerToken,
       `${kind} attention cost`,

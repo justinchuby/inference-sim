@@ -388,7 +388,33 @@ backend capability declares it. Rollback cost distinguishes:
 Distributed target verification emits normal plan communication steps and
 therefore obeys per-group collective ordering and buffer leases.
 
-### 9.6 Correctness Invariants and Metrics
+The heuristic topology cost separates one fixed device-kind invocation cost
+from incremental per-token work. A multi-token verification therefore
+amortizes forward launch/synchronization cost without making its additional
+token work free. Both terms retain heuristic provenance until calibrated.
+
+### 9.6 Continuous Serving Composition
+
+Each decoding request owns its speculative transaction and acceptance stream.
+Conditional acceptance is keyed by request, iteration, and draft position so
+changing topology timing cannot silently assign another request's random
+outcome. Replay acceptance is explicitly keyed by request ID.
+
+A serving decode batch records, per request:
+
+- proposed and accepted draft counts;
+- target verification width;
+- correction, bonus, or target-only outcome; and
+- committed output count.
+
+Admission reserves the worst live target state for the batch, including
+candidate drafts and a full-acceptance bonus token. Batch completion restores
+each request's composite checkpoint, commits only its accepted prefix plus the
+target-authoritative token, emits the committed burst at verification
+completion, and releases terminal request state. Independent serving replay
+re-derives acceptance, scheduling, transient KV, and transaction results.
+
+### 9.7 Correctness Invariants and Metrics
 
 After every iteration:
 
@@ -407,7 +433,7 @@ proposer/verification/rollback time, rejected compute and communication,
 target/proposer KV high-water marks, and speedup versus a target-only simulation
 using the same resource model.
 
-### 9.7 Expert Routing and Cache Tiers
+### 9.8 Expert Routing and Cache Tiers
 
 MoE routing samples weighted experts without replacement using a fixed,
 trace-replayable seed. A route cannot select the same expert twice for one
@@ -805,11 +831,13 @@ explicitly heuristic and provenance-tagged. All six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.
-Target-only continuous serving now models arrival-time dispatch, decode-first
-continuous batching, chunked prefill, exact KV admission/release, TTFT/ITL,
-and per-batch topology execution with independent replay. Measured calibration,
-adaptive prefetch policy, speculative-serving composition, and differential
-token-value traces remain; self-speculative remains design-only.
+Continuous serving now models arrival-time dispatch, decode-first batching,
+chunked prefill, exact KV admission/release, TTFT/ITL, and per-batch topology
+execution with independent replay. It composes all six proposer contracts with
+per-request deterministic acceptance, composite checkpoint transactions,
+candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
+topology execution matrix. Measured calibration, adaptive prefetch policy, and
+differential token-value traces remain; self-speculative remains design-only.
 
 ### Phase 4: Product Surfaces
 
@@ -826,9 +854,10 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
-The `serving` command executes arrival-driven continuous batching on a selected
-topology and reports request timing, scheduler trace/replay, batch work, and
-topology operation summaries.
+The `serving` command executes arrival-driven target-only or speculative
+continuous batching on a selected topology and reports request timing,
+scheduler trace/replay, accepted/rejected draft work, batch work, and topology
+operation summaries.
 The `fault-campaign` command compiles that workload, executes and replays a
 successful baseline, then injects deterministic mid-operation faults into each
 used device/link and the next topology epoch.
@@ -837,9 +866,10 @@ runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,
 continuous-serving/speculative-family/expert-cache controls, request TTFT/ITL,
 heuristic modeled latency and throughput, memory, acceptance, cache, and resource
-utilization charts, and recent request/iteration/route inspection. Browser
-compare/search, FrozenPlan file execution/export, ONNX
-import, trace export, and richer progress phases remain.
+utilization charts, and recent request/iteration/route inspection. Serving
+controls select target-only or any proposer family plus width and acceptance.
+Browser compare/search, FrozenPlan file execution/export, ONNX import, trace
+export, and richer progress phases remain.
 
 ## 16. Testing and Delivery Gates
 

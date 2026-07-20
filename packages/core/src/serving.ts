@@ -951,6 +951,7 @@ function validateServingConfig(config: ServingSchedulerConfig): void {
       config.speculative.eligibility,
     );
     if (config.speculative.acceptance.kind === "replay") {
+      const requestIds = new Set(config.requests.map((request) => request.id));
       for (const request of config.requests) {
         if (
           config.speculative.acceptance
@@ -958,6 +959,18 @@ function validateServingConfig(config: ServingSchedulerConfig): void {
         ) {
           throw new ServingProtocolError(
             `speculative acceptance replay lacks request ${request.id}`,
+          );
+        }
+      }
+      for (
+        const requestId
+        of Object.keys(
+          config.speculative.acceptance.acceptedDraftTokensByRequest,
+        )
+      ) {
+        if (!requestIds.has(requestId)) {
+          throw new ServingProtocolError(
+            `speculative acceptance replay references unknown request ${requestId}`,
           );
         }
       }

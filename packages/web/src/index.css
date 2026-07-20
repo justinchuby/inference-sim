@@ -63,6 +63,38 @@ input {
   overflow: visible;
 }
 
+@media (min-width: 1280px) {
+  .workspace-grid {
+    height: calc(100vh - 56px);
+    min-height: 0;
+  }
+
+  .workspace-grid > aside:last-child {
+    overflow-y: auto;
+  }
+
+  .workspace-grid > aside:first-child {
+    overflow: hidden;
+  }
+
+  .configuration-panel {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 88px);
+  }
+
+  .configuration-scroll {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .configuration-action {
+    flex: none;
+  }
+}
+
 @media (max-width: 1279px) {
   .workspace-grid {
     grid-template-columns: 264px minmax(0, 1fr);

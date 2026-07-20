@@ -120,6 +120,34 @@ describe("topology-aware workload execution", () => {
     ))).toBe(true);
   });
 
+  it("amortizes fixed forward cost across a multi-token verification", () => {
+    const unit = (id: string, targetTokenWidth: number) => ({
+      id,
+      targetTokenWidth,
+      committedTokens: targetTokenWidth,
+      draftTokens: 0,
+      activeExperts: 1,
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
+    });
+    const scenario = buildScenarioPreset("single-gpu-cpu");
+    const wide = simulateTopologyWorkload(scenario, {
+      id: "wide-forward",
+      batchSize: 1,
+      units: [unit("wide", 4)],
+    });
+    const narrow = simulateTopologyWorkload(scenario, {
+      id: "narrow-forwards",
+      batchSize: 1,
+      units: Array.from({ length: 4 }, (_, index) => unit(`narrow-${index}`, 1)),
+    });
+
+    expect(wide.metrics.committedTokens).toBe(narrow.metrics.committedTokens);
+    expect(wide.metrics.totalDurationNs).toBeLessThan(
+      narrow.metrics.totalDurationNs,
+    );
+  });
+
   it("maps expert misses to topology transfers and active FFN cost", () => {
     const expertBytes = 64 * 1024 ** 2;
     const cache = simulateExpertCacheWorkload({

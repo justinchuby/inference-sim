@@ -153,7 +153,7 @@ export function simulateTopologyServingWorkload(
     assumptions: [
       costModel.source,
       "continuous batches are non-preemptive; arrivals during a batch wait for its completion",
-      "prefill and target verification share the topology model's linear per-token coefficient",
+      "prefill and target verification share fixed invocation plus linear token cost",
       config.speculative
         ? `${config.speculative.family} proposals use per-request deterministic acceptance streams and transactional restore`
         : "decode uses one target-authoritative token per sequence step",

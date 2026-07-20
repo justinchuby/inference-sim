@@ -162,6 +162,61 @@ serving:
     expect(output.batches.length).toBeGreaterThan(1);
   });
 
+  it("runs speculative continuous serving with request-scoped acceptance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "serving-speculative.yaml");
+    await writeFile(path, `
+serving:
+  max_batch_size: 2
+  max_batch_tokens: 8
+  prefill_chunk_tokens: 4
+  max_kv_tokens: 24
+  speculative:
+    family: mtp
+    max_additional_tokens: 2
+    acceptance:
+      kind: replay
+      accepted_draft_tokens_by_request:
+        a: [2]
+        b: [0, 2]
+  requests:
+    - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 5 }
+    - { id: b, arrival_ns: 10, prompt_tokens: 4, output_tokens: 5 }
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli(["serving", "multi-gpu", path], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      serving: {
+        metrics: {
+          outputTokens: number;
+          proposedDraftTokens: number;
+          acceptedDraftTokens: number;
+          targetForwards: number;
+        };
+        replay: { completedRequests: number; finalKvTokens: number };
+      };
+      batches: Array<{
+        work: {
+          decode: Array<{ mode: string; outcome: string }>;
+        };
+      }>;
+    };
+    expect(output.serving.metrics).toMatchObject({
+      outputTokens: 10,
+      proposedDraftTokens: 6,
+      acceptedDraftTokens: 4,
+      targetForwards: 4,
+    });
+    expect(output.serving.replay).toMatchObject({
+      completedRequests: 2,
+      finalKvTokens: 0,
+    });
+    expect(output.batches.some((batch) => (
+      batch.work.decode.some((decode) => decode.mode === "speculative")
+    ))).toBe(true);
+  });
+
   it("runs a workload through topology resources", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "target-only.yaml");
