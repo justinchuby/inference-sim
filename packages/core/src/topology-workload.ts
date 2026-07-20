@@ -181,7 +181,7 @@ export function topologyProfileFromSpeculative(
         "verification token width",
       ),
       committedTokens: iteration.committedTokens,
-      draftTokens: iteration.proposedDraftTokens,
+      draftTokens: iteration.proposedAdditionalTokens,
       proposerExecution: result.familyContract.execution,
       proposerCostScale: result.familyContract.proposerCostScale,
       activeExperts: 1,

@@ -39,9 +39,10 @@ Phase 3 has an initial speculative workload slice:
   decoding mode, hidden outputs, shared-KV groups, and early-exit layers;
 - committed-prefix, proposal-local, and borrowed state lifetimes instead of
   generic proposer KV;
-- token-trace replay or seeded conditional first-mismatch acceptance;
+- accepted-prefix replay or seeded conditional first-mismatch acceptance;
 - exact output-budget and target-only final-length parity;
-- accepted-prefix, correction/bonus, rejection, and efficiency metrics; and
+- family-specific guaranteed-prefix, additional-draft, accepted-tail,
+  correction/bonus, rejection, and efficiency metrics; and
 - composite target/proposer state rollback on every iteration;
 - exact-capacity paged KV allocation with checkpoint-relative rollback,
   non-reused physical page identities, and independent trace replay; and

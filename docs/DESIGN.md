@@ -279,14 +279,14 @@ transaction, and committed output separately.
 
 The scenario declares one of the onnx-genai proposer families:
 
-| Family | onnx-genai status | State/cost modeled |
-|---|---|---|
-| `prompt_lookup` | Current | Host CPU lookup/search; no proposer KV |
-| `draft_model` | Current | Separate model compute plus committed-prefix draft KV and rewind |
-| `mtp` | Current | One target hidden seed, iterative sidecar compute, proposal-local KV and recurrent state |
-| `eagle3` | Current | Three target hidden taps, fused recurrent state, proposal-local sidecar KV |
-| `shared_kv` | Current | One target hidden seed, assistant compute, borrowed target-KV read leases, no proposer KV |
-| `self_speculative` | Design-only | Early-exit target layers and completion by remaining layers |
+| Family | onnx-genai status | Proposal prefix | State/cost modeled |
+|---|---|---|---|
+| `prompt_lookup` | Current | None | Host CPU lookup/search; no proposer KV |
+| `draft_model` | Current | None | Separate model compute plus committed-prefix draft KV and rewind |
+| `mtp` | Current | One guaranteed target token | One target hidden seed, iterative sidecar compute, proposal-local KV and recurrent state |
+| `eagle3` | Current | One guaranteed target token | Three target hidden taps, fused recurrent state, proposal-local sidecar KV |
+| `shared_kv` | Current | One guaranteed target token | One target hidden seed, assistant compute, borrowed target-KV read leases, no proposer KV |
+| `self_speculative` | Design-only | None | Early-exit target layers and completion by remaining layers |
 
 The simulator validates runtime eligibility such as proposal availability,
 greedy/temperature-zero restrictions, grammar incompatibility, required target
@@ -310,25 +310,38 @@ of three lifetimes:
 
 ### 9.2 Verification Transaction
 
-One linear speculative iteration is:
+For target-coupled MTP, EAGLE-3, and shared-KV, one linear speculative
+iteration is:
 
 ```text
 target base step
   -> guaranteed target token and proposer seed
   -> capture composite checkpoint before speculative state mutation
-  -> draft up to configured width
+  -> draft up to the configured additional width
   -> one authoritative target verification forward
   -> accept longest matching prefix
   -> restore every target/proposer state stream to the accepted draft prefix
   -> ingest and commit the target-authoritative correction token on mismatch,
-     or bonus token on full acceptance
+     a bonus token on full acceptance when output budget remains, or no extra
+     token when a fully accepted proposal exactly fills the output tail
 ```
 
-The proposal width convention follows onnx-genai:
+Proposal width is family-specific and follows onnx-genai:
 
 ```text
-proposal_width = 1 guaranteed target token + max additional draft tokens
+prompt_lookup / draft_model / self_speculative:
+  proposal_width = additional_draft_tokens
+
+mtp / eagle3 / shared_kv:
+  proposal_width = 1 guaranteed_target_token + additional_draft_tokens
 ```
+
+`max_additional_tokens`, replayed accepted-prefix counts, conditional
+probabilities, and proposer-local sidecar capacity all use the
+`additional_draft_tokens` coordinate. Target verification, target rollback,
+paged-KV candidate state, and public proposal statistics use the full
+`proposal_width` coordinate. The guaranteed prefix is target-authored and
+cannot be rejected or charged as proposer compute.
 
 Target verification is authoritative. The simulator never commits a draft
 token solely because an acceptance-rate distribution sampled it as accepted.
@@ -352,6 +365,8 @@ length. Rejected capacity tails may remain physically stale only when all
 readers are validity-masked. Active carry/recurrent state needed by future
 steps must be restored. A correction/bonus token is a new state write after
 restore; increasing a cursor must never resurrect its stale speculative slot.
+A zero-token post-restore append is legal only for a non-empty, fully accepted
+output tail.
 
 ### 9.4 Acceptance Inputs
 
@@ -403,17 +418,19 @@ request ID.
 
 A serving decode batch records, per request:
 
-- proposed and accepted draft counts;
+- guaranteed-prefix, additional-draft, full-proposal, and accepted counts;
 - target verification width;
-- correction, bonus, or target-only outcome; and
+- correction, bonus, accepted-tail, or target-only outcome; and
 - committed output count.
 
 Admission reserves the worst live target state for the batch, including
-candidate drafts and a full-acceptance bonus token. Batch completion restores
-each request's composite checkpoint, commits only its accepted prefix plus the
-target-authoritative token, emits the committed burst at verification
-completion, and releases terminal request state. Independent serving replay
-re-derives acceptance, scheduling, transient KV, and transaction results.
+candidate drafts and the target verification row that may produce a
+full-acceptance bonus token. Batch completion restores each request's composite
+checkpoint, commits its accepted prefix plus a correction or budget-permitted
+bonus, emits the committed burst at verification completion, and releases
+terminal request state. A fully accepted output tail commits without inventing
+a bonus. Independent serving replay re-derives acceptance, scheduling,
+transient KV, and transaction results.
 
 ### 9.7 Correctness Invariants and Metrics
 
@@ -867,11 +884,11 @@ Remaining Phase 2 work:
 - request batching and prefill/decode overlap.
 
 Status: in progress. The executable slice supports deterministic
-token-trace replay and seeded conditional first-mismatch acceptance, drives the
+accepted-prefix replay and seeded conditional first-mismatch acceptance, drives the
 composite checkpoint/restore transaction until an exact output budget is
 committed, checks final logical-length parity against target-only execution,
-and reports accepted-prefix, position acceptance, correction/bonus, rejected
-draft, and committed-token-per-target-forward metrics. Paged target KV now
+and reports accepted-prefix, position acceptance, correction/bonus/accepted-tail,
+rejected draft, and committed-token-per-target-forward metrics. Paged target KV now
 models exact byte capacity, stable non-reused physical page identities,
 checkpoint-relative accepted-prefix restore, logical tail masking, allocation
 and release metrics, and independent trace replay; the speculative workload

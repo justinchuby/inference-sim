@@ -64,7 +64,7 @@ export function topologyProfileFromServingBatch(
   config?: ServingSchedulerConfig["speculative"],
 ): TopologyWorkloadProfile {
   const draftTokens = batch.decode.reduce(
-    (sum, entry) => sum + entry.proposedDraftTokens,
+    (sum, entry) => sum + entry.proposedAdditionalTokens,
     0,
   );
   const family = config

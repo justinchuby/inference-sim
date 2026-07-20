@@ -7,8 +7,10 @@ import {
 } from "./speculative.js";
 import {
   buildSpeculativeStateGroups,
+  speculativeFamilyContract,
   validateSpeculativeEligibility,
   type SpeculativeEligibility,
+  type SpeculativeProposalPrefix,
   type SpeculativeProposerFamily,
 } from "./speculative-family.js";
 import {
@@ -16,8 +18,12 @@ import {
   validateAcceptanceCoverage,
   type SpeculativeAcceptanceModel,
 } from "./speculative-acceptance.js";
+import {
+  decideSpeculativeIteration,
+  planSpeculativeProposal,
+} from "./speculative-iteration.js";
 
-export const SERVING_TRACE_CONTRACT_REVISION = 2;
+export const SERVING_TRACE_CONTRACT_REVISION = 3;
 
 export interface ServingRequestSpec {
   readonly id: string;
@@ -70,11 +76,19 @@ export interface ServingPrefillSlice {
 export interface ServingDecodeSlice {
   readonly requestId: string;
   readonly mode: "target_only" | "speculative";
+  readonly guaranteedTargetTokens: 0 | 1;
+  readonly proposedAdditionalTokens: number;
+  readonly acceptedAdditionalTokens: number;
   readonly proposedDraftTokens: number;
   readonly acceptedDraftTokens: number;
+  readonly targetAuthoritativeTokens: 0 | 1;
   readonly committedTokens: number;
   readonly targetTokenWidth: number;
-  readonly outcome: "target_only" | "correction" | "bonus";
+  readonly outcome:
+    | "target_only"
+    | "correction"
+    | "bonus"
+    | "accepted_tail";
 }
 
 export interface ServingBatchWork {
@@ -96,6 +110,7 @@ export interface ServingTokenEmission {
   readonly source:
     | "prefill"
     | "target_decode"
+    | "target_guaranteed"
     | "speculative_accepted"
     | "speculative_authoritative";
 }
@@ -156,9 +171,13 @@ export interface ServingMetrics {
   readonly outputTokens: number;
   readonly targetForwards: number;
   readonly targetVerificationTokens: number;
+  readonly guaranteedTargetTokens: number;
+  readonly proposedAdditionalTokens: number;
+  readonly acceptedAdditionalTokens: number;
   readonly proposedDraftTokens: number;
   readonly acceptedDraftTokens: number;
   readonly rejectedDraftTokens: number;
+  readonly targetAuthoritativeTokens: number;
   readonly committedTokensPerTargetForward: number;
   readonly totalDurationNs: number;
   readonly batchServiceNs: number;
@@ -208,6 +227,7 @@ interface MutableRequest {
   speculative?: {
     transaction: SpeculativeTransactionSimulator;
     acceptance: SpeculativeAcceptanceCursor;
+    proposalPrefix: SpeculativeProposalPrefix;
   };
 }
 
@@ -243,7 +263,7 @@ export const DEFAULT_SERVING_BATCH_DURATION: ServingBatchDurationEstimator = (
       ),
       checkedMultiply(
         batch.decode.reduce(
-          (sum, entry) => sum + entry.proposedDraftTokens,
+          (sum, entry) => sum + entry.proposedAdditionalTokens,
           0,
         ),
         25_000,
@@ -284,8 +304,12 @@ class ServingSimulator {
   private scheduledSequenceWork = 0;
   private targetForwards = 0;
   private targetVerificationTokens = 0;
+  private guaranteedTargetTokens = 0;
+  private proposedAdditionalTokens = 0;
+  private acceptedAdditionalTokens = 0;
   private proposedDraftTokens = 0;
   private acceptedDraftTokens = 0;
+  private targetAuthoritativeTokens = 0;
   private dispatchAtNs?: number;
 
   constructor(
@@ -409,6 +433,21 @@ class ServingSimulator {
       sumDecode(work, (entry) => entry.targetTokenWidth),
       "target verification tokens",
     );
+    this.guaranteedTargetTokens = checkedAdd(
+      this.guaranteedTargetTokens,
+      sumDecode(work, (entry) => entry.guaranteedTargetTokens),
+      "guaranteed target tokens",
+    );
+    this.proposedAdditionalTokens = checkedAdd(
+      this.proposedAdditionalTokens,
+      sumDecode(work, (entry) => entry.proposedAdditionalTokens),
+      "proposed additional tokens",
+    );
+    this.acceptedAdditionalTokens = checkedAdd(
+      this.acceptedAdditionalTokens,
+      sumDecode(work, (entry) => entry.acceptedAdditionalTokens),
+      "accepted additional tokens",
+    );
     this.proposedDraftTokens = checkedAdd(
       this.proposedDraftTokens,
       sumDecode(work, (entry) => entry.proposedDraftTokens),
@@ -418,6 +457,11 @@ class ServingSimulator {
       this.acceptedDraftTokens,
       sumDecode(work, (entry) => entry.acceptedDraftTokens),
       "accepted draft tokens",
+    );
+    this.targetAuthoritativeTokens = checkedAdd(
+      this.targetAuthoritativeTokens,
+      sumDecode(work, (entry) => entry.targetAuthoritativeTokens),
+      "target authoritative tokens",
     );
     const transientKvTokens = checkedAdd(
       this.kvTokens,
@@ -476,12 +520,7 @@ class ServingSimulator {
         tokenOffset < decode.committedTokens;
         tokenOffset++
       ) {
-        const source: ServingTokenEmission["source"] =
-          decode.mode === "target_only" || decode.outcome === "target_only"
-            ? "target_decode"
-            : tokenOffset < decode.acceptedDraftTokens
-              ? "speculative_accepted"
-              : "speculative_authoritative";
+        const source = decodeEmissionSource(decode, tokenOffset);
         this.emitToken(request, source, atNs, emittedTokens);
       }
       this.completeIfDone(request, atNs, completedRequestIds);
@@ -623,10 +662,14 @@ class ServingSimulator {
       outputTokens,
       targetForwards: this.targetForwards,
       targetVerificationTokens: this.targetVerificationTokens,
+      guaranteedTargetTokens: this.guaranteedTargetTokens,
+      proposedAdditionalTokens: this.proposedAdditionalTokens,
+      acceptedAdditionalTokens: this.acceptedAdditionalTokens,
       proposedDraftTokens: this.proposedDraftTokens,
       acceptedDraftTokens: this.acceptedDraftTokens,
       rejectedDraftTokens:
         this.proposedDraftTokens - this.acceptedDraftTokens,
+      targetAuthoritativeTokens: this.targetAuthoritativeTokens,
       committedTokensPerTargetForward:
         this.targetForwards === 0 ? 0 : decodeTokens / this.targetForwards,
       totalDurationNs,
@@ -778,12 +821,7 @@ export function replayServingTrace(
           tokenOffset < decode.committedTokens;
           tokenOffset++
         ) {
-          const source: ServingTokenEmission["source"] =
-            decode.mode === "target_only" || decode.outcome === "target_only"
-              ? "target_decode"
-              : tokenOffset < decode.acceptedDraftTokens
-                ? "speculative_accepted"
-                : "speculative_authoritative";
+          const source = decodeEmissionSource(decode, tokenOffset);
           replayEmitToken(request, source, event.atNs, emittedTokens);
         }
         if (request.outputEmitted === request.spec.outputTokens) {
@@ -860,35 +898,29 @@ function selectServingBatch(
     if (remainingOutput <= 0 || maxTargetTokenWidth <= 0) {
       continue;
     }
-    const proposedDraftTokens = config.speculative
-      ? Math.min(
-          config.speculative.maxAdditionalTokens,
-          remainingOutput - 1,
-          maxTargetTokenWidth - 1,
-        )
-      : 0;
-    const acceptedDraftTokens = request.speculative?.acceptance.next(
-      proposedDraftTokens,
+    const proposal = planSpeculativeProposal({
+      proposalPrefix: request.speculative?.proposalPrefix ?? "none",
+      remainingOutputTokens: remainingOutput,
+      maxAdditionalTokens: config.speculative?.maxAdditionalTokens ?? 0,
+      maxTargetTokenWidth,
+    });
+    const acceptedAdditionalTokens = request.speculative?.acceptance.next(
+      proposal.proposedAdditionalTokens,
       request.outputEmitted,
     ) ?? 0;
-    const committedTokens = acceptedDraftTokens + 1;
-    const targetTokenWidth = proposedDraftTokens + 1;
+    const decision = decideSpeculativeIteration(
+      proposal,
+      acceptedAdditionalTokens,
+      remainingOutput,
+    );
     decode.push({
       requestId: request.spec.id,
       mode: config.speculative ? "speculative" : "target_only",
-      proposedDraftTokens,
-      acceptedDraftTokens,
-      committedTokens,
-      targetTokenWidth,
-      outcome: proposedDraftTokens === 0
-        ? "target_only"
-        : acceptedDraftTokens === proposedDraftTokens
-          ? "bonus"
-          : "correction",
+      ...decision,
     });
-    reservedKv += targetTokenWidth;
+    reservedKv += decision.targetTokenWidth;
     sequenceBudget--;
-    tokenBudget -= targetTokenWidth;
+    tokenBudget -= decision.targetTokenWidth;
   }
   for (const request of candidates) {
     if (
@@ -1059,6 +1091,8 @@ function createMutableRequest(
               acceptanceForRequest(speculative.acceptance, spec.id),
               speculative.acceptance.kind === "replay" ? undefined : spec.id,
             ),
+            proposalPrefix:
+              speculativeFamilyContract(speculative.family).proposalPrefix,
           },
         }
       : {}),
@@ -1087,8 +1121,12 @@ function applyDecodeTransaction(
   if (decode.mode === "target_only") {
     if (
       request.speculative
+      || decode.guaranteedTargetTokens !== 0
+      || decode.proposedAdditionalTokens !== 0
+      || decode.acceptedAdditionalTokens !== 0
       || decode.proposedDraftTokens !== 0
       || decode.acceptedDraftTokens !== 0
+      || decode.targetAuthoritativeTokens !== 1
       || decode.committedTokens !== 1
       || decode.targetTokenWidth !== 1
       || decode.outcome !== "target_only"
@@ -1101,17 +1139,45 @@ function applyDecodeTransaction(
   if (!speculative) {
     decodeFail(replay, `request ${request.spec.id} lacks speculative state`);
   }
+  const expectedGuaranteedTargetTokens: 0 | 1 =
+    speculative.proposalPrefix === "guaranteed_target"
+    && decode.proposedDraftTokens > 0
+      ? 1
+      : 0;
   const result = speculative.transaction.runIteration({
     draftTokenCount: decode.proposedDraftTokens,
     acceptedDraftTokenCount: decode.acceptedDraftTokens,
+    proposalLocalTokenCount: decode.proposedAdditionalTokens,
+    targetAuthoritativeTokenCount: decode.targetAuthoritativeTokens,
   });
   if (
-    result.committedTokenCount !== decode.committedTokens
+    decode.guaranteedTargetTokens !== expectedGuaranteedTargetTokens
+    || decode.proposedDraftTokens
+      !== decode.guaranteedTargetTokens + decode.proposedAdditionalTokens
+    || decode.acceptedDraftTokens
+      !== decode.guaranteedTargetTokens + decode.acceptedAdditionalTokens
+    || result.committedTokenCount !== decode.committedTokens
     || decode.targetTokenWidth !== decode.proposedDraftTokens + 1
     || result.finalTokenLength !== request.kvTokens + decode.committedTokens
   ) {
     decodeFail(replay, `speculative transaction mismatch for ${request.spec.id}`);
   }
+}
+
+function decodeEmissionSource(
+  decode: ServingDecodeSlice,
+  tokenOffset: number,
+): ServingTokenEmission["source"] {
+  if (decode.mode === "target_only" || decode.outcome === "target_only") {
+    return "target_decode";
+  }
+  if (tokenOffset < decode.guaranteedTargetTokens) {
+    return "target_guaranteed";
+  }
+  if (tokenOffset < decode.acceptedDraftTokens) {
+    return "speculative_accepted";
+  }
+  return "speculative_authoritative";
 }
 
 function decodeFail(replay: boolean, message: string): never {
@@ -1192,8 +1258,12 @@ function equalDecode(
   return right !== undefined
     && left.requestId === right.requestId
     && left.mode === right.mode
+    && left.guaranteedTargetTokens === right.guaranteedTargetTokens
+    && left.proposedAdditionalTokens === right.proposedAdditionalTokens
+    && left.acceptedAdditionalTokens === right.acceptedAdditionalTokens
     && left.proposedDraftTokens === right.proposedDraftTokens
     && left.acceptedDraftTokens === right.acceptedDraftTokens
+    && left.targetAuthoritativeTokens === right.targetAuthoritativeTokens
     && left.committedTokens === right.committedTokens
     && left.targetTokenWidth === right.targetTokenWidth
     && left.outcome === right.outcome;

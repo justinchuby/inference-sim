@@ -15,7 +15,7 @@ const stateGroups: readonly SpeculativeStateGroupConfig[] = [
     capacityTokens: 256,
     rollbackProtection: {
       kind: "bounded_snapshot",
-      maxRollbackTokens: 4,
+      maxRollbackTokens: 5,
     },
   },
   {
@@ -58,7 +58,7 @@ function replayConfig(): SpeculativeWorkloadConfig {
     stateGroups,
     acceptance: {
       kind: "replay",
-      acceptedDraftTokens: [0, 2, 4],
+      acceptedDraftTokens: [0, 2, 3],
     },
   };
 }
@@ -75,29 +75,33 @@ describe("simulateSpeculativeWorkload", () => {
       committed: iteration.committedTokens,
       outcome: iteration.outcome,
     }))).toEqual([
-      { proposed: 4, accepted: 0, committed: 1, outcome: "correction" },
-      { proposed: 4, accepted: 2, committed: 3, outcome: "correction" },
-      { proposed: 4, accepted: 4, committed: 5, outcome: "bonus" },
-      { proposed: 0, accepted: 0, committed: 1, outcome: "target_only" },
+      { proposed: 5, accepted: 1, committed: 2, outcome: "correction" },
+      { proposed: 5, accepted: 3, committed: 4, outcome: "correction" },
+      { proposed: 4, accepted: 4, committed: 4, outcome: "accepted_tail" },
     ]);
     expect(result.metrics).toMatchObject({
-      iterations: 4,
-      targetForwards: 4,
-      proposedDraftTokens: 12,
-      acceptedDraftTokens: 6,
+      iterations: 3,
+      targetForwards: 3,
+      guaranteedTargetTokens: 3,
+      proposedAdditionalTokens: 11,
+      acceptedAdditionalTokens: 5,
+      proposedDraftTokens: 14,
+      acceptedDraftTokens: 8,
       rejectedDraftTokens: 6,
+      targetAuthoritativeTokens: 2,
       committedTokens: 10,
       correctionTokens: 2,
-      bonusTokens: 1,
-      targetOnlyTokens: 1,
-      committedTokensPerTargetForward: 2.5,
-      acceptedPrefixHistogram: [2, 0, 1, 0, 1],
+      bonusTokens: 0,
+      acceptedTailIterations: 1,
+      targetOnlyTokens: 0,
+      committedTokensPerTargetForward: 10 / 3,
+      acceptedPrefixHistogram: [1, 0, 1, 1, 0],
     });
     expect(result.metrics.acceptanceByPosition).toEqual([
       2 / 3,
       2 / 3,
       1 / 3,
-      1 / 3,
+      0,
     ]);
     expect(
       result.stateGroups.every((group) => (
@@ -162,8 +166,10 @@ describe("simulateSpeculativeWorkload", () => {
         seed: 1,
       },
     });
-    expect(alwaysMatch.metrics.acceptedDraftTokens).toBe(7);
-    expect(alwaysMatch.metrics.bonusTokens).toBe(2);
+    expect(alwaysMatch.metrics.acceptedDraftTokens).toBe(8);
+    expect(alwaysMatch.metrics.acceptedAdditionalTokens).toBe(6);
+    expect(alwaysMatch.metrics.bonusTokens).toBe(1);
+    expect(alwaysMatch.metrics.acceptedTailIterations).toBe(1);
 
     const neverMatch = simulateSpeculativeWorkload({
       ...replayConfig(),
@@ -174,8 +180,9 @@ describe("simulateSpeculativeWorkload", () => {
         seed: 1,
       },
     });
-    expect(neverMatch.metrics.acceptedDraftTokens).toBe(0);
-    expect(neverMatch.metrics.iterations).toBe(3);
+    expect(neverMatch.metrics.acceptedDraftTokens).toBe(2);
+    expect(neverMatch.metrics.acceptedAdditionalTokens).toBe(0);
+    expect(neverMatch.metrics.iterations).toBe(2);
   });
 
   it("rejects an impossible replay prefix at its iteration", () => {
@@ -199,7 +206,7 @@ describe("simulateSpeculativeWorkload", () => {
         acceptedDraftTokens: [0],
       },
     })).toThrowError(
-      "target-csa rollback horizon 5 exceeds snapshot bound 4",
+      "target-csa rollback horizon 6 exceeds snapshot bound 5",
     );
   });
 

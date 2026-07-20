@@ -4,7 +4,7 @@ import type {
   SpeculativeStateRole,
 } from "./speculative.js";
 
-export const SPECULATIVE_FAMILY_CONTRACT_REVISION = 1;
+export const SPECULATIVE_FAMILY_CONTRACT_REVISION = 2;
 
 export type SpeculativeProposerFamily =
   | "prompt_lookup"
@@ -23,6 +23,8 @@ export type SpeculativeProposerExecution =
   | "shared_kv_assistant"
   | "target_early_exit";
 
+export type SpeculativeProposalPrefix = "none" | "guaranteed_target";
+
 export interface SpeculativeEligibility {
   readonly proposerAvailable: boolean;
   readonly decoding: "greedy" | "sampling";
@@ -40,6 +42,7 @@ export interface SpeculativeFamilyContract {
   readonly family: SpeculativeProposerFamily;
   readonly support: SpeculativeFamilySupport;
   readonly execution: SpeculativeProposerExecution;
+  readonly proposalPrefix: SpeculativeProposalPrefix;
   readonly targetHiddenOutputCount: number;
   readonly requiresSharedKvGroups: boolean;
   readonly proposerCostScale: number;
@@ -65,6 +68,7 @@ const CONTRACTS: Readonly<Record<
     family: "prompt_lookup",
     support: "onnx_genai_current",
     execution: "cpu_lookup",
+    proposalPrefix: "none",
     targetHiddenOutputCount: 0,
     requiresSharedKvGroups: false,
     proposerCostScale: 0.08,
@@ -75,6 +79,7 @@ const CONTRACTS: Readonly<Record<
     family: "draft_model",
     support: "onnx_genai_current",
     execution: "separate_model",
+    proposalPrefix: "none",
     targetHiddenOutputCount: 0,
     requiresSharedKvGroups: false,
     proposerCostScale: 1,
@@ -92,6 +97,7 @@ const CONTRACTS: Readonly<Record<
     family: "mtp",
     support: "onnx_genai_current",
     execution: "sidecar",
+    proposalPrefix: "guaranteed_target",
     targetHiddenOutputCount: 1,
     requiresSharedKvGroups: false,
     proposerCostScale: 0.32,
@@ -114,6 +120,7 @@ const CONTRACTS: Readonly<Record<
     family: "eagle3",
     support: "onnx_genai_current",
     execution: "sidecar",
+    proposalPrefix: "guaranteed_target",
     targetHiddenOutputCount: 3,
     requiresSharedKvGroups: false,
     proposerCostScale: 0.46,
@@ -136,6 +143,7 @@ const CONTRACTS: Readonly<Record<
     family: "shared_kv",
     support: "onnx_genai_current",
     execution: "shared_kv_assistant",
+    proposalPrefix: "guaranteed_target",
     targetHiddenOutputCount: 1,
     requiresSharedKvGroups: true,
     proposerCostScale: 0.38,
@@ -158,6 +166,7 @@ const CONTRACTS: Readonly<Record<
     family: "self_speculative",
     support: "design_only",
     execution: "target_early_exit",
+    proposalPrefix: "none",
     targetHiddenOutputCount: 0,
     requiresSharedKvGroups: false,
     proposerCostScale: 0.55,

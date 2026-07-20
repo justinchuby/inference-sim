@@ -38,8 +38,9 @@ function simulateFamily(family: SpeculativeProposerFamily) {
       maxAdditionalTokens,
     ),
     acceptance: {
-      kind: "replay",
-      acceptedDraftTokens: [0, 2, 3],
+      kind: "conditional_heuristic",
+      matchProbabilityByPosition: [1, 1, 1],
+      seed: 7,
     },
     pagedKv: {
       pageSizeTokens: 4,
@@ -81,6 +82,19 @@ describe("speculative family contracts", () => {
     const shared = buildSpeculativeStateGroups("shared_kv", 64, 4);
     expect(shared.some((group) => group.role === "shared_kv_lease")).toBe(true);
     expect(shared.some((group) => group.role === "draft_kv")).toBe(false);
+  });
+
+  it("matches onnx-genai family-specific proposal prefixes", () => {
+    expect(speculativeFamilyContract("prompt_lookup").proposalPrefix).toBe("none");
+    expect(speculativeFamilyContract("draft_model").proposalPrefix).toBe("none");
+    expect(speculativeFamilyContract("mtp").proposalPrefix)
+      .toBe("guaranteed_target");
+    expect(speculativeFamilyContract("eagle3").proposalPrefix)
+      .toBe("guaranteed_target");
+    expect(speculativeFamilyContract("shared_kv").proposalPrefix)
+      .toBe("guaranteed_target");
+    expect(speculativeFamilyContract("self_speculative").proposalPrefix)
+      .toBe("none");
   });
 
   it("fails closed on current onnx-genai eligibility restrictions", () => {

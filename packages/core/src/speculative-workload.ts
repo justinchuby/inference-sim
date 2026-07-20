@@ -22,6 +22,10 @@ import {
   validateAcceptanceCoverage,
   type SpeculativeAcceptanceModel,
 } from "./speculative-acceptance.js";
+import {
+  decideSpeculativeIteration,
+  planSpeculativeProposal,
+} from "./speculative-iteration.js";
 export type { SpeculativeProposerFamily } from "./speculative-family.js";
 export type { SpeculativeAcceptanceModel } from "./speculative-acceptance.js";
 
@@ -45,23 +49,36 @@ export interface SpeculativeWorkloadConfig {
 export interface SpeculativeWorkloadIteration {
   readonly iteration: number;
   readonly baseTokenLength: number;
+  readonly guaranteedTargetTokens: 0 | 1;
+  readonly proposedAdditionalTokens: number;
+  readonly acceptedAdditionalTokens: number;
   readonly proposedDraftTokens: number;
   readonly acceptedDraftTokens: number;
   readonly rejectedDraftTokens: number;
+  readonly targetAuthoritativeTokens: 0 | 1;
   readonly committedTokens: number;
   readonly finalTokenLength: number;
-  readonly outcome: "correction" | "bonus" | "target_only";
+  readonly outcome:
+    | "correction"
+    | "bonus"
+    | "accepted_tail"
+    | "target_only";
 }
 
 export interface SpeculativeWorkloadMetrics {
   readonly iterations: number;
   readonly targetForwards: number;
+  readonly guaranteedTargetTokens: number;
+  readonly proposedAdditionalTokens: number;
+  readonly acceptedAdditionalTokens: number;
   readonly proposedDraftTokens: number;
   readonly acceptedDraftTokens: number;
   readonly rejectedDraftTokens: number;
+  readonly targetAuthoritativeTokens: number;
   readonly committedTokens: number;
   readonly correctionTokens: number;
   readonly bonusTokens: number;
+  readonly acceptedTailIterations: number;
   readonly targetOnlyTokens: number;
   readonly committedTokensPerTargetForward: number;
   readonly acceptedPrefixHistogram: readonly number[];
@@ -136,10 +153,15 @@ export function simulateSpeculativeWorkload(
   );
   const iterations: SpeculativeWorkloadIteration[] = [];
   let remaining = config.outputTokenCount;
+  let guaranteedTargetTokens = 0;
+  let proposedAdditionalTokens = 0;
+  let acceptedAdditionalTokens = 0;
   let proposedDraftTokens = 0;
   let acceptedDraftTokens = 0;
+  let targetAuthoritativeTokens = 0;
   let correctionTokens = 0;
   let bonusTokens = 0;
+  let acceptedTailIterations = 0;
   let targetOnlyTokens = 0;
 
   while (remaining > 0) {
@@ -148,20 +170,30 @@ export function simulateSpeculativeWorkload(
         `workload exceeded maximum iteration count ${maxIterations}`,
       );
     }
-    const draftTokenCount = Math.min(
-      config.maxAdditionalTokens,
-      Math.max(0, remaining - 1),
+    const proposal = planSpeculativeProposal({
+      proposalPrefix: familyContract.proposalPrefix,
+      remainingOutputTokens: remaining,
+      maxAdditionalTokens: config.maxAdditionalTokens,
+    });
+    const acceptedAdditionalTokenCount = acceptance.next(
+      proposal.proposedAdditionalTokens,
     );
-    const accepted = acceptance.next(draftTokenCount);
+    const decision = decideSpeculativeIteration(
+      proposal,
+      acceptedAdditionalTokenCount,
+      remaining,
+    );
     const kvCheckpoint = pagedKv?.checkpoint();
-    pagedKv?.append(draftTokenCount);
+    pagedKv?.append(decision.proposedDraftTokens);
     const transactionResult = transaction.runIteration({
-      draftTokenCount,
-      acceptedDraftTokenCount: accepted,
+      draftTokenCount: decision.proposedDraftTokens,
+      acceptedDraftTokenCount: decision.acceptedDraftTokens,
+      proposalLocalTokenCount: decision.proposedAdditionalTokens,
+      targetAuthoritativeTokenCount: decision.targetAuthoritativeTokens,
     });
     if (pagedKv && kvCheckpoint) {
-      pagedKv.restore(kvCheckpoint, accepted);
-      pagedKv.append(1);
+      pagedKv.restore(kvCheckpoint, decision.acceptedDraftTokens);
+      pagedKv.append(decision.targetAuthoritativeTokens);
     }
     if (transactionResult.committedTokenCount > remaining) {
       throw new SpeculativeWorkloadError(
@@ -169,34 +201,44 @@ export function simulateSpeculativeWorkload(
       );
     }
 
-    const outcome = draftTokenCount === 0
-      ? "target_only"
-      : accepted === draftTokenCount
-        ? "bonus"
-        : "correction";
+    const outcome = decision.outcome;
     if (outcome === "target_only") {
       targetOnlyTokens++;
+    } else if (outcome === "accepted_tail") {
+      acceptedTailIterations++;
     } else if (outcome === "bonus") {
       bonusTokens++;
     } else {
       correctionTokens++;
     }
-    acceptedPrefixHistogram[accepted]++;
-    for (let position = 0; position < draftTokenCount; position++) {
+    acceptedPrefixHistogram[acceptedAdditionalTokenCount]++;
+    for (
+      let position = 0;
+      position < decision.proposedAdditionalTokens;
+      position++
+    ) {
       proposedByPosition[position]++;
-      if (position < accepted) {
+      if (position < acceptedAdditionalTokenCount) {
         acceptedByPosition[position]++;
       }
     }
-    proposedDraftTokens += draftTokenCount;
-    acceptedDraftTokens += accepted;
+    guaranteedTargetTokens += decision.guaranteedTargetTokens;
+    proposedAdditionalTokens += decision.proposedAdditionalTokens;
+    acceptedAdditionalTokens += acceptedAdditionalTokenCount;
+    proposedDraftTokens += decision.proposedDraftTokens;
+    acceptedDraftTokens += decision.acceptedDraftTokens;
+    targetAuthoritativeTokens += decision.targetAuthoritativeTokens;
     remaining -= transactionResult.committedTokenCount;
     iterations.push({
       iteration: iterations.length,
       baseTokenLength: transactionResult.baseTokenLength,
-      proposedDraftTokens: draftTokenCount,
-      acceptedDraftTokens: accepted,
-      rejectedDraftTokens: draftTokenCount - accepted,
+      guaranteedTargetTokens: decision.guaranteedTargetTokens,
+      proposedAdditionalTokens: decision.proposedAdditionalTokens,
+      acceptedAdditionalTokens: acceptedAdditionalTokenCount,
+      proposedDraftTokens: decision.proposedDraftTokens,
+      acceptedDraftTokens: decision.acceptedDraftTokens,
+      rejectedDraftTokens: decision.rejectedDraftTokens,
+      targetAuthoritativeTokens: decision.targetAuthoritativeTokens,
       committedTokens: transactionResult.committedTokenCount,
       finalTokenLength: transactionResult.finalTokenLength,
       outcome,
@@ -243,12 +285,17 @@ export function simulateSpeculativeWorkload(
   const metrics: SpeculativeWorkloadMetrics = {
     iterations: iterations.length,
     targetForwards: iterations.length,
+    guaranteedTargetTokens,
+    proposedAdditionalTokens,
+    acceptedAdditionalTokens,
     proposedDraftTokens,
     acceptedDraftTokens,
     rejectedDraftTokens: proposedDraftTokens - acceptedDraftTokens,
+    targetAuthoritativeTokens,
     committedTokens,
     correctionTokens,
     bonusTokens,
+    acceptedTailIterations,
     targetOnlyTokens,
     committedTokensPerTargetForward:
       iterations.length === 0 ? 0 : committedTokens / iterations.length,

@@ -63,7 +63,7 @@ speculative:
   max_additional_tokens: 2
   acceptance:
     kind: replay
-    accepted_draft_tokens: [2, 2]
+    accepted_draft_tokens: [2, 1]
   paged_kv:
     page_size_tokens: 4
     bytes_per_token: 128
@@ -178,7 +178,7 @@ serving:
       kind: replay
       accepted_draft_tokens_by_request:
         a: [2]
-        b: [0, 2]
+        b: [0, 1]
   requests:
     - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 5 }
     - { id: b, arrival_ns: 10, prompt_tokens: 4, output_tokens: 5 }
@@ -204,9 +204,9 @@ serving:
     };
     expect(output.serving.metrics).toMatchObject({
       outputTokens: 10,
-      proposedDraftTokens: 6,
-      acceptedDraftTokens: 4,
-      targetForwards: 4,
+      proposedDraftTokens: 8,
+      acceptedDraftTokens: 6,
+      targetForwards: 3,
     });
     expect(output.serving.replay).toMatchObject({
       completedRequests: 2,

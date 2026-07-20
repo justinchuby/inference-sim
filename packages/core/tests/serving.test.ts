@@ -176,7 +176,7 @@ describe("continuous serving scheduler", () => {
           kind: "replay",
           acceptedDraftTokensByRequest: {
             bonus: [2],
-            mixed: [0, 2],
+            mixed: [0, 1],
           },
         },
       },
@@ -190,18 +190,21 @@ describe("continuous serving scheduler", () => {
     expect(result.metrics).toMatchObject({
       outputTokens: 10,
       decodeTokens: 8,
-      targetForwards: 4,
-      targetVerificationTokens: 10,
-      proposedDraftTokens: 6,
-      acceptedDraftTokens: 4,
+      targetForwards: 3,
+      targetVerificationTokens: 11,
+      guaranteedTargetTokens: 3,
+      proposedAdditionalTokens: 5,
+      acceptedAdditionalTokens: 3,
+      proposedDraftTokens: 8,
+      acceptedDraftTokens: 6,
       rejectedDraftTokens: 2,
-      committedTokensPerTargetForward: 2,
+      targetAuthoritativeTokens: 2,
+      committedTokensPerTargetForward: 8 / 3,
     });
     expect(decode.map((entry) => entry.outcome)).toEqual([
       "bonus",
-      "target_only",
       "correction",
-      "bonus",
+      "accepted_tail",
     ]);
     expect(result.trace.some((event) => (
       event.kind === "batch_finish"

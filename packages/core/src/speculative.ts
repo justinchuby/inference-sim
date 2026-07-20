@@ -43,6 +43,8 @@ export interface SpeculativeStateGroupSnapshot {
 export interface SpeculativeIterationInput {
   readonly draftTokenCount: number;
   readonly acceptedDraftTokenCount: number;
+  readonly proposalLocalTokenCount?: number;
+  readonly targetAuthoritativeTokenCount?: 0 | 1;
 }
 
 export interface SpeculativeIterationResult {
@@ -52,7 +54,7 @@ export interface SpeculativeIterationResult {
   readonly draftTokenCount: number;
   readonly acceptedDraftTokenCount: number;
   readonly rejectedDraftTokenCount: number;
-  readonly targetAuthoritativeTokenCount: 1;
+  readonly targetAuthoritativeTokenCount: 0 | 1;
   readonly committedTokenCount: number;
   readonly finalTokenLength: number;
   readonly stateGroups: readonly SpeculativeStateGroupSnapshot[];
@@ -88,7 +90,8 @@ export class SpeculativeProtocolError extends Error {
  *
  * Token values and acceptance policy live outside this class. Each iteration
  * verifies all drafts on the target, restores every state group to the accepted
- * prefix, and commits exactly one target-authoritative correction/bonus token.
+ * prefix, and commits a target-authoritative correction/bonus token when the
+ * output budget permits or requires one.
  */
 export class SpeculativeTransactionSimulator {
   private readonly groups = new Map<string, MutableStateGroup>();
@@ -170,6 +173,38 @@ export class SpeculativeTransactionSimulator {
         `accepted ${input.acceptedDraftTokenCount} drafts but only ${input.draftTokenCount} were proposed`,
       );
     }
+    const targetAuthoritativeTokenCount =
+      input.targetAuthoritativeTokenCount ?? 1;
+    const proposalLocalTokenCount =
+      input.proposalLocalTokenCount ?? input.draftTokenCount;
+    assertNonNegativeSafeInteger(
+      proposalLocalTokenCount,
+      "proposalLocalTokenCount",
+    );
+    if (proposalLocalTokenCount > input.draftTokenCount) {
+      throw new SpeculativeProtocolError(
+        "proposalLocalTokenCount cannot exceed draftTokenCount",
+      );
+    }
+    if (
+      targetAuthoritativeTokenCount !== 0
+      && targetAuthoritativeTokenCount !== 1
+    ) {
+      throw new SpeculativeProtocolError(
+        "targetAuthoritativeTokenCount must be 0 or 1",
+      );
+    }
+    if (
+      targetAuthoritativeTokenCount === 0
+      && (
+        input.draftTokenCount === 0
+        || input.acceptedDraftTokenCount !== input.draftTokenCount
+      )
+    ) {
+      throw new SpeculativeProtocolError(
+        "zero target-authoritative tokens require a non-empty, fully accepted proposal",
+      );
+    }
 
     const checkpoint = this.checkpoint();
     const candidateLength = checkedAdd(
@@ -179,19 +214,24 @@ export class SpeculativeTransactionSimulator {
     );
     const finalTokenLength = checkedAdd(
       checkpoint.baseTokenLength,
-      checkedAdd(input.acceptedDraftTokenCount, 1, "committed tokens"),
+      checkedAdd(
+        input.acceptedDraftTokenCount,
+        targetAuthoritativeTokenCount,
+        "committed tokens",
+      ),
       "final token length",
     );
 
     this.preflight(
       input.draftTokenCount,
+      proposalLocalTokenCount,
       candidateLength,
       finalTokenLength,
     );
 
     for (const group of this.groups.values()) {
       const candidateGroupLength = group.lifetime === "proposal_local"
-        ? input.draftTokenCount
+        ? proposalLocalTokenCount
         : group.lifetime === "borrowed"
           ? checkpoint.baseTokenLength
           : candidateLength;
@@ -210,9 +250,9 @@ export class SpeculativeTransactionSimulator {
     );
     this.restorePrefix(checkpoint, acceptedPrefixLength);
 
-    // The correction token on rejection, or bonus token on full acceptance, is
-    // target-authoritative. It is a new state write after restore, not a cursor
-    // increase that resurrects a stale speculative slot.
+    // A correction token on rejection or a budget-permitted bonus token on
+    // full acceptance is a new write after restore. A fully accepted tail can
+    // commit without one when no output budget remains.
     for (const group of this.groups.values()) {
       group.logicalLength = group.lifetime === "committed_prefix"
         ? finalTokenLength
@@ -234,8 +274,9 @@ export class SpeculativeTransactionSimulator {
       acceptedDraftTokenCount: input.acceptedDraftTokenCount,
       rejectedDraftTokenCount:
         input.draftTokenCount - input.acceptedDraftTokenCount,
-      targetAuthoritativeTokenCount: 1,
-      committedTokenCount: input.acceptedDraftTokenCount + 1,
+      targetAuthoritativeTokenCount,
+      committedTokenCount:
+        input.acceptedDraftTokenCount + targetAuthoritativeTokenCount,
       finalTokenLength,
       stateGroups: this.snapshot(),
     };
@@ -253,13 +294,14 @@ export class SpeculativeTransactionSimulator {
   }
 
   private preflight(
-    rollbackHorizon: number,
+    targetRollbackHorizon: number,
+    proposalLocalRollbackHorizon: number,
     candidateLength: number,
     finalTokenLength: number,
   ): void {
     for (const group of this.groups.values()) {
       const requiredCapacity = group.lifetime === "proposal_local"
-        ? rollbackHorizon
+        ? proposalLocalRollbackHorizon
         : Math.max(candidateLength, finalTokenLength);
       if (requiredCapacity > group.capacityTokens) {
         throw new SpeculativeProtocolError(
@@ -270,8 +312,15 @@ export class SpeculativeTransactionSimulator {
         group.lifetime !== "borrowed"
         &&
         group.rollbackProtection.kind === "bounded_snapshot"
-        && rollbackHorizon > group.rollbackProtection.maxRollbackTokens
+        && (
+          group.lifetime === "proposal_local"
+            ? proposalLocalRollbackHorizon
+            : targetRollbackHorizon
+        ) > group.rollbackProtection.maxRollbackTokens
       ) {
+        const rollbackHorizon = group.lifetime === "proposal_local"
+          ? proposalLocalRollbackHorizon
+          : targetRollbackHorizon;
         throw new SpeculativeProtocolError(
           `${group.id} rollback horizon ${rollbackHorizon} exceeds snapshot bound ${group.rollbackProtection.maxRollbackTokens}`,
         );

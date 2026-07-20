@@ -110,7 +110,16 @@ export {
   type SpeculativeFamilyContract,
   type SpeculativeFamilySupport,
   type SpeculativeProposerExecution,
+  type SpeculativeProposalPrefix,
 } from "./speculative-family.js";
+export {
+  SPECULATIVE_ITERATION_CONTRACT_REVISION,
+  SpeculativeIterationError,
+  decideSpeculativeIteration,
+  planSpeculativeProposal,
+  type SpeculativeIterationDecision,
+  type SpeculativeProposalShape,
+} from "./speculative-iteration.js";
 export {
   SpeculativeAcceptanceCursor,
   SpeculativeAcceptanceError,

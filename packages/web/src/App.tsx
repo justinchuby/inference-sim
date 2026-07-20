@@ -971,8 +971,12 @@ function Inspector({ result }: { readonly result?: DashboardResult }): React.JSX
     if (result?.speculative) {
       return result.speculative.iterations.slice(-12).reverse().map((iteration) => ({
         id: `Iteration ${iteration.iteration + 1}`,
-        primary: `${iteration.acceptedDraftTokens}/${iteration.proposedDraftTokens} accepted`,
-        secondary: iteration.outcome.replace("_", " "),
+        primary:
+          `${iteration.acceptedDraftTokens}/${iteration.proposedDraftTokens} proposal tokens`,
+        secondary: [
+          iteration.outcome.replace("_", " "),
+          iteration.guaranteedTargetTokens > 0 ? "guaranteed prefix" : undefined,
+        ].filter(Boolean).join(" · "),
         value: `+${iteration.committedTokens}`,
       }));
     }
@@ -1171,7 +1175,8 @@ function speculativeMetrics(result: DashboardResult) {
     {
       label: "Throughput",
       value: formatRate(topology.tokensPerSecond),
-      detail: `${metrics.acceptedDraftTokens} drafts accepted`,
+      detail:
+        `${metrics.acceptedAdditionalTokens}/${metrics.proposedAdditionalTokens} additional drafts accepted`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
   ];
@@ -1241,7 +1246,7 @@ function servingMetrics(result: DashboardResult) {
       label: "KV high water",
       value: `${metrics.kvHighWaterTokens.toLocaleString()} tok`,
       detail: speculative
-        ? `${metrics.acceptedDraftTokens}/${metrics.proposedDraftTokens} drafts accepted`
+        ? `${metrics.acceptedAdditionalTokens}/${metrics.proposedAdditionalTokens} additional drafts accepted`
         : `${(metrics.sequenceBatchUtilization * 100).toFixed(1)}% sequence slots`,
       icon: <Database className="size-4 text-sky-700" />,
     },
