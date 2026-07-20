@@ -128,6 +128,40 @@ workload:
     expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(128);
   });
 
+  it("runs continuous serving through a selected topology", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "serving.yaml");
+    await writeFile(path, `
+serving:
+  max_batch_size: 2
+  max_batch_tokens: 4
+  prefill_chunk_tokens: 2
+  max_kv_tokens: 20
+  requests:
+    - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 3 }
+    - { id: b, arrival_ns: 10, prompt_tokens: 2, output_tokens: 2, priority: 1 }
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli(
+      ["serving", "single-gpu-cpu", path],
+      capture.io,
+    )).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      scenarioId: string;
+      serving: {
+        metrics: { requests: number; outputTokens: number };
+        replay: { completedRequests: number };
+      };
+      batches: unknown[];
+    };
+    expect(output.scenarioId).toBe("single-gpu-cpu");
+    expect(output.serving.metrics.requests).toBe(2);
+    expect(output.serving.metrics.outputTokens).toBe(5);
+    expect(output.serving.replay.completedRequests).toBe(2);
+    expect(output.batches.length).toBeGreaterThan(1);
+  });
+
   it("runs a workload through topology resources", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "target-only.yaml");

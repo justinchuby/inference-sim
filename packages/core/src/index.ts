@@ -36,6 +36,31 @@ export {
   type SimulationRunResult,
 } from "./event-loop.js";
 export {
+  DEFAULT_SERVING_BATCH_DURATION,
+  SERVING_TRACE_CONTRACT_REVISION,
+  ServingProtocolError,
+  replayServingTrace,
+  simulateServingWorkload,
+  type ServingBatchDurationEstimator,
+  type ServingBatchWork,
+  type ServingMetrics,
+  type ServingPrefillSlice,
+  type ServingReplayResult,
+  type ServingRequestResult,
+  type ServingRequestSpec,
+  type ServingSchedulerConfig,
+  type ServingSimulationResult,
+  type ServingTokenEmission,
+  type ServingTraceEvent,
+} from "./serving.js";
+export {
+  simulateTopologyServingWorkload,
+  topologyProfileFromServingBatch,
+  type TopologyServingBatchResult,
+  type TopologyServingMetrics,
+  type TopologyServingResult,
+} from "./serving-topology.js";
+export {
   HostGovernorSimulator,
   PressureProtocolError,
 } from "./pressure.js";

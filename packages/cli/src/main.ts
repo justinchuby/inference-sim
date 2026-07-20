@@ -14,6 +14,7 @@ import {
   listPresets,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   runPlanFaultCampaign,
   targetOnlyTopologyProfile,
@@ -30,6 +31,8 @@ import {
   type SpeculativeAcceptanceModel,
   type SpeculativeProposerFamily,
   type SpeculativeWorkloadConfig,
+  type ServingSchedulerConfig,
+  type TopologyServingResult,
   type TopologyWorkloadProfile,
 } from "@inference-sim/core";
 import {
@@ -115,6 +118,23 @@ export async function runCli(
         printJson(
           io,
           simulateExpertCacheWorkload(parseExpertCacheConfig(config)),
+        );
+        return 0;
+      }
+      case "serving": {
+        if (!argument) {
+          throw new Error("serving requires a scenario preset name");
+        }
+        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
+          throw new Error(`unknown scenario preset ${argument}`);
+        }
+        const config = await loadRequiredConfig(secondArgument, "serving");
+        printJson(
+          io,
+          summarizeServingRun(simulateTopologyServingWorkload(
+            buildScenarioPreset(argument as ScenarioPresetName),
+            parseServingConfig(config),
+          )),
         );
         return 0;
       }
@@ -522,6 +542,63 @@ function parseExpertCacheConfig(
   };
 }
 
+function parseServingConfig(
+  config: Record<string, unknown>,
+): ServingSchedulerConfig {
+  const serving = requireRecord(config.serving ?? config, "serving");
+  const requests = requireRecordArray(serving, "requests", "serving").map(
+    (request, index) => ({
+      id: requireString(request, "id", `serving.requests[${index}]`),
+      arrivalNs: requireNumber(
+        request,
+        "arrival_ns",
+        `serving.requests[${index}]`,
+      ),
+      promptTokens: requireNumber(
+        request,
+        "prompt_tokens",
+        `serving.requests[${index}]`,
+      ),
+      outputTokens: requireNumber(
+        request,
+        "output_tokens",
+        `serving.requests[${index}]`,
+      ),
+      priority: optionalNumber(
+        request,
+        "priority",
+        0,
+        `serving.requests[${index}]`,
+      ),
+    }),
+  );
+  return {
+    requests,
+    maxBatchSize: requireNumber(
+      serving,
+      "max_batch_size",
+      "serving",
+    ),
+    maxBatchTokens: requireNumber(
+      serving,
+      "max_batch_tokens",
+      "serving",
+    ),
+    prefillChunkTokens: requireNumber(
+      serving,
+      "prefill_chunk_tokens",
+      "serving",
+    ),
+    maxKvTokens: requireNumber(serving, "max_kv_tokens", "serving"),
+    maxEvents: optionalNumber(
+      serving,
+      "max_events",
+      1_000_000,
+      "serving",
+    ),
+  };
+}
+
 function buildTopologyProfile(
   config: Record<string, unknown>,
 ): TopologyWorkloadProfile {
@@ -558,14 +635,6 @@ function buildTopologyProfile(
 function summarizeTopologyRun(
   result: ReturnType<typeof simulateTopologyWorkload>,
 ) {
-  const operationCounts = {
-    compute: 0,
-    transfer: 0,
-    collective: 0,
-  };
-  for (const event of result.execution.trace.operations) {
-    operationCounts[event.kind]++;
-  }
   return {
     scenarioId: result.scenarioId,
     profileId: result.profileId,
@@ -573,7 +642,7 @@ function summarizeTopologyRun(
     assumptions: result.assumptions,
     status: result.execution.status,
     planSteps: result.plan.steps.length,
-    operationCounts,
+    operationCounts: countTopologyOperations(result),
     metrics: result.metrics,
   };
 }
@@ -604,6 +673,42 @@ function summarizeFaultCampaign(
       };
     }),
   };
+}
+
+function summarizeServingRun(result: TopologyServingResult) {
+  return {
+    scenarioId: result.scenarioId,
+    confidence: result.confidence,
+    assumptions: result.assumptions,
+    metrics: result.metrics,
+    serving: {
+      metrics: result.serving.metrics,
+      requests: result.serving.requests,
+      trace: result.serving.trace,
+      replay: result.serving.replay,
+    },
+    batches: result.batches.map((batch) => ({
+      batchId: batch.batchId,
+      work: batch.work,
+      durationNs: batch.topology.metrics.totalDurationNs,
+      planSteps: batch.topology.plan.steps.length,
+      operationCounts: countTopologyOperations(batch.topology),
+    })),
+  };
+}
+
+function countTopologyOperations(
+  result: ReturnType<typeof simulateTopologyWorkload>,
+) {
+  const counts = {
+    compute: 0,
+    transfer: 0,
+    collective: 0,
+  };
+  for (const event of result.execution.trace.operations) {
+    counts[event.kind]++;
+  }
+  return counts;
 }
 
 function parseAcceptance(
@@ -683,6 +788,7 @@ Usage:
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
   inference-sim expert-cache <config.yaml|json>
+  inference-sim serving <scenario-preset> <config.yaml|json>
   inference-sim run <scenario-preset> <workload.yaml|json>
   inference-sim compare <workload.yaml|json>
   inference-sim fault-campaign <scenario-preset> <workload.yaml|json>

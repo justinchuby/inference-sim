@@ -394,7 +394,9 @@ After every iteration:
 
 - committed output equals the target-authoritative path for the modeled
   acceptance rule;
-- all state groups have the same committed logical prefix;
+- all `committed_prefix` state groups have the same committed logical prefix;
+- `proposal_local` state and borrowed leases return to zero at the iteration
+  boundary;
 - rejected drafts own no live allocation or lease;
 - checkpoint identity cannot be reused across generation/topology epochs; and
 - logical/capacity counters remain conserved after restore.
@@ -429,6 +431,36 @@ source tier, and access stalls. Independent replay re-derives seeded routes,
 LRU victims, latency, capacity, and route-to-access correspondence. Metrics
 include hot/warm/cold outcomes, bytes moved, evictions, load counts, stall time,
 and per-tier high-water bytes.
+
+### 9.8 Continuous Serving and Chunked Prefill
+
+Serving workloads declare request identity, arrival time, prompt/output token
+counts, and priority. The scheduler is deterministic and decode-first:
+
+1. all arrivals at the same nanosecond pass a dispatch barrier before
+   selection;
+2. active decode sequences reserve one token each in priority/arrival/id order;
+3. remaining sequence and token slots admit chunked prefill;
+4. every batch reserves transient KV growth before it starts; and
+5. completed requests release their full live KV extent atomically.
+
+The final prefill chunk emits the first output token from its logits without
+adding that token to KV. Each later decode step processes the previous output
+token, appends one KV position, and emits the next token. A request therefore
+peaks at `prompt_tokens + output_tokens - 1` KV positions.
+
+Arrivals may occur while a non-preemptive batch is running and become eligible
+at the next dispatch. A lossless trace records arrivals, exact batch
+membership, prefill slices, decode participants, duration, token source,
+completion, and KV counters. Independent replay re-derives every scheduler
+decision and rejects the first mutation.
+
+Each dynamic batch compiles into the same topology-aware FrozenPlan path used
+by other workloads. The current heuristic treats prefill and decode as linear
+token work with the selected topology coefficients; calibration will replace
+that fallback with shape-regime measurements. Metrics include TTFT and ITL
+average/p50/p95, request latency, throughput, sequence/token batch utilization,
+idle/service time, and KV high water.
 
 ## 10. Device Configuration Coverage
 
@@ -689,7 +721,8 @@ Exit criteria:
 
 Status: complete. The initial slice had 21 tests across static analysis, event
 ordering, pressure protocol/replay, trace mutation, and speculative
-checkpoint/restore boundaries. The total suite has since grown to 101 tests.
+checkpoint/restore boundaries. The total suite has since grown beyond 100
+tests.
 
 ### Phase 2: FrozenPlan, Communicator, and Topology Composition
 
@@ -772,8 +805,11 @@ explicitly heuristic and provenance-tagged. All six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.
-Measured calibration, adaptive prefetch policy, request batching, and
-differential token-value traces remain; self-speculative remains design-only.
+Target-only continuous serving now models arrival-time dispatch, decode-first
+continuous batching, chunked prefill, exact KV admission/release, TTFT/ITL,
+and per-batch topology execution with independent replay. Measured calibration,
+adaptive prefetch policy, speculative-serving composition, and differential
+token-value traces remain; self-speculative remains design-only.
 
 ### Phase 4: Product Surfaces
 
@@ -790,6 +826,9 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
+The `serving` command executes arrival-driven continuous batching on a selected
+topology and reports request timing, scheduler trace/replay, batch work, and
+topology operation summaries.
 The `fault-campaign` command compiles that workload, executes and replays a
 successful baseline, then injects deterministic mid-operation faults into each
 used device/link and the next topology epoch.

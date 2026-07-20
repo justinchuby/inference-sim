@@ -972,7 +972,7 @@ function validateInputs(
       throw new TopologyWorkloadError("work unit id must be non-empty");
     }
     assertPositiveSafeInteger(unit.targetTokenWidth, `${unit.id} token width`);
-    assertPositiveSafeInteger(unit.committedTokens, `${unit.id} committed tokens`);
+    assertNonNegativeSafeInteger(unit.committedTokens, `${unit.id} committed tokens`);
     assertNonNegativeSafeInteger(unit.draftTokens, `${unit.id} draft tokens`);
     if (
       unit.proposerCostScale !== undefined
