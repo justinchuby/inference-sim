@@ -12,7 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "2.12.1",
     "@inference-sim/core": "workspace:*",
+    "onnx-buf": "1.20.0-1",
     "yaml": "^2.8.1"
   },
   "devDependencies": {

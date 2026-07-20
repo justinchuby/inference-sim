@@ -35,6 +35,7 @@ import {
   runSeededConcurrentPlanCampaign,
   replayPlanTrace,
   serializeFrozenPlanArtifact,
+  serializeOnnxModelManifest,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -72,6 +73,7 @@ import {
   requireString,
   requireStringArray,
 } from "./config.js";
+import { inspectOnnxModel } from "./onnx-reader.js";
 
 export interface CliIo {
   readonly stdout: (text: string) => void;
@@ -213,6 +215,22 @@ export async function runCli(
       case "calibrate": {
         const config = await loadRequiredConfig(argument, "calibrate");
         printJson(io, fitTopologyCostModel(parseCalibrationDataset(config)));
+        return 0;
+      }
+      case "onnx-inspect": {
+        if (argument === undefined) {
+          throw new Error("onnx-inspect requires an ONNX model path");
+        }
+        const metadata = secondArgument === undefined
+          ? undefined
+          : await readConfigFile(secondArgument);
+        printJson(
+          io,
+          JSON.parse(serializeOnnxModelManifest(
+            await inspectOnnxModel(argument, metadata),
+            true,
+          )),
+        );
         return 0;
       }
       case "serving": {
@@ -1498,6 +1516,7 @@ Usage:
   inference-sim speculative-capture <target-only.yaml|json> <speculative.yaml|json> [scenario-target] [calibration.yaml|json]
   inference-sim expert-cache <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
+  inference-sim onnx-inspect <model.onnx> [metadata.yaml|json]
   inference-sim serving <scenario-target> <config.yaml|json> [calibration.yaml|json]
   inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
   inference-sim run <scenario-target> <workload.yaml|json> [calibration.yaml|json]

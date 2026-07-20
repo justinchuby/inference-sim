@@ -1,6 +1,8 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fromJson, toBinary } from "@bufbuild/protobuf";
+import { ModelProtoSchema } from "onnx-buf";
 import { describe, expect, it } from "vitest";
 import { runCli, type CliIo } from "../src/main.js";
 
@@ -23,6 +25,38 @@ function captureIo(): {
     stdout: () => stdout,
     stderr: () => stderr,
   };
+}
+
+function tinyOnnxModel(
+  externalLocation: string,
+  externalLength: number,
+): Uint8Array {
+  const model = fromJson(ModelProtoSchema, {
+    irVersion: "11",
+    producerName: "inference-sim-test",
+    graph: {
+      name: "tiny",
+      node: [{
+        opType: "MatMul",
+        input: ["input", "weight"],
+        output: ["output"],
+      }],
+      initializer: [{
+        name: "weight",
+        dims: ["2", "2"],
+        dataType: 1,
+        externalData: [
+          { key: "location", value: externalLocation },
+          { key: "offset", value: "0" },
+          { key: "length", value: String(externalLength) },
+        ],
+        dataLocation: 1,
+      }],
+      input: [{ name: "input" }],
+      output: [{ name: "output" }],
+    },
+  });
+  return toBinary(ModelProtoSchema, model);
 }
 
 describe("CLI", () => {
@@ -59,6 +93,75 @@ describe("CLI", () => {
     )?.reservedBytes).toBe(
       512 * 1024 ** 3,
     );
+  });
+
+  it("extracts a deterministic ONNX manifest with verified external data", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-"));
+    const modelPath = join(directory, "model.onnx");
+    const weightsPath = join(directory, "model.onnx.data");
+    const metadataPath = join(directory, "manifest.json");
+    await writeFile(modelPath, tinyOnnxModel("model.onnx.data", 16));
+    await writeFile(weightsPath, new Uint8Array(16).fill(7));
+    await writeFile(metadataPath, JSON.stringify({
+      architecture: "TinyCausalLM",
+      vocab_size: 8,
+      hidden_size: 2,
+      intermediate_size: 4,
+      num_hidden_layers: 1,
+      num_attention_heads: 1,
+      num_key_value_heads: 1,
+      head_dim: 2,
+    }), "utf8");
+    const first = captureIo();
+    const second = captureIo();
+
+    expect(await runCli(
+      ["onnx-inspect", modelPath, metadataPath],
+      first.io,
+    )).toBe(0);
+    expect(await runCli(
+      ["onnx-inspect", modelPath, metadataPath],
+      second.io,
+    )).toBe(0);
+    expect(first.stdout()).toBe(second.stdout());
+    const manifest = JSON.parse(first.stdout()) as {
+      kind: string;
+      graph: { nodeCount: number; operators: unknown[] };
+      totals: { externalInitializerBytes: number };
+      externalDataFiles: Array<{
+        location: string;
+        referencedByteLength: number;
+      }>;
+      profileReadiness: { ready: boolean; missingFields: string[] };
+    };
+    expect(manifest).toMatchObject({
+      kind: "inference-sim/onnx-model",
+      graph: { nodeCount: 1 },
+      totals: { externalInitializerBytes: 16 },
+      profileReadiness: { ready: true, missingFields: [] },
+    });
+    expect(manifest.graph.operators).toHaveLength(1);
+    expect(manifest.externalDataFiles).toEqual([
+      expect.objectContaining({
+        location: "model.onnx.data",
+        referencedByteLength: 16,
+      }),
+    ]);
+  });
+
+  it("rejects unsafe or truncated ONNX external-data references", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-"));
+    const modelPath = join(directory, "model.onnx");
+    await writeFile(modelPath, tinyOnnxModel("../weights.data", 16));
+    const unsafe = captureIo();
+    expect(await runCli(["onnx-inspect", modelPath], unsafe.io)).toBe(1);
+    expect(unsafe.stderr()).toContain("unsafe or missing external-data location");
+
+    await writeFile(modelPath, tinyOnnxModel("weights.data", 16));
+    await writeFile(join(directory, "weights.data"), new Uint8Array(8));
+    const truncated = captureIo();
+    expect(await runCli(["onnx-inspect", modelPath], truncated.io)).toBe(1);
+    expect(truncated.stderr()).toContain("external-data range exceeds");
   });
 
   it("materializes a parameterized multi-GPU scenario target", async () => {

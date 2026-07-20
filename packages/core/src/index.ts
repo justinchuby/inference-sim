@@ -48,6 +48,21 @@ export {
   type FrozenPlanArtifact,
 } from "./frozen-plan-artifact.js";
 export {
+  ONNX_MODEL_MANIFEST_KIND,
+  ONNX_MODEL_MANIFEST_REVISION,
+  OnnxModelManifestError,
+  createOnnxModelManifest,
+  parseOnnxModelManifest,
+  serializeOnnxModelManifest,
+  type OnnxArchitectureEvidence,
+  type OnnxExternalDataFileManifest,
+  type OnnxInitializerManifest,
+  type OnnxModelManifest,
+  type OnnxModelManifestUnsigned,
+  type OnnxOperatorCount,
+  type OnnxTensorStorage,
+} from "./onnx-manifest.js";
+export {
   DiscreteEventSimulator,
   SimulationError,
   type ScheduledEvent,

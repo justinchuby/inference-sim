@@ -10,9 +10,15 @@ importers:
 
   packages/cli:
     dependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.1
+        version: 2.12.1
       '@inference-sim/core':
         specifier: workspace:*
         version: link:../core
+      onnx-buf:
+        specifier: 1.20.0-1
+        version: 1.20.0-1
       yaml:
         specifier: ^2.8.1
         version: 2.9.0
@@ -113,6 +119,9 @@ importers:
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
 
 packages:
+
+  '@bufbuild/protobuf@2.12.1':
+    resolution: {integrity: sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg==}
 
   '@emnapi/core@1.11.1':
     resolution: {integrity: sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ==}
@@ -1327,6 +1336,10 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  onnx-buf@1.20.0-1:
+    resolution: {integrity: sha512-NzsKNR3AFo1aYQJ6PXZ5V0adMbwovcO8ZoPC+mOpcOt1DYjzp30tUi22Mc4gJilzwSn/kle6Kz1yZuQexWflNg==}
+    engines: {pnpm: '>=10.0.0'}
+
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
@@ -1648,6 +1661,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@bufbuild/protobuf@2.12.1': {}
 
   '@emnapi/core@1.11.1':
     dependencies:
@@ -2627,6 +2642,10 @@ snapshots:
   ms@2.1.3: {}
 
   nanoid@3.3.16: {}
+
+  onnx-buf@1.20.0-1:
+    dependencies:
+      '@bufbuild/protobuf': 2.12.1
 
   pathe@2.0.3: {}
 

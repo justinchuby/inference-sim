@@ -1168,6 +1168,14 @@ CLI/browser inputs use versioned YAML or JSON and may reference:
 
 ONNX parsing extracts graph structure, shapes, dtypes, external-data extents,
 operator profiles, and runtime metadata. It does not infer measured throughput.
+Revision-1 `inference-sim/onnx-model` manifests bind the ONNX protobuf and each
+referenced external-data file by SHA-256, retain canonical initializer names,
+dtypes, dimensions, logical/storage extents, and sorted operator counts, and
+normalize only explicitly published architecture fields. External paths must
+remain inside the model package and every referenced range must fit the actual
+sidecar. Sidecars are streamed for hashing rather than loaded into memory.
+Profile readiness lists every missing architecture field; tensor-name pattern
+matching is not accepted as architecture evidence.
 
 Example:
 
@@ -1448,6 +1456,13 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
+The `onnx-inspect` command decodes standard ONNX protobufs through the current
+ONNX 1.20 schema and emits the shared revision-1 model manifest. Optional
+onnx-genai fixture manifests, legacy `genai_config.json`, and portable
+inference metadata are normalized without changing their evidence strength.
+Malformed protobufs, sparse/segmented initializers, unsafe external paths,
+truncated sidecars, duplicate identities, inconsistent totals, stale
+revisions, and fingerprint mismatches fail closed.
 All CLI commands that consume one scenario resolve a shared scenario-target
 grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
 materialization, workload execution, serving, runtime-capture verification,

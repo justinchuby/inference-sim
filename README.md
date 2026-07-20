@@ -100,6 +100,13 @@ FrozenPlan artifact and executes that artifact without consulting mutable
 preset definitions. Scenario, plan, and whole-envelope fingerprints fail
 closed before semantic validation; successful execution is independently
 replayed from the emitted plan trace.
+The `onnx-inspect` command decodes a standard ONNX protobuf and emits a
+revisioned model manifest. It inventories graph operators and initializers,
+validates external-data paths and extents inside the model package, streams
+SHA-256 over every referenced sidecar, and normalizes optional onnx-genai
+`manifest.json`, `genai_config.json`, or inference metadata. Missing
+architecture evidence remains explicit; the importer does not infer model
+semantics from tensor names.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
@@ -209,6 +216,14 @@ See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.
 See [docs/ONNX_GENAI_CAPTURE.md](docs/ONNX_GENAI_CAPTURE.md) for producing and
 verifying paired runtime evidence from the onnx-genai integration branch.
+
+Inspect an ONNX model package:
+
+```bash
+pnpm sim onnx-inspect \
+  /path/to/model.onnx \
+  /path/to/manifest.json
+```
 
 ## License
 
