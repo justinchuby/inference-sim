@@ -17,15 +17,24 @@ import {
   FileCheck2,
   FilePlay,
   Gauge,
+  History,
   MemoryStick,
   Network,
   Play,
   RotateCcw,
   Square,
   TriangleAlert,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
+import {
+  deleteArtifactFromHistory,
+  listArtifactHistory,
+  readArtifactFromHistory,
+  saveArtifactToHistory,
+  type ArtifactHistoryEntry,
+} from "./artifact-history.js";
 import {
   MAX_CALIBRATION_FILE_BYTES,
   parseCalibrationFileText,
@@ -52,6 +61,12 @@ import {
 } from "./runtime-capture-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "./components/ui/dialog.js";
 import { Progress } from "./components/ui/progress.js";
 import {
   Select,
@@ -260,6 +275,12 @@ export function App(): React.JSX.Element {
   const [onnxSearchConfig, setOnnxSearchConfig] =
     useState(DEFAULT_ONNX_SEARCH_CONFIG);
   const [onnxMode, setOnnxMode] = useState<"analyze" | "search">("analyze");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyEntries, setHistoryEntries] =
+    useState<readonly ArtifactHistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState<string | undefined>(
+    undefined,
+  );
   const workerRef = useRef<Worker | undefined>(undefined);
   const artifactInputRef = useRef<HTMLInputElement | null>(null);
   const frozenPlanInputRef = useRef<HTMLInputElement | null>(null);
@@ -483,6 +504,16 @@ export function App(): React.JSX.Element {
           ? {}
           : { artifactReplay: message.artifactReplay }),
       });
+      void saveArtifactToHistory(message.artifact, result)
+        .then((entries) => {
+          setHistoryEntries(entries);
+          setHistoryError(undefined);
+        })
+        .catch((error) => {
+          setHistoryError(
+            error instanceof Error ? error.message : String(error),
+          );
+        });
       worker.terminate();
       workerRef.current = undefined;
     };
@@ -504,28 +535,29 @@ export function App(): React.JSX.Element {
     });
   }, []);
 
-  const importArtifact = useCallback(async (file: File) => {
+  const replayArtifactText = useCallback((
+    text: string,
+    fileName: string,
+  ) => {
     try {
-      if (file.size > MAX_DASHBOARD_ARTIFACT_FILE_BYTES) {
-        throw new Error("result artifact exceeds the 128 MiB limit");
-      }
       const parsed = parseDashboardArtifactFileText(
-        await file.text(),
-        file.name,
+        text,
+        fileName,
       );
       setConfig(parsed.config);
       setCalibration(parsed.calibration
         ? {
-            fileName: `${file.name} / embedded calibration`,
+            fileName: `${fileName} / embedded calibration`,
             parsed: parsed.calibration,
           }
         : {});
       setTokenTrace(parsed.tokenTrace
         ? {
-            fileName: `${file.name} / embedded token trace`,
+            fileName: `${fileName} / embedded token trace`,
             parsed: parsed.tokenTrace,
           }
         : {});
+      setOnnxManifest(undefined);
       run(parsed.config, parsed.expectation);
     } catch (error) {
       setRunState({
@@ -536,6 +568,61 @@ export function App(): React.JSX.Element {
       });
     }
   }, [run]);
+
+  const importArtifact = useCallback(async (file: File) => {
+    if (file.size > MAX_DASHBOARD_ARTIFACT_FILE_BYTES) {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "Artifact import failed",
+        error: "result artifact exceeds the 128 MiB limit",
+      });
+      return;
+    }
+    replayArtifactText(await file.text(), file.name);
+  }, [replayArtifactText]);
+
+  const replayHistoryEntry = useCallback(async (
+    entry: ArtifactHistoryEntry,
+  ) => {
+    try {
+      const stored = await readArtifactFromHistory(entry.fingerprint);
+      setHistoryOpen(false);
+      replayArtifactText(stored.text, stored.fileName);
+      setHistoryEntries(await listArtifactHistory());
+      setHistoryError(undefined);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    }
+  }, [replayArtifactText]);
+
+  const downloadHistoryEntry = useCallback(async (
+    entry: ArtifactHistoryEntry,
+  ) => {
+    try {
+      const stored = await readArtifactFromHistory(entry.fingerprint);
+      downloadArtifact({
+        blob: new Blob([stored.text], { type: "application/json" }),
+        fileName: stored.fileName,
+        artifactFingerprint: entry.fingerprint,
+      });
+      setHistoryEntries(await listArtifactHistory());
+      setHistoryError(undefined);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const deleteHistoryEntry = useCallback(async (
+    fingerprint: string,
+  ) => {
+    try {
+      setHistoryEntries(await deleteArtifactFromHistory(fingerprint));
+      setHistoryError(undefined);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
 
   const runFrozenPlan = useCallback(async (file: File) => {
     try {
@@ -792,6 +879,14 @@ export function App(): React.JSX.Element {
   }, [runOnnxStatic]);
 
   useEffect(() => {
+    void listArtifactHistory()
+      .then(setHistoryEntries)
+      .catch((error) => {
+        setHistoryError(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
+
+  useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
       run(DEFAULT_CONFIG);
@@ -817,6 +912,33 @@ export function App(): React.JSX.Element {
           </div>
           <div className="flex items-center gap-2">
             <RunBadge status={runState.status} />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Open artifact history"
+                  disabled={runState.status === "running"}
+                  onClick={() => {
+                    setHistoryOpen(true);
+                    void listArtifactHistory()
+                      .then(setHistoryEntries)
+                      .catch((error) => {
+                        setHistoryError(
+                          error instanceof Error
+                            ? error.message
+                            : String(error),
+                        );
+                      });
+                  }}
+                >
+                  <History className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Artifact history · {historyEntries.length}
+              </TooltipContent>
+            </Tooltip>
             <input
               ref={onnxManifestInputRef}
               type="file"
@@ -1023,9 +1145,146 @@ export function App(): React.JSX.Element {
               : <Inspector result={result} />}
           </aside>
         </div>
+        <ArtifactHistoryDialog
+          open={historyOpen}
+          entries={historyEntries}
+          error={historyError}
+          onOpenChange={setHistoryOpen}
+          onReplay={replayHistoryEntry}
+          onDownload={downloadHistoryEntry}
+          onDelete={deleteHistoryEntry}
+        />
       </div>
     </TooltipProvider>
   );
+}
+
+function ArtifactHistoryDialog({
+  open,
+  entries,
+  error,
+  onOpenChange,
+  onReplay,
+  onDownload,
+  onDelete,
+}: {
+  readonly open: boolean;
+  readonly entries: readonly ArtifactHistoryEntry[];
+  readonly error?: string;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onReplay: (entry: ArtifactHistoryEntry) => void;
+  readonly onDownload: (entry: ArtifactHistoryEntry) => void;
+  readonly onDelete: (fingerprint: string) => void;
+}): React.JSX.Element {
+  const totalBytes = entries.reduce(
+    (sum, entry) => sum + entry.byteLength,
+    0,
+  );
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <div className="border-b border-zinc-200 px-5 py-4 pr-14">
+          <DialogTitle className="text-sm font-bold">
+            Artifact history
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-xs text-zinc-500">
+            {entries.length} artifacts · {formatBytes(totalBytes)}
+          </DialogDescription>
+        </div>
+        {error
+          ? (
+              <div className="border-b border-rose-200 bg-rose-50 px-5 py-3 text-xs text-rose-800">
+                {error}
+              </div>
+            )
+          : null}
+        <div className="max-h-[min(65vh,600px)] overflow-y-auto">
+          {entries.length === 0
+            ? (
+                <div className="grid min-h-48 place-items-center px-6 text-center">
+                  <div>
+                    <History className="mx-auto size-6 text-zinc-400" />
+                    <div className="mt-2 text-sm font-semibold">
+                      No saved artifacts
+                    </div>
+                  </div>
+                </div>
+              )
+            : (
+                <div className="divide-y divide-zinc-200">
+                  {entries.map((entry) => (
+                    <div
+                      key={entry.fingerprint}
+                      className="grid gap-3 px-5 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-xs font-bold text-zinc-800">
+                            {entry.scenarioId}
+                          </span>
+                          <Badge variant="neutral">{entry.mode}</Badge>
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[10px] text-zinc-500">
+                          {entry.fingerprint}
+                        </div>
+                        <div className="mt-1 text-[11px] text-zinc-400">
+                          {formatHistoryTimestamp(entry.savedAtMs)} ·{" "}
+                          {formatBytes(entry.byteLength)}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="secondary"
+                          className="h-8"
+                          onClick={() => onReplay(entry)}
+                        >
+                          <Play className="size-3.5 fill-current" />
+                          Replay
+                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              aria-label={`Download ${entry.fileName}`}
+                              onClick={() => onDownload(entry)}
+                            >
+                              <Download className="size-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Download artifact</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8 text-rose-700"
+                              aria-label={`Delete ${entry.fileName}`}
+                              onClick={() => onDelete(entry.fingerprint)}
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Delete artifact</TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function formatHistoryTimestamp(milliseconds: number): string {
+  return new Date(milliseconds).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function OnnxConfigurationPanel({

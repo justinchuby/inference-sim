@@ -1603,8 +1603,13 @@ execution/import is available in the React workbench. ONNX Analyze/Search modes
 share the core resolver, analyzer, and bounded search contract. Search scope
 controls expand visible finite topology, KV dtype, batch, parallelism, and
 offload axes, display the declared count before execution, and report ranked
-candidates plus complete rejection accounting. Artifact history management
-and richer progress phases remain. Calibration YAML/JSON
+candidates plus complete rejection accounting. Completed dashboard artifacts
+are stored as full Blobs in IndexedDB with fingerprint-keyed deduplication,
+least-recently-opened eviction, a 20-entry limit, and a 256 MiB aggregate
+limit. History timestamps are UI metadata, not artifact evidence. Replay reads
+the original bytes and repeats strict revision, contract, and fingerprint
+validation before Worker execution; history storage failures never relabel a
+successful simulation. Richer progress phases remain. Calibration YAML/JSON
 import shares the core parser and fit contract with the CLI, enforces a 1 MiB
 input limit, refits in the Worker, and reports the dataset fingerprint, compute
 diagnostics, and transport-curve diagnostics in the result view.

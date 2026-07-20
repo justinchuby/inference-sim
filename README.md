@@ -125,6 +125,11 @@ The ONNX workbench exposes the same contract through Analyze/Search modes.
 Search scope controls expand only visible finite axes, show the declared
 candidate count before execution, and render top-K candidates beside complete
 structural and constraint rejection counts.
+Completed dashboard artifacts are retained in a bounded IndexedDB history:
+fingerprints deduplicate entries, least-recently-opened records are evicted
+past 20 entries or 256 MiB, and replay re-runs the strict artifact parser
+before Worker execution. UI timestamps are storage metadata only and never
+enter deterministic simulation evidence.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
