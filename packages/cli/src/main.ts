@@ -1050,16 +1050,7 @@ function buildTopologyProfile(
   if (config.expert_cache !== undefined) {
     const workload = parseExpertCacheConfig(config);
     const result = simulateExpertCacheWorkload(workload);
-    const expertBytes = workload.cache.experts[0]?.bytes;
-    if (
-      expertBytes === undefined
-      || workload.cache.experts.some((expert) => expert.bytes !== expertBytes)
-    ) {
-      throw new Error(
-        "topology expert-cache profiles currently require equal expert byte sizes",
-      );
-    }
-    return topologyProfileFromExpertCache(result, expertBytes);
+    return topologyProfileFromExpertCache(result);
   }
   if (config.target_only !== undefined) {
     const targetOnly = requireRecord(config.target_only, "target_only");

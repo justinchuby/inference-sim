@@ -641,6 +641,12 @@ duplicate expert IDs, incomplete per-token top-K assignments, duplicate
 assignments within one token, an FFN-placement count different from `EP`, or
 ambiguous communicator membership are fatal input errors.
 
+The expert-cache initialization trace is authoritative for each expert's byte
+extent. Topology projection resolves route and load identities through that
+table; it does not accept a second uniform-size scalar or infer one expert's
+size from another. Variable-size experts therefore preserve their exact
+warm/cold transfer bytes through core, CLI, and Web execution.
+
 Demand loads, background prefetch, and routed FFN compute resolve the same
 expert to the same owner. Under `EP > 1`, the complete expert bytes move only
 to that owner's hot cache and only owners receiving routed assignments emit
@@ -1247,7 +1253,8 @@ checkpoint-relative accepted-prefix restore, logical tail masking, allocation
 and release metrics, and independent trace replay; the speculative workload
 checks that its final KV length matches committed target state. Expert-cache
 workloads now model seeded weighted routing without replacement, exact
-hot/warm byte capacities and reservations, deterministic LRU eviction,
+per-expert byte extents, hot/warm byte capacities and reservations,
+deterministic LRU eviction,
 asynchronous initial prefetch, history-driven adaptive warm prefetch, stalls,
 metrics, and independent replay. Validated prefetch loads compile into
 background storage transfers that overlap compute and serialize only within

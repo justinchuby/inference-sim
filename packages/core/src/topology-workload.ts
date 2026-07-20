@@ -260,9 +260,7 @@ export function topologyProfileFromSpeculative(
 
 export function topologyProfileFromExpertCache(
   result: ExpertCacheWorkloadResult,
-  expertBytes: number,
 ): TopologyWorkloadProfile {
-  assertPositiveSafeInteger(expertBytes, "expert bytes");
   const initialization = result.trace.find(
     (event) => event.kind === "initialize",
   );
@@ -271,6 +269,29 @@ export function topologyProfileFromExpertCache(
       "expert-cache workload trace lacks initialization",
     );
   }
+  const expertBytesById = new Map(
+    initialization.config.experts.map((expert) => {
+      assertPositiveSafeInteger(
+        expert.bytes,
+        `expert ${expert.id} bytes`,
+      );
+      return [expert.id, expert.bytes] as const;
+    }),
+  );
+  if (expertBytesById.size !== initialization.config.experts.length) {
+    throw new TopologyWorkloadError(
+      "expert-cache initialization has duplicate expert ids",
+    );
+  }
+  const bytesForExpert = (expertId: string): number => {
+    const bytes = expertBytesById.get(expertId);
+    if (bytes === undefined) {
+      throw new TopologyWorkloadError(
+        `expert-cache route references unknown expert ${expertId}`,
+      );
+    }
+    return bytes;
+  };
   let completedRoutes = 0;
   const backgroundPrefetches: TopologyBackgroundPrefetch[] = [];
   const warmPrefetchByExpert = new Map<string, string>();
@@ -330,10 +351,26 @@ export function topologyProfileFromExpertCache(
         sourceTier: route.sourceTiers[routeIndex],
         loadBytes: route.sourceTiers[routeIndex] === "hot"
           ? 0
-          : expertBytes,
+          : bytesForExpert(expertId),
       })),
-      warmLoadBytes: countTier(route.sourceTiers, "warm") * expertBytes,
-      coldLoadBytes: countTier(route.sourceTiers, "cold") * expertBytes,
+      warmLoadBytes: route.expertIds.reduce((sum, expertId, routeIndex) => (
+        route.sourceTiers[routeIndex] === "warm"
+          ? checkedAdd(
+              sum,
+              bytesForExpert(expertId),
+              `route ${route.requestId} warm bytes`,
+            )
+          : sum
+      ), 0),
+      coldLoadBytes: route.expertIds.reduce((sum, expertId, routeIndex) => (
+        route.sourceTiers[routeIndex] === "cold"
+          ? checkedAdd(
+              sum,
+              bytesForExpert(expertId),
+              `route ${route.requestId} cold bytes`,
+            )
+          : sum
+      ), 0),
       requiredPrefetchIds:
         requiredPrefetchIdsByRequest.get(route.requestId) ?? [],
     })),
@@ -2576,13 +2613,6 @@ function resourceUtilization(
     };
   }).filter((resource) => resource.busyNs > 0)
     .sort((left, right) => left.resourceId.localeCompare(right.resourceId));
-}
-
-function countTier(
-  tiers: readonly ExpertCacheTier[],
-  target: ExpertCacheTier,
-): number {
-  return tiers.filter((tier) => tier === target).length;
 }
 
 function unique(values: readonly string[]): string[] {

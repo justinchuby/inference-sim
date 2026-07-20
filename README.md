@@ -60,8 +60,8 @@ Phase 3 has an initial speculative workload slice:
   non-reused physical page identities, and independent trace replay; and
 - speculative KV high-water, allocation, release, and final-reservation
   metrics.
-- byte-capacity hot/warm expert caches with weighted routing without
-  replacement, deterministic LRU eviction, asynchronous initial plus
+- variable-size, byte-capacity hot/warm expert caches with weighted routing
+  without replacement, deterministic LRU eviction, asynchronous initial plus
   history-driven adaptive warm prefetch, physical cold-storage link
   contention, and independent trace replay; and
 - routed expert execution with TP attention, `all_reduce_ring`,

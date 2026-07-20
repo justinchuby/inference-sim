@@ -96,7 +96,7 @@ export function simulateDashboard(
     mode: config.mode,
     topology: summarizeTopology(simulateTopologyWorkload(
       scenario,
-      topologyProfileFromExpertCache(workload.result, workload.expertBytes),
+      topologyProfileFromExpertCache(workload.result),
       costModel,
     )),
     expertCache: workload.dashboard,

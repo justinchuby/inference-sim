@@ -217,17 +217,17 @@ speculative_token_trace:
     const path = join(directory, "expert-cache.yaml");
     await writeFile(path, `
 expert_cache:
-  hot_capacity_bytes: 128
-  warm_capacity_bytes: 128
+  hot_capacity_bytes: 144
+  warm_capacity_bytes: 144
   warm_to_hot_latency_ns: 5
   cold_to_hot_latency_ns: 20
   cold_to_warm_latency_ns: 12
   routing_seed: 7
   initial_hot_expert_ids: [e0]
   experts:
-    - { id: e0, bytes: 64 }
+    - { id: e0, bytes: 48 }
     - { id: e1, bytes: 64 }
-    - { id: e2, bytes: 64 }
+    - { id: e2, bytes: 80 }
 workload:
   token_count: 3
   top_k: 2
@@ -244,7 +244,7 @@ workload:
     };
     expect(output.routes).toHaveLength(3);
     expect(output.snapshot.metrics.routes).toBe(3);
-    expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(128);
+    expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(144);
 
     const topologyCapture = captureIo();
     expect(await runCli(

@@ -552,12 +552,63 @@ describe("topology-aware workload execution", () => {
     });
     const result = simulateTopologyWorkload(
       buildScenarioPreset("single-gpu-cpu"),
-      topologyProfileFromExpertCache(cache, expertBytes),
+      topologyProfileFromExpertCache(cache),
     );
 
     expect(result.metrics.committedTokens).toBe(4);
     expect(result.metrics.transferServiceNs).toBeGreaterThan(0);
     expect(result.metrics.linkUtilization.length).toBeGreaterThan(0);
+  });
+
+  it("projects variable expert sizes from authoritative trace identity", () => {
+    const bytesByExpert = new Map([
+      ["e0", 32 * 1024 ** 2],
+      ["e1", 48 * 1024 ** 2],
+      ["e2", 64 * 1024 ** 2],
+    ]);
+    const cache = simulateExpertCacheWorkload({
+      cache: {
+        experts: [...bytesByExpert].map(([id, bytes]) => ({ id, bytes })),
+        hotCapacityBytes: 112 * 1024 ** 2,
+        warmCapacityBytes: 112 * 1024 ** 2,
+        warmToHotLatencyNs: 5,
+        coldToHotLatencyNs: 20,
+        coldToWarmLatencyNs: 10,
+        routingSeed: 11,
+        initialWarmExpertIds: ["e1"],
+      },
+      tokenCount: 4,
+      topK: 2,
+      tokenIntervalNs: 1,
+    });
+    const profile = topologyProfileFromExpertCache(cache);
+
+    for (const unit of profile.units) {
+      const routed = unit.routedExperts ?? [];
+      const expectedWarmBytes = routed.reduce((sum, expert) => (
+        expert.sourceTier === "warm"
+          ? sum + (bytesByExpert.get(expert.expertId) ?? 0)
+          : sum
+      ), 0);
+      const expectedColdBytes = routed.reduce((sum, expert) => (
+        expert.sourceTier === "cold"
+          ? sum + (bytesByExpert.get(expert.expertId) ?? 0)
+          : sum
+      ), 0);
+      expect(unit.warmLoadBytes).toBe(expectedWarmBytes);
+      expect(unit.coldLoadBytes).toBe(expectedColdBytes);
+      expect(routed.every((expert) => (
+        expert.loadBytes === (
+          expert.sourceTier === "hot"
+            ? 0
+            : bytesByExpert.get(expert.expertId)
+        )
+      ))).toBe(true);
+    }
+    expect(simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      profile,
+    ).execution.status).toBe("succeeded");
   });
 
   it("projects adaptive warm prefetch onto storage links across all topologies", () => {
@@ -585,7 +636,7 @@ describe("topology-aware workload execution", () => {
       topK: 2,
       tokenIntervalNs: 1,
     });
-    const profile = topologyProfileFromExpertCache(cache, expertBytes);
+    const profile = topologyProfileFromExpertCache(cache);
     const hasWarmDemand = profile.units.some((unit) => (
       unit.routedExperts?.some((routed) => routed.sourceTier === "warm")
     ));
@@ -692,7 +743,7 @@ describe("topology-aware workload execution", () => {
         leadTimeNs: 12,
       },
     });
-    const profile = topologyProfileFromExpertCache(cache, expertBytes);
+    const profile = topologyProfileFromExpertCache(cache);
     const required = profile.units[0].requiredPrefetchIds ?? [];
     expect(required).toHaveLength(2);
 
