@@ -507,6 +507,10 @@ describe("topology-aware serving", () => {
       coldToWarmLatencyNs: 10_000,
       routingSeed: 7,
     } as const;
+    const largeExperts = Array.from({ length: 3 }, (_, index) => ({
+      id: `large-${index}`,
+      bytes: 3 * 1024 ** 3,
+    }));
 
     expect(() => simulateTopologyServingWorkload(
       scenario,
@@ -536,6 +540,7 @@ describe("topology-aware serving", () => {
         contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
         cache: {
           ...cache,
+          experts: largeExperts,
           hotCapacityBytes: 9 * 1024 ** 3,
         },
         topK: 1,
@@ -549,11 +554,57 @@ describe("topology-aware serving", () => {
         contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
         cache: {
           ...cache,
+          experts: largeExperts,
+          hotCapacityBytes: 3 * 1024 ** 3,
           warmCapacityBytes: 9 * 1024 ** 3,
         },
         topK: 1,
       },
     )).toThrow("exceeds physical warm allocations");
+  });
+
+  it("fails closed when an EP owner is undersized despite aggregate capacity", () => {
+    const base = buildScenarioPreset("multi-gpu");
+    const scenario = {
+      ...base,
+      placements: base.placements.map((placement) => (
+        placement.partitionId !== "target-shard-0"
+          ? placement
+          : {
+              ...placement,
+              allocations: placement.allocations.map((allocation) => (
+                allocation.physicalAllocationId
+                  !== "expert-hot-cache:target-shard-0"
+                  ? allocation
+                  : { ...allocation, bytes: 1024 ** 3 }
+              )),
+            }
+      )),
+    };
+
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache: {
+          experts: Array.from({ length: 4 }, (_, index) => ({
+            id: `e${index}`,
+            bytes: 1024 ** 3,
+          })),
+          hotCapacityBytes: 2 * 1024 ** 3,
+          warmCapacityBytes: 2 * 1024 ** 3,
+          warmToHotLatencyNs: 2_000,
+          coldToHotLatencyNs: 20_000,
+          coldToWarmLatencyNs: 10_000,
+          routingSeed: 7,
+        },
+        topK: 1,
+      },
+    )).toThrow(
+      "hot requirement 2147483648 on owner target-shard-0 exceeds physical hot allocations 1073741824",
+    );
   });
 
   it("retimes adaptive prefetch from the shared physical storage trace", () => {

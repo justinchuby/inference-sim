@@ -621,12 +621,48 @@ Current scenario contract revision 3 retains revision 2's explicit
 cold-storage domain on every preset node, local CPU endpoint, authoritative
 expert-backing allocation, warm-cache allocation, directed storage-read link,
 and adds one device/unified hot-expert cache allocation to every FFN
-placement. The topology compiler
-extracts validated prefetch `load_start` events and emits background FrozenPlan
-transfers after their causal route. These transfers occupy storage link lanes,
-write the warm pool, may overlap subsequent compute where allocation leases
-permit, and are independently replayed. Writes are ordered per warm domain,
-while independent nodes prefetch concurrently. The projection preserves
+placement.
+
+Expert parallelism uses an explicit, replayable placement contract rather than
+an expert-ID hash or an even division of aggregate work. The contract carries
+the ordered expert universe and either `contiguous` or `round_robin`
+assignment. FFN placements are ordered by their immutable communicator rank.
+For expert index `i`, `N` experts, and `EP` ranks:
+
+```text
+contiguous owner  = floor(i * EP / N)
+round_robin owner = i mod EP
+```
+
+The current expert-cache and serving adapters select `contiguous`, matching the
+recommended initial onnx-genai static placement. A caller may request
+`round_robin` only by declaring it in the workload profile. Missing experts,
+duplicate expert IDs, incomplete per-token top-K assignments, duplicate
+assignments within one token, an FFN-placement count different from `EP`, or
+ambiguous communicator membership are fatal input errors.
+
+Demand loads, background prefetch, and routed FFN compute resolve the same
+expert to the same owner. Under `EP > 1`, the complete expert bytes move only
+to that owner's hot cache and only owners receiving routed assignments emit
+FFN compute. The AllToAllV gather reads only those active owner workspaces;
+non-owning ranks participate in the collective protocol with zero routed work.
+Under `EP == 1`, an explicitly tensor-sharded FFN may continue to divide an
+expert load across its participating FFN placements.
+
+Explicit routed profiles keep warm and cold traffic on separate physical
+paths. Warm bytes move from the owner node's warm allocation; cold bytes move
+from its backing allocation through the storage path. The heuristic
+`coldLoadByteMultiplier` is not applied when those explicit routes exist,
+because doing so would both double-charge the storage cost and mislabel cold
+traffic as a warm-cache read.
+
+The topology compiler extracts validated prefetch `load_start` events and emits
+background FrozenPlan transfers after their causal route. These transfers
+occupy storage link lanes, write the warm pool, may overlap subsequent compute
+where allocation leases permit, and are independently replayed. Writes are
+ordered per warm domain, while independent owner nodes may prefetch
+concurrently. A single expert prefetch targets its owner's node; it is not
+replicated or divided across all nodes. The projection preserves
 expert-to-prefetch provenance, so a later warm demand cannot read the warm pool
 until its producing storage copy has completed on that node. The current lease
 model is allocation-granular rather than cache-slot/range-granular; unrelated
@@ -669,7 +705,7 @@ instance persists across all batches, and every target token in prefill or
 verification receives one seeded top-K route. Draft-only proposer work does
 not route through the target MoE unless a future proposer profile explicitly
 declares that architecture. Per-batch routed FFN work uses the same AllToAllV
-and expert-sharded topology path as standalone expert-cache workloads.
+and owner-routed topology path as standalone expert-cache workloads.
 
 The current bounded baseline serializes cache route decisions inside a batch,
 while the resulting target work remains batched in one topology plan. Each
@@ -677,9 +713,12 @@ route is a two-phase transaction. `beginTokenRoute()` identifies new demand
 loads without recording an access. Every new load compiles into its own
 topology plan and is admitted to the same absolute-time streaming runtime:
 
-- a cold load starts at node-local backing storage and reaches every FFN
-  hot-expert cache allocation through the declared storage and device links;
-- a warm load starts in the node-local warm domain;
+- under expert parallelism, a cold load starts at the owning rank's node-local
+  backing storage and reaches only that owner's hot-expert cache through the
+  declared storage and device links;
+- a warm load starts in the owning rank's node-local warm domain;
+- under tensor-sharded `EP == 1` execution, the load may be divided across the
+  participating FFN placements;
 - CPU-only and unified-memory warm promotion is a same-domain state transition
   and therefore has no fictitious copy plan;
 - all new loads from one route are admitted before any of their terminals are
@@ -687,14 +726,21 @@ topology plan and is admitted to the same absolute-time streaming runtime:
 - cold shards that reuse one node-local staging allocation are explicitly
   ordered.
 
-The cache completion of each demand load is retimed from the maximum of its
-physical terminal events. `completeTokenRoute()` may record the expert access
-only after those events make every required expert hot. The aggregate target
-plan then carries routed AllToAllV/FFN work, reads the same hot-expert
+The cache completion of each demand load is retimed from its physical owner
+terminal, or from the maximum terminal when an `EP == 1` tensor shard has more
+than one destination. `completeTokenRoute()` may record the expert access only
+after those events make every required expert hot. The aggregate target plan
+then carries routed AllToAllV/owner-FFN work, reads the same owner hot-expert
 allocations written by demand terminals, but carries zero demand-load bytes.
-It is admitted at cache readiness. Logical hot and warm capacities must not
-exceed the corresponding unique physical allocations in the selected
-scenario. Consequently there is one authoritative timeline:
+It is admitted at cache readiness.
+
+Physical capacity validation is owner-aware. For each EP rank, required hot
+bytes are bounded by both the logical hot capacity and the total bytes of
+experts that rank can own. Warm capacity is checked analogously per owner node.
+This rejects an undersized owner even when aggregate capacity across unrelated
+ranks is sufficient, while avoiding fictitious reservation of unused logical
+capacity beyond the complete expert universe. Consequently there is one
+authoritative timeline:
 
 ```text
 route decision
@@ -873,12 +919,22 @@ coefficient overrides. A dataset records:
 - activation, collective, and cold-load model constants; and
 - minimum sample count plus normalized-RMSE and P95-relative-error gates.
 
-`work_items` is the unsharded token work presented to the topology model:
+Dense TP and routed EP have different work coordinates:
 
 ```text
-work_items = token_width * batch_size * max(1, active_experts)
-duration   = invocation_overhead + ns_per_work_item * work_items / shard_degree
+dense_work_items = token_width * batch_size
+dense_duration   = invocation_overhead
+                 + ns_per_work_item * dense_work_items / tensor_degree
+
+owner_work_items(owner) = count(routed assignments owned by owner)
+owner_ffn_duration       = invocation_overhead
+                         + ns_per_work_item * owner_work_items(owner)
 ```
+
+Routed FFN work is not divided by `EP` after routing. Each assignment is
+charged exactly once to its owner, so route skew changes per-rank service time.
+The current linear coefficient remains heuristic until observations cover the
+owner-work regime.
 
 Each device kind requires an invocation observation at zero work items and at
 least two distinct positive work-item points for every compute capability.
@@ -912,12 +968,12 @@ change, or out-of-range byte extent is an execution error. Point-to-point
 curves name exactly one directed link and two endpoints. The current topology
 compiler identifies dense tensor collectives as `all_reduce_ring`. Routed
 expert units on an overlap-capable topology emit one tensor all-reduce followed
-by `all_to_all_v` dispatch, EP-sharded FFN compute, and `all_to_all_v` gather.
+by `all_to_all_v` dispatch, owner-local FFN compute, and `all_to_all_v` gather.
 Two-rank collectives reserve both directed paths. Every algorithm/path
 combination requires its own observations. The current compiler fails closed
 for larger communicator groups until the scenario schema can enumerate the
 algorithm-specific full-group route instead of approximating it from two
-endpoints. This algorithm/path and EP-sharding behavior is topology cost-model
+endpoints. This algorithm/path and EP-owner behavior is topology cost-model
 revision 5; revision 4 models are rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
@@ -1145,8 +1201,9 @@ Status: complete. Implemented:
   pipeline, and tensor-collective steps, followed by independent trace replay
   and resource-utilization accounting;
 - capability-overlap TP/EP plans with algorithm-labeled bidirectional
-  all-reduce plus AllToAllV dispatch/gather, without multiplying the same rank
-  group into fictitious compute shards;
+  all-reduce plus AllToAllV dispatch/gather, explicit contiguous/round-robin
+  expert ownership, and route-skewed owner-local FFN work, without multiplying
+  the same rank group into fictitious compute shards;
 - time-anchored device, link, and topology-epoch fault injection with typed
   terminal evidence, submission closure, in-flight quiescence, and independent
   replay;
@@ -1201,8 +1258,9 @@ uses each declared directed link's latency and bandwidth; imported revision 2
 calibration instead uses exact-path transfer and collective curves with
 fail-closed message-range checks. Compute coefficients remain
 provenance-tagged. Routed expert profiles on multi-GPU and multi-node presets
-execute TP attention, bidirectional all-reduce, AllToAllV dispatch, EP-sharded
-FFN, and AllToAllV gather; dense profiles do not pay expert collectives. All
+execute TP attention, bidirectional all-reduce, AllToAllV dispatch, owner-local
+FFN, and AllToAllV gather; demand loads and prefetches target the same explicit
+owner, and dense profiles do not pay expert collectives. All
 six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
@@ -1324,6 +1382,11 @@ progress phases remain. Calibration YAML/JSON import shares the core parser and
 fit contract with the CLI, enforces a 1 MiB input limit, refits in the Worker,
 and reports the dataset fingerprint, compute diagnostics, and transport-curve
 diagnostics in the result view.
+
+New browser controls must extend the existing React and shadcn/Radix component
+layer. Core placement, routing, replay, and timing semantics remain in
+`@inference-sim/core`; the UI may select declared contracts but must not
+reimplement owner assignment or simulation state.
 
 ## 16. Testing and Delivery Gates
 

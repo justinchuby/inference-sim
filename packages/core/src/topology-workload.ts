@@ -46,6 +46,7 @@ export interface TopologyWorkUnit {
   readonly proposerCostScale?: number;
   readonly activeExperts: number;
   readonly expertRouted?: boolean;
+  readonly routedExperts?: readonly TopologyRoutedExpert[];
   readonly warmLoadBytes: number;
   readonly coldLoadBytes: number;
   readonly requiredPrefetchIds?: readonly string[];
@@ -55,19 +56,34 @@ export interface TopologyWorkloadProfile {
   readonly id: string;
   readonly batchSize: number;
   readonly units: readonly TopologyWorkUnit[];
+  readonly expertPlacement?: TopologyExpertPlacement;
   readonly backgroundPrefetches?: readonly TopologyBackgroundPrefetch[];
+}
+
+export interface TopologyExpertPlacement {
+  readonly strategy: "contiguous" | "round_robin";
+  readonly expertIds: readonly string[];
+}
+
+export interface TopologyRoutedExpert {
+  readonly expertId: string;
+  readonly sourceTier: ExpertCacheTier;
+  readonly loadBytes: number;
 }
 
 export interface TopologyBackgroundPrefetch {
   readonly id: string;
+  readonly expertId?: string;
   readonly afterUnitIndex: number;
   readonly bytes: number;
 }
 
 export interface TopologyExpertLoad {
   readonly id: string;
+  readonly expertId: string;
   readonly sourceTier: "warm" | "cold";
   readonly bytes: number;
+  readonly placement: TopologyExpertPlacement;
 }
 
 export interface TopologyExpertLoadPlan {
@@ -247,6 +263,14 @@ export function topologyProfileFromExpertCache(
   expertBytes: number,
 ): TopologyWorkloadProfile {
   assertPositiveSafeInteger(expertBytes, "expert bytes");
+  const initialization = result.trace.find(
+    (event) => event.kind === "initialize",
+  );
+  if (initialization?.kind !== "initialize") {
+    throw new TopologyWorkloadError(
+      "expert-cache workload trace lacks initialization",
+    );
+  }
   let completedRoutes = 0;
   const backgroundPrefetches: TopologyBackgroundPrefetch[] = [];
   const warmPrefetchByExpert = new Map<string, string>();
@@ -261,6 +285,7 @@ export function topologyProfileFromExpertCache(
       warmPrefetchLoads.add(event.load.loadId);
       backgroundPrefetches.push({
         id: event.load.loadId,
+        expertId: event.load.expertId,
         afterUnitIndex: completedRoutes - 1,
         bytes: event.load.bytes,
       });
@@ -289,6 +314,10 @@ export function topologyProfileFromExpertCache(
   return {
     id: "expert-cache",
     batchSize: 1,
+    expertPlacement: {
+      strategy: "contiguous",
+      expertIds: initialization.config.experts.map((expert) => expert.id),
+    },
     units: result.routes.map((route, index) => ({
       id: `route-${index}`,
       targetTokenWidth: 1,
@@ -296,6 +325,13 @@ export function topologyProfileFromExpertCache(
       draftTokens: 0,
       activeExperts: route.expertIds.length,
       expertRouted: true,
+      routedExperts: route.expertIds.map((expertId, routeIndex) => ({
+        expertId,
+        sourceTier: route.sourceTiers[routeIndex],
+        loadBytes: route.sourceTiers[routeIndex] === "hot"
+          ? 0
+          : expertBytes,
+      })),
       warmLoadBytes: countTier(route.sourceTiers, "warm") * expertBytes,
       coldLoadBytes: countTier(route.sourceTiers, "cold") * expertBytes,
       requiredPrefetchIds:
@@ -340,12 +376,23 @@ export function compileTopologyExpertLoadPlan(
   if (load.id.length === 0) {
     throw new TopologyWorkloadError("expert load id must be non-empty");
   }
+  if (load.expertId.length === 0) {
+    throw new TopologyWorkloadError(
+      `expert load ${load.id} expert id must be non-empty`,
+    );
+  }
   if (load.sourceTier !== "warm" && load.sourceTier !== "cold") {
     throw new TopologyWorkloadError(
       `expert load ${load.id} has invalid source tier ${String(load.sourceTier)}`,
     );
   }
   assertPositiveSafeInteger(load.bytes, `expert load ${load.id} bytes`);
+  validateExpertPlacement(load.placement, `expert load ${load.id}`);
+  if (!load.placement.expertIds.includes(load.expertId)) {
+    throw new TopologyWorkloadError(
+      `expert load ${load.id} expert ${load.expertId} is absent from the placement universe`,
+    );
+  }
   if (costModel.revision !== TOPOLOGY_COST_MODEL_REVISION) {
     throw new TopologyWorkloadError(
       `unsupported topology cost revision ${costModel.revision}`,
@@ -365,10 +412,74 @@ export function compileTopologyExpertLoadPlan(
         warmLoadBytes: 0,
         coldLoadBytes: 0,
       }],
+      expertPlacement: {
+        strategy: load.placement.strategy,
+        expertIds: [...load.placement.expertIds],
+      },
     },
     costModel,
   );
   return compiler.compileExpertLoad(load);
+}
+
+export function resolveTopologyExpertOwnerPlacement(
+  scenario: SimulationScenario,
+  placement: TopologyExpertPlacement,
+  expertId: string,
+): PartitionPlacement {
+  validateExpertPlacement(placement, `scenario ${scenario.id}`);
+  const expertIndex = placement.expertIds.indexOf(expertId);
+  if (expertIndex < 0) {
+    throw new TopologyWorkloadError(
+      `routed expert ${expertId} is absent from the placement universe`,
+    );
+  }
+  const ffnPlacements = scenario.placements.filter((candidate) => (
+    candidate.requiredCapabilities.includes("ffn")
+  ));
+  const expertDegree = scenario.execution.parallelism.expert;
+  if (expertDegree <= 1) {
+    throw new TopologyWorkloadError(
+      `scenario ${scenario.id} has no expert-parallel owner mapping`,
+    );
+  }
+  if (ffnPlacements.length !== expertDegree) {
+    throw new TopologyWorkloadError(
+      `scenario ${scenario.id} has ${ffnPlacements.length} FFN placements for EP=${expertDegree}`,
+    );
+  }
+  const groups = scenario.groups.filter((candidate) => (
+    candidate.orderedRanks.length === ffnPlacements.length
+    && candidate.orderedRanks.every((rank) => (
+      ffnPlacements.some((candidatePlacement) => (
+        candidatePlacement.deviceId === rank.deviceId
+      ))
+    ))
+  ));
+  if (groups.length !== 1) {
+    throw new TopologyWorkloadError(
+      `scenario ${scenario.id} requires exactly one communicator for expert placements; found ${groups.length}`,
+    );
+  }
+  const orderedPlacements = groups[0].orderedRanks.map((rank) => (
+    ffnPlacements.find((candidate) => candidate.deviceId === rank.deviceId)
+  )).filter(
+    (candidate): candidate is PartitionPlacement => candidate !== undefined,
+  );
+  if (orderedPlacements.length !== ffnPlacements.length) {
+    throw new TopologyWorkloadError(
+      `scenario ${scenario.id} cannot order all expert placements`,
+    );
+  }
+  const ownerIndex = placement.strategy === "round_robin"
+    ? expertIndex % orderedPlacements.length
+    : Math.min(
+        orderedPlacements.length - 1,
+        Math.floor(
+          expertIndex * orderedPlacements.length / placement.expertIds.length,
+        ),
+      );
+  return orderedPlacements[ownerIndex];
 }
 
 function compileTopologyWorkload(
@@ -439,7 +550,9 @@ export function simulateTopologyWorkload(
       costModel.transportCurves === undefined
         ? "transport timing uses declared directed-link bandwidth and latency"
         : "transport timing uses exact-path calibration curves without extrapolation",
-      "expert-load bytes are evenly sharded across FFN placements",
+      scenario.execution.parallelism.expert > 1
+        ? "routed experts use the profile's explicit owner mapping; demand loads, prefetches, and FFN work execute only on the owning EP rank"
+        : "tensor-sharded FFN expert-load bytes are evenly divided across participating FFN placements",
       "warm and cold expert loads originate in each FFN placement's local host domain",
       "foreground completion is the final workload-unit terminal; independent background transfers may drain afterward",
     ],
@@ -527,6 +640,7 @@ class WorkloadPlanCompiler {
   private readonly steps: PlanStep[] = [];
   private nextStepId = 0;
   private readonly collectiveSequenceByGroup = new Map<string, number>();
+  private readonly expertOwnerByKey = new Map<string, PartitionPlacement>();
   private previousTerminalStepId?: number;
   private readonly backgroundPrefetchTerminalByDomain = new Map<
     string,
@@ -600,8 +714,12 @@ class WorkloadPlanCompiler {
         `scenario ${this.scenario.id} has no FFN placement for ${load.id}`,
       );
     }
+    const loadPlacements =
+      this.scenario.execution.parallelism.expert > 1
+        ? [this.expertOwnerPlacement(load.expertId, ffnPlacements)]
+        : ffnPlacements;
     const placementsByTarget = new Map<string, PartitionPlacement[]>();
-    for (const placement of ffnPlacements) {
+    for (const placement of loadPlacements) {
       const targetDomainId = workspaceDomain(placement);
       const placements = placementsByTarget.get(targetDomainId) ?? [];
       placements.push(placement);
@@ -639,7 +757,7 @@ class WorkloadPlanCompiler {
           load.bytes,
           targetPlacements.length,
           `expert load ${load.id} target bytes`,
-        ) / ffnPlacements.length,
+        ) / loadPlacements.length,
       );
       const sourceAllocationId = load.sourceTier === "warm"
         ? `expert-warm-cache:${target.nodeId}`
@@ -671,12 +789,12 @@ class WorkloadPlanCompiler {
     }
     if (this.steps.length === 0) {
       return {
-        load: { ...load },
+        load: cloneExpertLoad(load),
         terminalStepIds: [],
       };
     }
     return {
-      load: { ...load },
+      load: cloneExpertLoad(load),
       plan: {
         contractRevision: PLAN_CONTRACT_REVISION,
         id: `topology-expert-load:${load.id}`,
@@ -719,12 +837,18 @@ class WorkloadPlanCompiler {
     const ffnPlacements = this.placements.filter((placement) => (
       placement.requiredCapabilities.includes("ffn")
     ));
-    const targets = unique(ffnPlacements.map((placement) => (
-      this.cacheSourceDomain(workspaceDomain(placement))
-    )));
     for (const prefetch of prefetches) {
+      const targetPlacements = (
+        prefetch.expertId !== undefined
+        && this.scenario.execution.parallelism.expert > 1
+      )
+        ? [this.expertOwnerPlacement(prefetch.expertId, ffnPlacements)]
+        : ffnPlacements;
+      const targets = unique(targetPlacements.map((placement) => (
+        this.cacheSourceDomain(workspaceDomain(placement))
+      )));
       for (const targetDomainId of targets) {
-        const localPlacementCount = ffnPlacements.filter((placement) => (
+        const localPlacementCount = targetPlacements.filter((placement) => (
           this.cacheSourceDomain(workspaceDomain(placement)) === targetDomainId
         )).length;
         const shardBytes = Math.ceil(
@@ -733,7 +857,7 @@ class WorkloadPlanCompiler {
             localPlacementCount,
             "background prefetch node bytes",
           )
-          / Math.max(1, ffnPlacements.length),
+          / Math.max(1, targetPlacements.length),
         );
         const target = this.scenario.memoryDomains.find(
           (domain) => domain.id === targetDomainId,
@@ -746,7 +870,7 @@ class WorkloadPlanCompiler {
             `background prefetch ${prefetch.id} lacks storage/warm domains for ${targetDomainId}`,
           );
         }
-        const placement = ffnPlacements.find((candidate) => (
+        const placement = targetPlacements.find((candidate) => (
           this.cacheSourceDomain(workspaceDomain(candidate)) === targetDomainId
         ));
         if (!placement) {
@@ -1044,38 +1168,63 @@ class WorkloadPlanCompiler {
       [attentionReduced],
       attentionPlacements.map((placement) => workspaceId(placement)),
     );
-    const expertTerminals = ffnPlacements.map((placement) => {
+    const workItemsByPlacement = new Map<string, number>();
+    for (const routed of unit.routedExperts ?? []) {
+      const owner = this.expertOwnerPlacement(
+        routed.expertId,
+        ffnPlacements,
+      );
+      workItemsByPlacement.set(
+        owner.partitionId,
+        checkedAdd(
+          workItemsByPlacement.get(owner.partitionId) ?? 0,
+          1,
+          `expert work on ${owner.partitionId}`,
+        ),
+      );
+    }
+    const activeFfnPlacements: PartitionPlacement[] = [];
+    const expertTerminals = ffnPlacements.flatMap((placement) => {
+      const workItems = workItemsByPlacement.get(placement.partitionId) ?? 0;
+      if (workItems === 0) {
+        return [];
+      }
+      activeFfnPlacements.push(placement);
       const cacheLoad = this.prepareCacheLoad(
         placement,
         unit,
         [dispatched],
-        expertDegree,
+        1,
       );
       const durationNs = checkedAdd(
-        this.computeDuration(
+        this.computeDurationForWorkItems(
           placement.deviceId,
           "ffn",
-          unit.targetTokenWidth,
-          unit.activeExperts,
-          true,
+          workItems,
+          1,
         ),
         cacheLoad.localMemoryPenaltyNs,
         "expert FFN duration",
       );
-      return this.addCompute(
+      return [this.addCompute(
         placement,
         "ffn",
         durationNs,
         cacheLoad.dependencies,
         [expertHotCacheId(placement)],
-      );
+      )];
     });
+    if (expertTerminals.length === 0) {
+      throw new TopologyWorkloadError(
+        `routed unit ${unit.id} produced no expert work`,
+      );
+    }
     return this.addCollective(
       group,
       EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
       expertBytes,
       expertTerminals,
-      ffnPlacements.map((placement) => workspaceId(placement)),
+      activeFfnPlacements.map((placement) => workspaceId(placement)),
     );
   }
 
@@ -1137,6 +1286,14 @@ class WorkloadPlanCompiler {
     if (!placement.requiredCapabilities.includes("ffn")) {
       return { dependencies, localMemoryPenaltyNs: 0 };
     }
+    if (unit.routedExperts !== undefined) {
+      return this.prepareRoutedCacheLoads(
+        placement,
+        unit,
+        dependencies,
+        shardCount,
+      );
+    }
     const effectiveBytes = checkedAdd(
       unit.warmLoadBytes,
       checkedMultiply(
@@ -1152,17 +1309,43 @@ class WorkloadPlanCompiler {
     const shardBytes = Math.ceil(effectiveBytes / shardCount);
     const targetDomain = workspaceDomain(placement);
     const sourceDomain = this.cacheSourceDomain(targetDomain);
-    const prefetchDependencies = (unit.requiredPrefetchIds ?? []).map(
+    const prefetchDependencies = (unit.requiredPrefetchIds ?? []).flatMap(
       (prefetchId) => {
+        const prefetch = this.profile.backgroundPrefetches?.find(
+          (candidate) => candidate.id === prefetchId,
+        );
+        if (prefetch === undefined) {
+          throw new TopologyWorkloadError(
+            `unit ${unit.id} requires unknown background prefetch ${prefetchId}`,
+          );
+        }
+        if (
+          prefetch.expertId !== undefined
+          && this.scenario.execution.parallelism.expert > 1
+        ) {
+          const ffnPlacements = this.placements.filter((candidate) => (
+            candidate.requiredCapabilities.includes("ffn")
+          ));
+          const owner = this.expertOwnerPlacement(
+            prefetch.expertId,
+            ffnPlacements,
+          );
+          const ownerSourceDomain = this.cacheSourceDomain(
+            workspaceDomain(owner),
+          );
+          if (ownerSourceDomain !== sourceDomain) {
+            return [];
+          }
+        }
         const terminal = this.backgroundPrefetchTerminalByIdAndDomain.get(
           prefetchDomainKey(prefetchId, sourceDomain),
         );
-        if (terminal === undefined) {
-          throw new TopologyWorkloadError(
-            `unit ${unit.id} requires unresolved background prefetch ${prefetchId} for ${sourceDomain}`,
-          );
+        if (terminal !== undefined) {
+          return [terminal];
         }
-        return terminal;
+        throw new TopologyWorkloadError(
+          `unit ${unit.id} requires unresolved background prefetch ${prefetchId} for ${sourceDomain}`,
+        );
       },
     );
     const priorWarmWriter =
@@ -1197,6 +1380,173 @@ class WorkloadPlanCompiler {
         : [transferSteps[transferSteps.length - 1]],
       localMemoryPenaltyNs: 0,
     };
+  }
+
+  private prepareRoutedCacheLoads(
+    placement: PartitionPlacement,
+    unit: TopologyWorkUnit,
+    dependencies: readonly number[],
+    shardCount: number,
+  ): {
+    readonly dependencies: readonly number[];
+    readonly localMemoryPenaltyNs: number;
+  } {
+    const routedExperts = unit.routedExperts;
+    if (routedExperts === undefined) {
+      throw new TopologyWorkloadError(
+        `routed cache load ${unit.id} lacks expert assignments`,
+      );
+    }
+    const ffnPlacements = this.placements.filter((candidate) => (
+      candidate.requiredCapabilities.includes("ffn")
+    ));
+    const localRoutes = this.scenario.execution.parallelism.expert > 1
+      ? routedExperts.filter((routed) => (
+          this.expertOwnerPlacement(
+            routed.expertId,
+            ffnPlacements,
+          ).partitionId === placement.partitionId
+        ))
+      : routedExperts;
+    const warmBytes = Math.ceil(localRoutes.reduce((sum, routed) => (
+      routed.sourceTier === "warm"
+        ? checkedAdd(sum, routed.loadBytes, "local warm expert bytes")
+        : sum
+    ), 0) / shardCount);
+    const coldBytes = Math.ceil(localRoutes.reduce((sum, routed) => (
+      routed.sourceTier === "cold"
+        ? checkedAdd(sum, routed.loadBytes, "local cold expert bytes")
+        : sum
+    ), 0) / shardCount);
+    if (warmBytes === 0 && coldBytes === 0) {
+      return { dependencies, localMemoryPenaltyNs: 0 };
+    }
+    const targetDomain = workspaceDomain(placement);
+    const warmDomain = this.cacheSourceDomain(targetDomain);
+    const prefetchDependencies = warmBytes === 0
+      ? []
+      : (unit.requiredPrefetchIds ?? []).flatMap((prefetchId) => (
+          this.prefetchDependency(
+            unit,
+            prefetchId,
+            warmDomain,
+            ffnPlacements,
+          )
+        ));
+    const priorWarmWriter = warmBytes === 0
+      ? undefined
+      : this.backgroundPrefetchTerminalByDomain.get(warmDomain);
+    const warmDependencies = uniqueNumbers([
+      ...dependencies,
+      ...prefetchDependencies,
+      ...(priorWarmWriter === undefined ? [] : [priorWarmWriter]),
+    ]);
+    const terminals: number[] = [];
+    let localMemoryPenaltyNs = 0;
+    if (warmBytes > 0) {
+      if (warmDomain === targetDomain) {
+        localMemoryPenaltyNs = this.domainDuration(targetDomain, warmBytes);
+      } else {
+        const warmSteps = this.addTransferPath(
+          warmDomain,
+          targetDomain,
+          warmBytes,
+          warmDependencies,
+          [this.rank(placement.deviceId)],
+          {
+            sourceAllocationId: `expert-warm-cache:${
+              this.device(placement.deviceId).nodeId
+            }`,
+            targetAllocationId: expertHotCacheId(placement),
+          },
+        );
+        if (warmSteps.length === 0) {
+          throw new TopologyWorkloadError(
+            `routed unit ${unit.id} produced no warm path to ${targetDomain}`,
+          );
+        }
+        terminals.push(warmSteps[warmSteps.length - 1]);
+      }
+    }
+    if (coldBytes > 0) {
+      const nodeId = this.device(placement.deviceId).nodeId;
+      const storage = this.scenario.memoryDomains.find((domain) => (
+        domain.nodeId === nodeId && domain.kind === "storage"
+      ));
+      if (storage === undefined) {
+        throw new TopologyWorkloadError(
+          `routed unit ${unit.id} lacks cold storage on ${nodeId}`,
+        );
+      }
+      const coldSteps = this.addTransferPath(
+        storage.id,
+        targetDomain,
+        coldBytes,
+        terminals.length === 0
+          ? dependencies
+          : [terminals[terminals.length - 1]],
+        [this.rank(placement.deviceId)],
+        {
+          sourceAllocationId: `expert-backing:${nodeId}`,
+          targetAllocationId: expertHotCacheId(placement),
+        },
+      );
+      if (coldSteps.length === 0) {
+        throw new TopologyWorkloadError(
+          `routed unit ${unit.id} produced no cold path to ${targetDomain}`,
+        );
+      }
+      terminals.push(coldSteps[coldSteps.length - 1]);
+    }
+    return {
+      dependencies: uniqueNumbers([
+        ...terminals,
+        ...(warmBytes > 0 && warmDomain === targetDomain
+          ? warmDependencies
+          : []),
+      ]),
+      localMemoryPenaltyNs,
+    };
+  }
+
+  private prefetchDependency(
+    unit: TopologyWorkUnit,
+    prefetchId: string,
+    sourceDomain: string,
+    ffnPlacements: readonly PartitionPlacement[],
+  ): readonly number[] {
+    const prefetch = this.profile.backgroundPrefetches?.find(
+      (candidate) => candidate.id === prefetchId,
+    );
+    if (prefetch === undefined) {
+      throw new TopologyWorkloadError(
+        `unit ${unit.id} requires unknown background prefetch ${prefetchId}`,
+      );
+    }
+    if (
+      prefetch.expertId !== undefined
+      && this.scenario.execution.parallelism.expert > 1
+    ) {
+      const owner = this.expertOwnerPlacement(
+        prefetch.expertId,
+        ffnPlacements,
+      );
+      const ownerSourceDomain = this.cacheSourceDomain(
+        workspaceDomain(owner),
+      );
+      if (ownerSourceDomain !== sourceDomain) {
+        return [];
+      }
+    }
+    const terminal = this.backgroundPrefetchTerminalByIdAndDomain.get(
+      prefetchDomainKey(prefetchId, sourceDomain),
+    );
+    if (terminal === undefined) {
+      throw new TopologyWorkloadError(
+        `unit ${unit.id} requires unresolved background prefetch ${prefetchId} for ${sourceDomain}`,
+      );
+    }
+    return [terminal];
   }
 
   private compilePlacement(
@@ -1364,15 +1714,6 @@ class WorkloadPlanCompiler {
     activeExperts: number,
     expertRouted: boolean,
   ): number {
-    const deviceKind = this.device(deviceId).kind;
-    const costs = this.costModel.deviceCosts[deviceKind];
-    const perToken = capability === "attention"
-      ? costs.attentionNsPerToken
-      : capability === "ffn"
-        ? costs.ffnNsPerToken
-        : capability === "draft"
-          ? costs.draftNsPerToken
-          : costs.lookupNsPerToken;
     const workItems = checkedMultiply(
       tokenWidth,
       checkedMultiply(
@@ -1382,6 +1723,36 @@ class WorkloadPlanCompiler {
       ),
       "compute token batch",
     );
+    const shardDegree = capability === "ffn" && expertRouted
+      ? this.scenario.execution.parallelism.expert
+      : capability === "attention" || capability === "ffn"
+        ? this.scenario.execution.parallelism.tensor
+        : 1;
+    return this.computeDurationForWorkItems(
+      deviceId,
+      capability,
+      workItems,
+      shardDegree,
+    );
+  }
+
+  private computeDurationForWorkItems(
+    deviceId: string,
+    capability: TopologyComputeCapability,
+    workItems: number,
+    shardDegree: number,
+  ): number {
+    const deviceKind = this.device(deviceId).kind;
+    const costs = this.costModel.deviceCosts[deviceKind];
+    const perToken = capability === "attention"
+      ? costs.attentionNsPerToken
+      : capability === "ffn"
+        ? costs.ffnNsPerToken
+        : capability === "draft"
+          ? costs.draftNsPerToken
+          : costs.lookupNsPerToken;
+    assertPositiveSafeInteger(workItems, `${capability} work items`);
+    assertPositiveSafeInteger(shardDegree, `${capability} shard degree`);
     const validRange = this.costModel.validWorkItemRanges?.[deviceKind][
       capability
     ];
@@ -1401,11 +1772,6 @@ class WorkloadPlanCompiler {
       workItems,
       "compute duration",
     );
-    const shardDegree = capability === "ffn" && expertRouted
-      ? this.scenario.execution.parallelism.expert
-      : capability === "attention" || capability === "ffn"
-        ? this.scenario.execution.parallelism.tensor
-        : 1;
     return checkedAdd(
       costs.invocationOverheadNs,
       Math.ceil(unshardedDuration / shardDegree),
@@ -1429,6 +1795,42 @@ class WorkloadPlanCompiler {
       );
     }
     return groups[0];
+  }
+
+  private expertOwnerPlacement(
+    expertId: string,
+    placements: readonly PartitionPlacement[],
+  ): PartitionPlacement {
+    const cacheKey = `${expertId}\u0000${
+      placements.map((entry) => entry.partitionId).sort().join("\u0000")
+    }`;
+    const cached = this.expertOwnerByKey.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const expertPlacement = this.profile.expertPlacement;
+    if (expertPlacement === undefined) {
+      throw new TopologyWorkloadError(
+        `routed expert ${expertId} requires an explicit expert placement`,
+      );
+    }
+    const owner = resolveTopologyExpertOwnerPlacement(
+      this.scenario,
+      expertPlacement,
+      expertId,
+    );
+    if (
+      placements.length !== this.scenario.execution.parallelism.expert
+      || !placements.some((candidate) => (
+        candidate.partitionId === owner.partitionId
+      ))
+    ) {
+      throw new TopologyWorkloadError(
+        `scenario ${this.scenario.id} cannot resolve ${expertId} in the supplied FFN placements`,
+      );
+    }
+    this.expertOwnerByKey.set(cacheKey, owner);
+    return owner;
   }
 
   private placementForDevice(deviceId: string): PartitionPlacement {
@@ -1687,6 +2089,12 @@ function validateInputs(
   if (profile.units.length === 0) {
     throw new TopologyWorkloadError("profile must contain at least one work unit");
   }
+  if (profile.expertPlacement !== undefined) {
+    validateExpertPlacement(
+      profile.expertPlacement,
+      `profile ${profile.id}`,
+    );
+  }
   const prefetchIds = new Set<string>();
   for (const prefetch of profile.backgroundPrefetches ?? []) {
     if (prefetch.id.length === 0 || prefetchIds.has(prefetch.id)) {
@@ -1695,6 +2103,20 @@ function validateInputs(
       );
     }
     prefetchIds.add(prefetch.id);
+    if (profile.expertPlacement !== undefined) {
+      if (
+        prefetch.expertId === undefined
+        || !profile.expertPlacement.expertIds.includes(prefetch.expertId)
+      ) {
+        throw new TopologyWorkloadError(
+          `background prefetch ${prefetch.id} requires a known expert id`,
+        );
+      }
+    } else if (prefetch.expertId !== undefined) {
+      throw new TopologyWorkloadError(
+        `background prefetch ${prefetch.id} cannot name an expert without a placement`,
+      );
+    }
     if (
       !Number.isSafeInteger(prefetch.afterUnitIndex)
       || prefetch.afterUnitIndex < -1
@@ -1919,6 +2341,86 @@ function validateInputs(
       );
     }
     assertPositiveSafeInteger(unit.activeExperts, `${unit.id} active experts`);
+    if (unit.expertRouted === true) {
+      if (
+        profile.expertPlacement === undefined
+        || unit.routedExperts === undefined
+      ) {
+        throw new TopologyWorkloadError(
+          `routed unit ${unit.id} requires explicit placement and routed experts`,
+        );
+      }
+      const expectedRoutes = checkedMultiply(
+        checkedMultiply(
+          unit.targetTokenWidth,
+          profile.batchSize,
+          `${unit.id} routed token batch`,
+        ),
+        unit.activeExperts,
+        `${unit.id} routed expert assignments`,
+      );
+      if (unit.routedExperts.length !== expectedRoutes) {
+        throw new TopologyWorkloadError(
+          `routed unit ${unit.id} has ${unit.routedExperts.length}/${expectedRoutes} expert assignments`,
+        );
+      }
+      if (unit.activeExperts > profile.expertPlacement.expertIds.length) {
+        throw new TopologyWorkloadError(
+          `routed unit ${unit.id} active expert count exceeds its placement universe`,
+        );
+      }
+      for (const [routeIndex, routed] of unit.routedExperts.entries()) {
+        if (
+          routed.expertId.length === 0
+          || !profile.expertPlacement.expertIds.includes(routed.expertId)
+        ) {
+          throw new TopologyWorkloadError(
+            `routed unit ${unit.id} has unknown expert ${routed.expertId}`,
+          );
+        }
+        if (
+          routed.sourceTier !== "hot"
+          && routed.sourceTier !== "warm"
+          && routed.sourceTier !== "cold"
+        ) {
+          throw new TopologyWorkloadError(
+            `routed unit ${unit.id} has invalid source tier ${String(routed.sourceTier)}`,
+          );
+        }
+        assertNonNegativeSafeInteger(
+          routed.loadBytes,
+          `${unit.id} routed expert bytes`,
+        );
+        if (routed.sourceTier === "hot" && routed.loadBytes !== 0) {
+          throw new TopologyWorkloadError(
+            `routed unit ${unit.id} hot expert ${routed.expertId} cannot load bytes`,
+          );
+        }
+        if (routed.sourceTier !== "hot" && routed.loadBytes === 0) {
+          throw new TopologyWorkloadError(
+            `routed unit ${unit.id} ${routed.sourceTier} expert ${routed.expertId} requires positive load bytes`,
+          );
+        }
+        if ((routeIndex + 1) % unit.activeExperts === 0) {
+          const tokenRoutes = unit.routedExperts.slice(
+            routeIndex + 1 - unit.activeExperts,
+            routeIndex + 1,
+          );
+          if (
+            new Set(tokenRoutes.map((entry) => entry.expertId)).size
+            !== tokenRoutes.length
+          ) {
+            throw new TopologyWorkloadError(
+              `routed unit ${unit.id} assigns one token to the same expert more than once`,
+            );
+          }
+        }
+      }
+    } else if (unit.routedExperts !== undefined) {
+      throw new TopologyWorkloadError(
+        `non-routed unit ${unit.id} cannot declare routed experts`,
+      );
+    }
     assertNonNegativeSafeInteger(unit.warmLoadBytes, `${unit.id} warm bytes`);
     assertNonNegativeSafeInteger(unit.coldLoadBytes, `${unit.id} cold bytes`);
   }
@@ -1928,6 +2430,39 @@ function validateInputs(
   if (scenario.execution.maxEvents <= 0) {
     throw new TopologyWorkloadError("scenario maxEvents must be positive");
   }
+}
+
+function validateExpertPlacement(
+  placement: TopologyExpertPlacement,
+  label: string,
+): void {
+  if (
+    placement.strategy !== "contiguous"
+    && placement.strategy !== "round_robin"
+  ) {
+    throw new TopologyWorkloadError(
+      `${label} has invalid expert placement strategy ${String(placement.strategy)}`,
+    );
+  }
+  if (
+    placement.expertIds.length === 0
+    || placement.expertIds.some((expertId) => expertId.length === 0)
+    || new Set(placement.expertIds).size !== placement.expertIds.length
+  ) {
+    throw new TopologyWorkloadError(
+      `${label} expert placement ids must be non-empty and unique`,
+    );
+  }
+}
+
+function cloneExpertLoad(load: TopologyExpertLoad): TopologyExpertLoad {
+  return {
+    ...load,
+    placement: {
+      strategy: load.placement.strategy,
+      expertIds: [...load.placement.expertIds],
+    },
+  };
 }
 
 function workspaceId(placement: PartitionPlacement): string {

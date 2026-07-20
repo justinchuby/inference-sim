@@ -16,6 +16,13 @@ import {
   topologyProfileFromSpeculative,
 } from "../src/index.js";
 
+function expertPlacement(
+  strategy: "contiguous" | "round_robin" = "contiguous",
+  expertIds: readonly string[] = ["e0", "e1", "e2", "e3"],
+) {
+  return { strategy, expertIds };
+}
+
 describe("topology-aware workload execution", () => {
   it("rejects an empty target-only profile before plan execution", () => {
     expect(() => targetOnlyTopologyProfile(0)).toThrow(
@@ -43,8 +50,10 @@ describe("topology-aware workload execution", () => {
       const scenario = buildScenarioPreset(name);
       const cold = compileTopologyExpertLoadPlan(scenario, {
         id: `cold-${name}`,
+        expertId: "e0",
         sourceTier: "cold",
         bytes: 64 * 1024 ** 2,
+        placement: expertPlacement(),
       });
 
       expect(cold.plan).toBeDefined();
@@ -74,8 +83,10 @@ describe("topology-aware workload execution", () => {
 
       const warm = compileTopologyExpertLoadPlan(scenario, {
         id: `warm-${name}`,
+        expertId: "e0",
         sourceTier: "warm",
         bytes: 64 * 1024 ** 2,
+        placement: expertPlacement(),
       });
       if (localWarmScenarios.has(name)) {
         expect(warm.plan).toBeUndefined();
@@ -103,19 +114,32 @@ describe("topology-aware workload execution", () => {
 
     expect(() => compileTopologyExpertLoadPlan(scenario, {
       id: "",
+      expertId: "e0",
       sourceTier: "cold",
       bytes: 1,
+      placement: expertPlacement(),
     })).toThrow("expert load id must be non-empty");
     expect(() => compileTopologyExpertLoadPlan(scenario, {
       id: "zero",
+      expertId: "e0",
       sourceTier: "cold",
       bytes: 0,
+      placement: expertPlacement(),
     })).toThrow("expert load zero bytes must be a positive safe integer");
     expect(() => compileTopologyExpertLoadPlan(scenario, {
       id: "invalid-tier",
+      expertId: "e0",
       sourceTier: "remote" as "cold",
       bytes: 1,
+      placement: expertPlacement(),
     })).toThrow("expert load invalid-tier has invalid source tier remote");
+    expect(() => compileTopologyExpertLoadPlan(scenario, {
+      id: "unknown-expert",
+      expertId: "e9",
+      sourceTier: "cold",
+      bytes: 1,
+      placement: expertPlacement(),
+    })).toThrow("expert e9 is absent from the placement universe");
   });
 
   it("executes speculative and expert profiles on every topology family", () => {
@@ -182,6 +206,7 @@ describe("topology-aware workload execution", () => {
     const profile = {
       id: "routed-moe",
       batchSize: 1,
+      expertPlacement: expertPlacement(),
       units: [{
         id: "moe-0",
         targetTokenWidth: 3,
@@ -189,6 +214,14 @@ describe("topology-aware workload execution", () => {
         draftTokens: 0,
         activeExperts: 2,
         expertRouted: true,
+        routedExperts: [
+          { expertId: "e0", sourceTier: "hot" as const, loadBytes: 0 },
+          { expertId: "e2", sourceTier: "hot" as const, loadBytes: 0 },
+          { expertId: "e0", sourceTier: "hot" as const, loadBytes: 0 },
+          { expertId: "e2", sourceTier: "hot" as const, loadBytes: 0 },
+          { expertId: "e0", sourceTier: "hot" as const, loadBytes: 0 },
+          { expertId: "e2", sourceTier: "hot" as const, loadBytes: 0 },
+        ],
         warmLoadBytes: 0,
         coldLoadBytes: 0,
       }],
@@ -239,6 +272,171 @@ describe("topology-aware workload execution", () => {
       expect(collectives[2].dependencies).toEqual(ffn.map((step) => step.id));
       expect(result.execution.status).toBe("succeeded");
     }
+  });
+
+  it("executes skewed routed FFN work only on the owning EP rank", () => {
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        id: "skewed-routed-moe",
+        batchSize: 1,
+        expertPlacement: expertPlacement(),
+        units: [{
+          id: "skewed-0",
+          targetTokenWidth: 3,
+          committedTokens: 3,
+          draftTokens: 0,
+          activeExperts: 1,
+          expertRouted: true,
+          routedExperts: Array.from({ length: 3 }, () => ({
+            expertId: "e0",
+            sourceTier: "hot" as const,
+            loadBytes: 0,
+          })),
+          warmLoadBytes: 0,
+          coldLoadBytes: 0,
+        }],
+      },
+    );
+    const ffn = result.plan.steps.filter((step) => (
+      step.operation.kind === "compute"
+      && step.operation.capability === "ffn"
+    ));
+    const gather = result.plan.steps.filter((step) => (
+      step.operation.kind === "collective"
+      && step.operation.algorithm === "all_to_all_v"
+    ))[1];
+
+    expect(ffn).toHaveLength(1);
+    expect(ffn[0].participants).toEqual(["rank-0"]);
+    expect(ffn[0].reads).toContain("expert-hot-cache:target-shard-0");
+    expect(gather.reads).toEqual(["workspace-0"]);
+  });
+
+  it("resolves contiguous and round-robin expert owners by communicator rank", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const compile = (strategy: "contiguous" | "round_robin") => (
+      compileTopologyExpertLoadPlan(scenario, {
+        id: `${strategy}-e1`,
+        expertId: "e1",
+        sourceTier: "cold",
+        bytes: 64 * 1024 ** 2,
+        placement: expertPlacement(strategy),
+      })
+    );
+    const targetCache = (strategy: "contiguous" | "round_robin") => (
+      compile(strategy).plan?.steps.flatMap((step) => step.writes)
+        .find((allocation) => allocation.startsWith("expert-hot-cache:"))
+    );
+
+    expect(targetCache("contiguous"))
+      .toBe("expert-hot-cache:target-shard-0");
+    expect(targetCache("round_robin"))
+      .toBe("expert-hot-cache:target-shard-1");
+  });
+
+  it("keeps routed warm and cold loads on distinct physical source paths", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        id: "mixed-tier-routes",
+        batchSize: 1,
+        expertPlacement: expertPlacement(),
+        units: [{
+          id: "mixed-0",
+          targetTokenWidth: 1,
+          committedTokens: 1,
+          draftTokens: 0,
+          activeExperts: 2,
+          expertRouted: true,
+          routedExperts: [
+            {
+              expertId: "e0",
+              sourceTier: "warm",
+              loadBytes: expertBytes,
+            },
+            {
+              expertId: "e2",
+              sourceTier: "cold",
+              loadBytes: expertBytes,
+            },
+          ],
+          warmLoadBytes: expertBytes,
+          coldLoadBytes: expertBytes,
+        }],
+      },
+    );
+    const transfers = result.plan.steps.filter((step) => (
+      step.operation.kind === "transfer"
+    ));
+    const warm = transfers.find((step) => (
+      step.reads.includes("expert-warm-cache:node0")
+      && step.writes.includes("expert-hot-cache:target-shard-0")
+    ));
+    const coldStart = transfers.find((step) => (
+      step.reads.includes("expert-backing:node0")
+      && step.operation.kind === "transfer"
+      && step.operation.linkId === "node0:storage-read"
+    ));
+    const coldFinish = transfers.find((step) => (
+      step.writes.includes("expert-hot-cache:target-shard-1")
+    ));
+
+    expect(warm).toBeDefined();
+    expect(coldStart).toBeDefined();
+    expect(coldFinish).toBeDefined();
+    expect(coldFinish?.dependencies).toContain(coldStart?.id);
+    expect(warm?.dependencies).not.toContain(coldStart?.id);
+  });
+
+  it("rejects incomplete, duplicate, and unplaced routed assignments", () => {
+    const base = {
+      id: "invalid-routes",
+      batchSize: 1,
+      expertPlacement: expertPlacement(),
+    };
+    const unit = {
+      id: "route-0",
+      targetTokenWidth: 1,
+      committedTokens: 1,
+      draftTokens: 0,
+      activeExperts: 2,
+      expertRouted: true,
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
+    } as const;
+    const scenario = buildScenarioPreset("multi-gpu");
+
+    expect(() => simulateTopologyWorkload(scenario, {
+      ...base,
+      units: [{
+        ...unit,
+        routedExperts: [
+          { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
+        ],
+      }],
+    })).toThrow("has 1/2 expert assignments");
+    expect(() => simulateTopologyWorkload(scenario, {
+      ...base,
+      units: [{
+        ...unit,
+        routedExperts: [
+          { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
+          { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
+        ],
+      }],
+    })).toThrow("same expert more than once");
+    expect(() => simulateTopologyWorkload(scenario, {
+      ...base,
+      units: [{
+        ...unit,
+        routedExperts: [
+          { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
+          { expertId: "e9", sourceTier: "hot", loadBytes: 0 },
+        ],
+      }],
+    })).toThrow("unknown expert e9");
   });
 
   it("does not emit expert collectives for dense target-only work", () => {
@@ -388,6 +586,9 @@ describe("topology-aware workload execution", () => {
       tokenIntervalNs: 1,
     });
     const profile = topologyProfileFromExpertCache(cache, expertBytes);
+    const hasWarmDemand = profile.units.some((unit) => (
+      unit.routedExperts?.some((routed) => routed.sourceTier === "warm")
+    ));
     expect(profile.backgroundPrefetches?.length).toBeGreaterThan(0);
 
     for (const name of SCENARIO_PRESET_NAMES) {
@@ -404,8 +605,13 @@ describe("topology-aware workload execution", () => {
           )
         ),
       );
+      const prefetchStorageTransfers = storageTransfers.filter(
+        (event) => event.writes.some(
+          (allocation) => allocation.startsWith("expert-warm-cache:"),
+        ),
+      );
       expect(storageTransfers.length).toBeGreaterThan(0);
-      expect(storageTransfers.every((event) => event.writes.some(
+      expect(prefetchStorageTransfers.every((event) => event.writes.some(
         (allocation) => allocation.startsWith("expert-warm-cache:"),
       ))).toBe(true);
       const compute = result.execution.trace.operations.filter(
@@ -417,16 +623,24 @@ describe("topology-aware workload execution", () => {
           allocation.startsWith("expert-warm-cache:")
         )),
       );
-      if (name === "cpu-only" || name === "unified-memory") {
+      if (
+        !hasWarmDemand
+        || name === "cpu-only"
+        || name === "unified-memory"
+      ) {
         expect(warmConsumers).toHaveLength(0);
       } else {
-        expect(warmConsumers.length).toBeGreaterThan(0);
+        expect(warmConsumers.length, name).toBeGreaterThan(0);
       }
-      expect(storageTransfers.every((producer) => (
-        warmConsumers.every((consumer) => (
-          producer.finishNs <= consumer.startNs
-          || consumer.finishNs <= producer.startNs
-        ))
+      expect(prefetchStorageTransfers.every((producer) => (
+        warmConsumers
+          .filter((consumer) => producer.writes.some(
+            (allocation) => consumer.reads.includes(allocation),
+          ))
+          .every((consumer) => (
+            producer.finishNs <= consumer.startNs
+            || consumer.finishNs <= producer.startNs
+          ))
       ))).toBe(true);
       const foreground = result.execution.trace.operations.find(
         (event) => event.stepId === result.foregroundTerminalStepId,
@@ -439,17 +653,18 @@ describe("topology-aware workload execution", () => {
       );
       expect(result.metrics.backgroundDrainNs).toBeGreaterThanOrEqual(0);
       if (name === "multi-node") {
-        const node0 = storageTransfers.find((event) => (
+        const storageLinkIds = new Set(prefetchStorageTransfers.map((event) => (
           result.plan.steps[event.stepId].operation.kind === "transfer"
-          && result.plan.steps[event.stepId].operation.linkId
-            === "node0:storage-read"
-        ));
-        const node1 = storageTransfers.find((event) => (
-          result.plan.steps[event.stepId].operation.kind === "transfer"
-          && result.plan.steps[event.stepId].operation.linkId
-            === "node1:storage-read"
-        ));
-        expect(node0?.startNs).toBe(node1?.startNs);
+            ? result.plan.steps[event.stepId].operation.linkId
+            : ""
+        )));
+        expect(storageLinkIds).toEqual(new Set([
+          "node0:storage-read",
+          "node1:storage-read",
+        ]));
+        expect(prefetchStorageTransfers).toHaveLength(
+          profile.backgroundPrefetches?.length,
+        );
       }
       expect(result.execution.status).toBe("succeeded");
     }

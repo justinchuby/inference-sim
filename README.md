@@ -65,8 +65,9 @@ Phase 3 has an initial speculative workload slice:
   history-driven adaptive warm prefetch, physical cold-storage link
   contention, and independent trace replay; and
 - routed expert execution with TP attention, `all_reduce_ring`,
-  `all_to_all_v` dispatch/gather, and EP-only FFN sharding on multi-rank
-  topologies; and
+  `all_to_all_v` dispatch/gather, explicit contiguous/round-robin expert
+  ownership, owner-only demand/prefetch transfers, and route-skewed owner-local
+  FFN work on multi-rank topologies; and
 - speculative and expert-cache traces compiled onto all six topology families
   with replay-verified resource utilization and relative comparisons; and
 - a six-proposer by six-device-topology execution/replay matrix with
@@ -91,6 +92,8 @@ target-only versus proposer-family serving, modeled latency/throughput, request
 TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
 inspector. Serving can run one selected topology or compare all six in one
 replay-verified view.
+The dashboard is React-based and extends the existing shadcn/Radix component
+layer; simulation and expert-owner semantics remain in the shared core.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it

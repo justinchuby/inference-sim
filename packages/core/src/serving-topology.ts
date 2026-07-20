@@ -25,8 +25,10 @@ import type {
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   compileTopologyExpertLoadPlan,
+  resolveTopologyExpertOwnerPlacement,
   simulateTopologyWorkload,
   type TopologyCostModel,
+  type TopologyExpertPlacement,
   type TopologyExpertLoadPlan,
   type TopologyResourceUtilization,
   type TopologyWorkloadProfile,
@@ -170,6 +172,15 @@ export function simulateTopologyServingWorkload(
   expertCacheConfig?: TopologyServingExpertCacheConfig,
 ): TopologyServingResult {
   validateExpertCacheComposition(scenario, expertCacheConfig);
+  const expertPlacement: TopologyExpertPlacement | undefined =
+    expertCacheConfig === undefined
+      ? undefined
+      : {
+          strategy: "contiguous",
+          expertIds: expertCacheConfig.cache.experts.map(
+            (expert) => expert.id,
+          ),
+        };
   const batches = new Map<number, TopologyServingBatchResult>();
   const expertCache = expertCacheConfig === undefined
     ? undefined
@@ -239,6 +250,7 @@ export function simulateTopologyServingWorkload(
           physicalRuntime,
           pendingRoute,
           physicalRequests,
+          requireExpertPlacement(expertPlacement),
         );
         const route = expertCache.completeTokenRoute(
           pendingRoute.requestId,
@@ -272,6 +284,7 @@ export function simulateTopologyServingWorkload(
             config.speculative,
             batchExpertRoutes,
             batchPrefetchLoads,
+            requireExpertPlacement(expertPlacement),
           ),
       costModel,
     );
@@ -541,6 +554,7 @@ function retimePhysicalDemandLoads(
   runtime: StreamingConcurrentPlanRuntime,
   route: ExpertPendingRoute,
   requests: ConcurrentPlanRequest[],
+  placement: TopologyExpertPlacement,
 ): void {
   if (runtime.currentTimeNs !== route.requestedAtNs) {
     throw new Error(
@@ -568,8 +582,10 @@ function retimePhysicalDemandLoads(
           scenario,
           {
             id: load.loadId,
+            expertId: load.expertId,
             sourceTier: load.sourceTier,
             bytes: load.bytes,
+            placement,
           },
           costModel,
         ),
@@ -677,6 +693,7 @@ function topologyProfileFromExpertServingBatch(
   speculative: ServingSchedulerConfig["speculative"],
   routes: readonly ExpertRouteResult[],
   prefetchLoads: readonly ExpertPendingLoadSnapshot[],
+  placement: TopologyExpertPlacement,
 ): TopologyWorkloadProfile {
   if (routes.length !== batch.tokenWork || routes.length === 0) {
     throw new Error(
@@ -693,19 +710,42 @@ function topologyProfileFromExpertServingBatch(
   return {
     ...base,
     id: `${base.id}:expert-cache`,
+    expertPlacement: {
+      strategy: placement.strategy,
+      expertIds: [...placement.expertIds],
+    },
     units: base.units.map((unit) => ({
       ...unit,
       activeExperts: topK,
       expertRouted: true,
+      routedExperts: routes.flatMap((route) => (
+        route.expertIds.map((expertId) => ({
+          expertId,
+          sourceTier: "hot" as const,
+          loadBytes: 0,
+        }))
+      )),
       warmLoadBytes: 0,
       coldLoadBytes: 0,
     })),
     backgroundPrefetches: prefetchLoads.map((load) => ({
       id: load.loadId,
+      expertId: load.expertId,
       afterUnitIndex: 0,
       bytes: load.bytes,
     })),
   };
+}
+
+function requireExpertPlacement(
+  placement: TopologyExpertPlacement | undefined,
+): TopologyExpertPlacement {
+  if (placement === undefined) {
+    throw new Error(
+      "expert-cache physical composition requires an expert placement",
+    );
+  }
+  return placement;
 }
 
 function registerPhysicalPrefetches(
@@ -864,34 +904,132 @@ function validateExpertCacheComposition(
       `serving expert-cache topK ${config.topK} exceeds ${config.cache.experts.length} experts`,
     );
   }
+  const totalExpertBytes = config.cache.experts.reduce(
+    (sum, expert) => checkedMetricAdd(
+      sum,
+      expert.bytes,
+      "serving expert universe bytes",
+    ),
+    0,
+  );
+  const ffnPlacements = scenario.placements.filter((placement) => (
+    placement.requiredCapabilities.includes("ffn")
+  ));
+  const placement: TopologyExpertPlacement = {
+    strategy: "contiguous",
+    expertIds: config.cache.experts.map((expert) => expert.id),
+  };
+  if (scenario.execution.parallelism.expert > 1) {
+    const expertBytesByPartition = new Map<string, number>();
+    const expertBytesByNode = new Map<string, number>();
+    for (const expert of config.cache.experts) {
+      const owner = resolveTopologyExpertOwnerPlacement(
+        scenario,
+        placement,
+        expert.id,
+      );
+      const device = scenario.devices.find(
+        (candidate) => candidate.id === owner.deviceId,
+      );
+      if (device === undefined) {
+        throw new Error(
+          `expert owner ${owner.partitionId} has unknown device ${owner.deviceId}`,
+        );
+      }
+      expertBytesByPartition.set(
+        owner.partitionId,
+        checkedMetricAdd(
+          expertBytesByPartition.get(owner.partitionId) ?? 0,
+          expert.bytes,
+          `expert bytes on ${owner.partitionId}`,
+        ),
+      );
+      expertBytesByNode.set(
+        device.nodeId,
+        checkedMetricAdd(
+          expertBytesByNode.get(device.nodeId) ?? 0,
+          expert.bytes,
+          `expert bytes on ${device.nodeId}`,
+        ),
+      );
+    }
+    for (const owner of ffnPlacements) {
+      const requiredBytes = Math.min(
+        config.cache.hotCapacityBytes,
+        expertBytesByPartition.get(owner.partitionId) ?? 0,
+      );
+      const physicalBytes = exactCacheAllocationCapacity(
+        owner.allocations,
+        `expert-hot-cache:${owner.partitionId}`,
+      );
+      if (requiredBytes > physicalBytes) {
+        throw new Error(
+          `serving expert-cache hot requirement ${requiredBytes} on owner ${owner.partitionId} exceeds physical hot allocations ${physicalBytes}`,
+        );
+      }
+    }
+    for (const [nodeId, ownedExpertBytes] of expertBytesByNode) {
+      const requiredBytes = Math.min(
+        config.cache.warmCapacityBytes,
+        ownedExpertBytes,
+      );
+      const physicalBytes = exactCacheAllocationCapacity(
+        scenario.placements.flatMap((candidate) => candidate.allocations),
+        `expert-warm-cache:${nodeId}`,
+      );
+      if (requiredBytes > physicalBytes) {
+        throw new Error(
+          `serving expert-cache warm requirement ${requiredBytes} on ${nodeId} exceeds physical warm allocations ${physicalBytes}`,
+        );
+      }
+    }
+    return;
+  }
+  const logicalHotBytes = Math.min(
+    config.cache.hotCapacityBytes,
+    totalExpertBytes,
+  );
   const hotAllocationBytes = uniqueAllocationCapacity(
-    scenario.placements.filter((placement) => (
-      placement.requiredCapabilities.includes("ffn")
-    )).flatMap((placement) => (
-      placement.allocations.filter((allocation) => (
-        allocation.purpose === "cache"
-      ))
+    ffnPlacements.flatMap((owner) => owner.allocations.filter(
+      (allocation) => (
+        allocation.physicalAllocationId
+        === `expert-hot-cache:${owner.partitionId}`
+      ),
     )),
   );
-  if (config.cache.hotCapacityBytes > hotAllocationBytes) {
+  if (logicalHotBytes > hotAllocationBytes) {
     throw new Error(
-      `serving expert-cache hot capacity ${config.cache.hotCapacityBytes} exceeds physical hot allocations ${hotAllocationBytes}`,
+      `serving expert-cache hot requirement ${logicalHotBytes} exceeds physical hot allocations ${hotAllocationBytes}`,
     );
   }
+  const logicalWarmBytes = Math.min(
+    config.cache.warmCapacityBytes,
+    totalExpertBytes,
+  );
   const warmAllocationBytes = uniqueAllocationCapacity(
-    scenario.placements.filter((placement) => (
-      !placement.requiredCapabilities.includes("ffn")
-    )).flatMap((placement) => (
-      placement.allocations.filter((allocation) => (
-        allocation.purpose === "cache"
+    scenario.placements.flatMap((candidate) => (
+      candidate.allocations.filter((allocation) => (
+        allocation.physicalAllocationId.startsWith("expert-warm-cache:")
       ))
     )),
   );
-  if (config.cache.warmCapacityBytes > warmAllocationBytes) {
+  if (logicalWarmBytes > warmAllocationBytes) {
     throw new Error(
-      `serving expert-cache warm capacity ${config.cache.warmCapacityBytes} exceeds physical warm allocations ${warmAllocationBytes}`,
+      `serving expert-cache warm requirement ${logicalWarmBytes} exceeds physical warm allocations ${warmAllocationBytes}`,
     );
   }
+}
+
+function exactCacheAllocationCapacity(
+  allocations: readonly {
+    readonly physicalAllocationId: string;
+    readonly bytes: number;
+  }[],
+  allocationId: string,
+): number {
+  return uniqueAllocationCapacity(allocations.filter(
+    (allocation) => allocation.physicalAllocationId === allocationId,
+  ));
 }
 
 function uniqueAllocationCapacity(
