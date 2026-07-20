@@ -50,7 +50,7 @@ describe("CLI", () => {
     expect(output.memoryLedger.find(
       (entry) => entry.domainId === "node0:unified",
     )?.reservedBytes).toBe(
-      84 * 1024 ** 3 + 256 * 1024 ** 2,
+      92 * 1024 ** 3 + 256 * 1024 ** 2,
     );
     expect(output.memoryLedger.find(
       (entry) => entry.domainId === "node0:storage",

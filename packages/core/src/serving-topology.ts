@@ -169,7 +169,7 @@ export function simulateTopologyServingWorkload(
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
   expertCacheConfig?: TopologyServingExpertCacheConfig,
 ): TopologyServingResult {
-  validateExpertCacheComposition(expertCacheConfig);
+  validateExpertCacheComposition(scenario, expertCacheConfig);
   const batches = new Map<number, TopologyServingBatchResult>();
   const expertCache = expertCacheConfig === undefined
     ? undefined
@@ -843,6 +843,7 @@ function servingResourceCapacity(
 }
 
 function validateExpertCacheComposition(
+  scenario: SimulationScenario,
   config: TopologyServingExpertCacheConfig | undefined,
 ): void {
   if (config === undefined) {
@@ -863,6 +864,60 @@ function validateExpertCacheComposition(
       `serving expert-cache topK ${config.topK} exceeds ${config.cache.experts.length} experts`,
     );
   }
+  const hotAllocationBytes = uniqueAllocationCapacity(
+    scenario.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("ffn")
+    )).flatMap((placement) => (
+      placement.allocations.filter((allocation) => (
+        allocation.purpose === "cache"
+      ))
+    )),
+  );
+  if (config.cache.hotCapacityBytes > hotAllocationBytes) {
+    throw new Error(
+      `serving expert-cache hot capacity ${config.cache.hotCapacityBytes} exceeds physical hot allocations ${hotAllocationBytes}`,
+    );
+  }
+  const warmAllocationBytes = uniqueAllocationCapacity(
+    scenario.placements.filter((placement) => (
+      !placement.requiredCapabilities.includes("ffn")
+    )).flatMap((placement) => (
+      placement.allocations.filter((allocation) => (
+        allocation.purpose === "cache"
+      ))
+    )),
+  );
+  if (config.cache.warmCapacityBytes > warmAllocationBytes) {
+    throw new Error(
+      `serving expert-cache warm capacity ${config.cache.warmCapacityBytes} exceeds physical warm allocations ${warmAllocationBytes}`,
+    );
+  }
+}
+
+function uniqueAllocationCapacity(
+  allocations: readonly {
+    readonly physicalAllocationId: string;
+    readonly bytes: number;
+  }[],
+): number {
+  const byId = new Map<string, number>();
+  for (const allocation of allocations) {
+    const prior = byId.get(allocation.physicalAllocationId);
+    if (prior !== undefined && prior !== allocation.bytes) {
+      throw new Error(
+        `physical allocation ${allocation.physicalAllocationId} has inconsistent capacities`,
+      );
+    }
+    byId.set(allocation.physicalAllocationId, allocation.bytes);
+  }
+  return [...byId.values()].reduce(
+    (sum, bytes) => checkedMetricAdd(
+      sum,
+      bytes,
+      "serving physical cache capacity",
+    ),
+    0,
+  );
 }
 
 function buildExpertCacheResult(

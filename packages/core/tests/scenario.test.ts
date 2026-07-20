@@ -15,6 +15,19 @@ describe("scenario presets", () => {
     const families = SCENARIO_PRESET_NAMES.map((name) => {
       const scenario = buildScenarioPreset(name);
       expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
+      for (const placement of scenario.placements.filter((candidate) => (
+        candidate.requiredCapabilities.includes("ffn")
+      ))) {
+        const workspace = placement.allocations.find(
+          (allocation) => allocation.purpose === "workspace",
+        );
+        const hotCaches = placement.allocations.filter(
+          (allocation) => allocation.purpose === "cache",
+        );
+        expect(hotCaches, placement.partitionId).toHaveLength(1);
+        expect(hotCaches[0].domainId, placement.partitionId)
+          .toBe(workspace?.domainId);
+      }
       return scenario.family;
     });
 
@@ -59,8 +72,8 @@ describe("scenario presets", () => {
       {
         domainId: "node0:unified",
         capacityBytes: 128 * 1024 ** 3,
-        reservedBytes: 84 * 1024 ** 3 + 256 * 1024 ** 2,
-        freeBytes: 44 * 1024 ** 3 - 256 * 1024 ** 2,
+        reservedBytes: 92 * 1024 ** 3 + 256 * 1024 ** 2,
+        freeBytes: 36 * 1024 ** 3 - 256 * 1024 ** 2,
       },
     ]);
   });
@@ -108,7 +121,7 @@ describe("validateScenario", () => {
     expect(calculateScenarioMemoryLedger(scenario).find(
       (entry) => entry.domainId === "node0:unified",
     )?.reservedBytes).toBe(
-      84 * 1024 ** 3 + 256 * 1024 ** 2,
+      92 * 1024 ** 3 + 256 * 1024 ** 2,
     );
   });
 

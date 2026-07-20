@@ -66,6 +66,9 @@ describe("topology-aware workload execution", () => {
       expect(cold.terminalStepIds.every((stepId) => (
         coldExecution.trace.operations.some((event) => (
           event.stepId === stepId
+          && event.writes.some((allocation) => (
+            allocation.startsWith("expert-hot-cache:")
+          ))
         ))
       ))).toBe(true);
 
@@ -224,6 +227,11 @@ describe("topology-aware workload execution", () => {
       expect(ffn.every((step) => (
         step.operation.kind === "compute"
         && step.operation.durationNs === 234_000
+      ))).toBe(true);
+      expect(ffn.every((step) => (
+        step.reads.some((allocation) => (
+          allocation.startsWith("expert-hot-cache:")
+        ))
       ))).toBe(true);
       expect(ffn.every((step) => (
         step.dependencies.includes(collectives[1].id)
@@ -403,10 +411,23 @@ describe("topology-aware workload execution", () => {
       const compute = result.execution.trace.operations.filter(
         (event) => event.kind === "compute",
       );
-      expect(storageTransfers.some((transfer) => compute.some((event) => (
-        transfer.startNs < event.finishNs
-        && event.startNs < transfer.finishNs
-      )))).toBe(true);
+      expect(compute.length).toBeGreaterThan(0);
+      const warmConsumers = result.execution.trace.operations.filter(
+        (event) => event.reads.some((allocation) => (
+          allocation.startsWith("expert-warm-cache:")
+        )),
+      );
+      if (name === "cpu-only" || name === "unified-memory") {
+        expect(warmConsumers).toHaveLength(0);
+      } else {
+        expect(warmConsumers.length).toBeGreaterThan(0);
+      }
+      expect(storageTransfers.every((producer) => (
+        warmConsumers.every((consumer) => (
+          producer.finishNs <= consumer.startNs
+          || consumer.finishNs <= producer.startNs
+        ))
+      ))).toBe(true);
       const foreground = result.execution.trace.operations.find(
         (event) => event.stepId === result.foregroundTerminalStepId,
       );

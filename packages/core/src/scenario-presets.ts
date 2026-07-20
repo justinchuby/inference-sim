@@ -764,7 +764,32 @@ function storageTiers(parts: ScenarioParts): {
   const domains = [...parts.domains];
   const devices = [...parts.devices];
   const links = [...(parts.links ?? [])];
-  const placements = [...parts.placements];
+  const placements = parts.placements.map((entry) => {
+    if (!entry.requiredCapabilities.includes("ffn")) {
+      return entry;
+    }
+    const workspace = entry.allocations.find(
+      (allocation) => allocation.purpose === "workspace",
+    );
+    if (workspace === undefined) {
+      throw new Error(
+        `preset FFN placement ${entry.partitionId} requires a workspace`,
+      );
+    }
+    return {
+      ...entry,
+      allocations: [
+        ...entry.allocations,
+        allocation(
+          `expert-hot-cache:${entry.partitionId}`,
+          workspace.domainId,
+          8 * GiB,
+          workspace.allocationClass,
+          "cache",
+        ),
+      ],
+    };
+  });
   for (const nodeId of nodes) {
     const cpuIndex = devices.findIndex((candidate) => (
       candidate.nodeId === nodeId && candidate.kind === "cpu"

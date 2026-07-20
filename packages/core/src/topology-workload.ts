@@ -655,7 +655,7 @@ class WorkloadPlanCompiler {
         [this.rank(placement.deviceId)],
         {
           sourceAllocationId,
-          targetAllocationId: workspaceId(placement),
+          targetAllocationId: expertHotCacheId(placement),
         },
       );
       if (stepIds.length === 0) {
@@ -1067,6 +1067,7 @@ class WorkloadPlanCompiler {
         "ffn",
         durationNs,
         cacheLoad.dependencies,
+        [expertHotCacheId(placement)],
       );
     });
     return this.addCollective(
@@ -1164,9 +1165,12 @@ class WorkloadPlanCompiler {
         return terminal;
       },
     );
+    const priorWarmWriter =
+      this.backgroundPrefetchTerminalByDomain.get(sourceDomain);
     const cacheDependencies = uniqueNumbers([
       ...dependencies,
       ...prefetchDependencies,
+      ...(priorWarmWriter === undefined ? [] : [priorWarmWriter]),
     ]);
     if (sourceDomain === targetDomain) {
       return {
@@ -1180,6 +1184,12 @@ class WorkloadPlanCompiler {
       shardBytes,
       cacheDependencies,
       [this.rank(placement.deviceId)],
+      {
+        sourceAllocationId: `expert-warm-cache:${
+          this.device(placement.deviceId).nodeId
+        }`,
+        targetAllocationId: expertHotCacheId(placement),
+      },
     );
     return {
       dependencies: transferSteps.length === 0
@@ -1225,6 +1235,9 @@ class WorkloadPlanCompiler {
         capability,
         durationNs,
         currentDependencies,
+        capability === "ffn" && unit.expertRouted === true
+          ? [expertHotCacheId(placement)]
+          : [],
       );
       currentDependencies = [terminal];
     }
@@ -1241,6 +1254,7 @@ class WorkloadPlanCompiler {
     capability: "attention" | "ffn" | "draft" | "lookup",
     durationNs: number,
     dependencies: readonly number[],
+    additionalReads: readonly string[] = [],
   ): number {
     const state = placement.allocations
       .filter((allocation) => (
@@ -1255,7 +1269,7 @@ class WorkloadPlanCompiler {
     return this.addStep({
       participants: [this.rank(placement.deviceId)],
       dependencies,
-      reads: weights,
+      reads: unique([...weights, ...additionalReads]),
       writes: state,
       operation: {
         kind: "compute",
@@ -1937,6 +1951,20 @@ function workspaceDomain(placement: PartitionPlacement): string {
     throw new TopologyWorkloadError(`unknown workspace allocation ${id}`);
   }
   return allocation.domainId;
+}
+
+function expertHotCacheId(placement: PartitionPlacement): string {
+  const workspaceDomainId = workspaceDomain(placement);
+  const allocations = placement.allocations.filter((candidate) => (
+    candidate.purpose === "cache"
+    && candidate.domainId === workspaceDomainId
+  ));
+  if (allocations.length !== 1) {
+    throw new TopologyWorkloadError(
+      `FFN placement ${placement.partitionId} requires exactly one hot expert cache in ${workspaceDomainId}; found ${allocations.length}`,
+    );
+  }
+  return allocations[0].physicalAllocationId;
 }
 
 function linkDuration(link: SimLinkSpec, bytes: number): number {

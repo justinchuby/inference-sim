@@ -619,16 +619,20 @@ fully charged in the cache protocol's latency and byte ledger.
 
 Current scenario contract revision 3 retains revision 2's explicit
 cold-storage domain on every preset node, local CPU endpoint, authoritative
-expert-backing allocation, warm-cache allocation, and directed storage-read
-link. The topology compiler
+expert-backing allocation, warm-cache allocation, directed storage-read link,
+and adds one device/unified hot-expert cache allocation to every FFN
+placement. The topology compiler
 extracts validated prefetch `load_start` events and emits background FrozenPlan
 transfers after their causal route. These transfers occupy storage link lanes,
-write the warm pool, overlap subsequent compute, and are independently
-replayed. Writes are ordered per warm domain, while independent nodes prefetch
-concurrently. The projection preserves expert-to-prefetch provenance, so a
-later warm demand cannot read the warm pool until its producing storage copy
-has completed on that node. Completed logical prefetches determine later
-warm-demand tiers, while the physical projection charges and enforces the copy.
+write the warm pool, may overlap subsequent compute where allocation leases
+permit, and are independently replayed. Writes are ordered per warm domain,
+while independent nodes prefetch concurrently. The projection preserves
+expert-to-prefetch provenance, so a later warm demand cannot read the warm pool
+until its producing storage copy has completed on that node. The current lease
+model is allocation-granular rather than cache-slot/range-granular; unrelated
+expert reads and writes in one warm allocation are therefore conservatively
+serialized. Completed logical prefetches determine later warm-demand tiers,
+while the physical projection charges and enforces the copy.
 
 ### 9.9 Continuous Serving and Chunked Prefill
 
@@ -674,7 +678,7 @@ loads without recording an access. Every new load compiles into its own
 topology plan and is admitted to the same absolute-time streaming runtime:
 
 - a cold load starts at node-local backing storage and reaches every FFN
-  workspace through the declared storage and device links;
+  hot-expert cache allocation through the declared storage and device links;
 - a warm load starts in the node-local warm domain;
 - CPU-only and unified-memory warm promotion is a same-domain state transition
   and therefore has no fictitious copy plan;
@@ -686,9 +690,11 @@ topology plan and is admitted to the same absolute-time streaming runtime:
 The cache completion of each demand load is retimed from the maximum of its
 physical terminal events. `completeTokenRoute()` may record the expert access
 only after those events make every required expert hot. The aggregate target
-plan then carries routed AllToAllV/FFN work but zero demand-load bytes, and is
-admitted at cache readiness. Consequently there is one authoritative time
-line:
+plan then carries routed AllToAllV/FFN work, reads the same hot-expert
+allocations written by demand terminals, but carries zero demand-load bytes.
+It is admitted at cache readiness. Logical hot and warm capacities must not
+exceed the corresponding unique physical allocations in the selected
+scenario. Consequently there is one authoritative timeline:
 
 ```text
 route decision
@@ -805,8 +811,8 @@ Validation proves:
   participants;
 - discrete copies use distinct physical identities until commit;
 - unified aliases preserve one physical identity; and
-- fixed workspaces, staging, checkpoint snapshots, KV, and speculative sidecars
-  fit their owning domains.
+- fixed workspaces, staging, checkpoint snapshots, KV, speculative sidecars,
+  and warm/hot expert caches fit their owning domains.
 
 ## 11. Performance Model
 

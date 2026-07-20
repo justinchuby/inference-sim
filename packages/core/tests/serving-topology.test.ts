@@ -305,6 +305,11 @@ describe("topology-aware serving", () => {
         resource.resourceId.endsWith(":storage-read")
       ))
     ))).toBe(true);
+    expect(demandOperations.some(({ event }) => (
+      event.writes.some((allocation) => (
+        allocation.startsWith("expert-hot-cache:")
+      ))
+    ))).toBe(true);
     expect(demandRetime?.physicalCompletesAtNs).toBe(
       Math.max(...demandOperations.map(({ event }) => event.finishNs)),
     );
@@ -312,6 +317,16 @@ describe("topology-aware serving", () => {
       batch.topology.plan.steps.every((step) => (
         step.operation.kind !== "transfer"
         || !step.operation.linkId.endsWith(":storage-read")
+      ))
+    ))).toBe(true);
+    expect(result.batches.every((batch) => (
+      batch.topology.plan.steps.filter((step) => (
+        step.operation.kind === "compute"
+        && step.operation.capability === "ffn"
+      )).every((step) => (
+        step.reads.some((allocation) => (
+          allocation.startsWith("expert-hot-cache:")
+        ))
       ))
     ))).toBe(true);
     expect(result.metrics.allToAllOperations).toBeGreaterThan(0);
@@ -513,6 +528,32 @@ describe("topology-aware serving", () => {
         topK: 2,
       },
     )).toThrow("topK 2 exceeds 1 experts");
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache: {
+          ...cache,
+          hotCapacityBytes: 9 * 1024 ** 3,
+        },
+        topK: 1,
+      },
+    )).toThrow("exceeds physical hot allocations");
+    expect(() => simulateTopologyServingWorkload(
+      scenario,
+      workload,
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache: {
+          ...cache,
+          warmCapacityBytes: 9 * 1024 ** 3,
+        },
+        topK: 1,
+      },
+    )).toThrow("exceeds physical warm allocations");
   });
 
   it("retimes adaptive prefetch from the shared physical storage trace", () => {
