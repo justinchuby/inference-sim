@@ -26,6 +26,11 @@ import type {
   TopologyResourceUtilization,
   TopologyWorkloadMetrics,
   TopologyWorkloadResult,
+  ModelProfile,
+  StaticAnalysisResult,
+  MemoryPolicyConfig,
+  ParallelismConfig,
+  QuantType,
 } from "@inference-sim/core";
 
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
@@ -270,6 +275,46 @@ export interface FrozenPlanBrowserResult {
   };
 }
 
+export interface OnnxStaticBrowserConfig {
+  readonly hardwarePreset:
+    | "dgx-h100"
+    | "dgx-h200"
+    | "2x-dgx-h100"
+    | "4x-mac-studio-m4"
+    | "a100-4x"
+    | "rtx-4090-2x";
+  readonly kvCacheQuantization: QuantType;
+  readonly activationQuantization: QuantType;
+  readonly batchSize: number;
+  readonly inputSeqLen: number;
+  readonly outputSeqLen: number;
+  readonly parallelism: ParallelismConfig;
+  readonly memory: MemoryPolicyConfig;
+}
+
+export interface OnnxStaticBrowserResult {
+  readonly sourceFileName: string;
+  readonly manifest: {
+    readonly revision: number;
+    readonly fingerprint: string;
+    readonly modelFileName: string;
+    readonly modelSha256: string;
+    readonly graphName: string;
+    readonly nodeCount: number;
+    readonly initializerCount: number;
+    readonly initializerLogicalBytes: number;
+    readonly externalDataFiles: number;
+    readonly architectureSource: string;
+    readonly profileReadiness: {
+      readonly ready: boolean;
+      readonly missingFields: readonly string[];
+    };
+  };
+  readonly config: OnnxStaticBrowserConfig;
+  readonly model: ModelProfile;
+  readonly analysis: StaticAnalysisResult;
+}
+
 export type WorkerRequest =
   | {
       readonly type: "run";
@@ -282,6 +327,13 @@ export type WorkerRequest =
       readonly runId: number;
       readonly sourceFileName: string;
       readonly artifactText: string;
+    }
+  | {
+      readonly type: "run-onnx-static";
+      readonly runId: number;
+      readonly sourceFileName: string;
+      readonly artifactText: string;
+      readonly config: OnnxStaticBrowserConfig;
     };
 
 export type WorkerResponse =
@@ -303,6 +355,12 @@ export type WorkerResponse =
       readonly type: "frozen-plan-result";
       readonly runId: number;
       readonly result: FrozenPlanBrowserResult;
+      readonly durationMs: number;
+    }
+  | {
+      readonly type: "onnx-static-result";
+      readonly runId: number;
+      readonly result: OnnxStaticBrowserResult;
       readonly durationMs: number;
     }
   | {

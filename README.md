@@ -111,6 +111,11 @@ semantics from tensor names.
 preserves exact initializer capacity, records all profile assumptions, and
 then runs the shared static analyzer. MoE packages remain incomplete until
 metadata supplies routed and shared expert bytes per layer.
+The React workbench imports the same revision-2 manifest, validates it before
+and inside the Worker, and exposes shadcn controls for hardware, runtime dtypes,
+sequence shape, TP/PP/EP, and offload. Its model view reports per-device memory,
+capacity feasibility, heuristic throughput, architecture inventory, and every
+profile assumption.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

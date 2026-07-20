@@ -37,6 +37,10 @@ import {
 } from "./dashboard-artifact.js";
 import { MAX_FROZEN_PLAN_FILE_BYTES } from "./frozen-plan-import.js";
 import {
+  MAX_ONNX_MANIFEST_FILE_BYTES,
+  parseOnnxManifestFileText,
+} from "./onnx-manifest-import.js";
+import {
   MAX_TOKEN_TRACE_FILE_BYTES,
   parseTokenTraceFileText,
   type ParsedTokenTraceFile,
@@ -77,6 +81,8 @@ import type {
   DashboardResult,
   DashboardRunConfig,
   FrozenPlanBrowserResult,
+  OnnxStaticBrowserConfig,
+  OnnxStaticBrowserResult,
   WorkerResponse,
   WorkloadMode,
 } from "./types.js";
@@ -147,6 +153,42 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
   },
 };
 
+const DEFAULT_ONNX_CONFIG: OnnxStaticBrowserConfig = {
+  hardwarePreset: "dgx-h100",
+  kvCacheQuantization: "fp16",
+  activationQuantization: "fp16",
+  batchSize: 1,
+  inputSeqLen: 2048,
+  outputSeqLen: 512,
+  parallelism: {
+    tensorParallel: 1,
+    pipelineParallel: 1,
+    expertParallel: 1,
+    dataParallel: 1,
+  },
+  memory: {
+    kvCacheBudgetFraction: 0.35,
+    expertCacheBudgetFraction: 0.25,
+    pinnedPoolFraction: 0.05,
+    offloadStrategy: "none",
+    prefetchAhead: 0,
+    pressureThreshold: 0.9,
+    reclaimBatchSize: 4,
+  },
+};
+
+const ONNX_HARDWARE: ReadonlyArray<{
+  readonly value: OnnxStaticBrowserConfig["hardwarePreset"];
+  readonly label: string;
+}> = [
+  { value: "dgx-h100", label: "8x H100 SXM" },
+  { value: "dgx-h200", label: "8x H200 SXM" },
+  { value: "2x-dgx-h100", label: "16x H100 / 2 nodes" },
+  { value: "a100-4x", label: "4x A100 80G" },
+  { value: "rtx-4090-2x", label: "2x RTX 4090" },
+  { value: "4x-mac-studio-m4", label: "4x M4 Max" },
+];
+
 const ResultCharts = lazy(() => import("./ResultCharts.js"));
 
 type RunStatus =
@@ -166,6 +208,7 @@ interface RunState {
   readonly artifact?: DashboardArtifactDownload;
   readonly artifactReplay?: DashboardArtifactReplay;
   readonly frozenPlan?: FrozenPlanBrowserResult;
+  readonly onnxStatic?: OnnxStaticBrowserResult;
   readonly error?: string;
 }
 
@@ -182,6 +225,11 @@ interface TokenTraceSelection {
   readonly error?: string;
 }
 
+interface OnnxManifestSelection {
+  readonly fileName: string;
+  readonly artifactText: string;
+}
+
 export function App(): React.JSX.Element {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [runState, setRunState] = useState<RunState>({
@@ -191,9 +239,13 @@ export function App(): React.JSX.Element {
   });
   const [calibration, setCalibration] = useState<CalibrationSelection>({});
   const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
+  const [onnxManifest, setOnnxManifest] =
+    useState<OnnxManifestSelection | undefined>(undefined);
+  const [onnxConfig, setOnnxConfig] = useState(DEFAULT_ONNX_CONFIG);
   const workerRef = useRef<Worker | undefined>(undefined);
   const artifactInputRef = useRef<HTMLInputElement | null>(null);
   const frozenPlanInputRef = useRef<HTMLInputElement | null>(null);
+  const onnxManifestInputRef = useRef<HTMLInputElement | null>(null);
   const runIdRef = useRef(0);
   const initializedRef = useRef(false);
   const changeConfig = useCallback((nextConfig: DashboardRunConfig) => {
@@ -328,6 +380,8 @@ export function App(): React.JSX.Element {
     changeConfig(DEFAULT_CONFIG);
     setCalibration({});
     setTokenTrace({});
+    setOnnxManifest(undefined);
+    setOnnxConfig(DEFAULT_ONNX_CONFIG);
   }, [changeConfig]);
 
   const run = useCallback((
@@ -547,6 +601,101 @@ export function App(): React.JSX.Element {
     }
   }, []);
 
+  const runOnnxStatic = useCallback((
+    selection: OnnxManifestSelection,
+    nextConfig: OnnxStaticBrowserConfig,
+  ) => {
+    workerRef.current?.terminate();
+    const worker = new Worker(new URL("./sim-worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const runId = ++runIdRef.current;
+    workerRef.current = worker;
+    setRunState({
+      status: "running",
+      progress: 4,
+      phase: "Starting ONNX analysis worker",
+    });
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const message = event.data;
+      if (message.runId !== runIdRef.current) {
+        return;
+      }
+      if (message.type === "progress") {
+        setRunState((current) => ({
+          ...current,
+          progress: message.progress,
+          phase: message.phase,
+        }));
+        return;
+      }
+      if (message.type === "error") {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "ONNX analysis failed",
+          error: message.message,
+        });
+      } else if (message.type === "onnx-static-result") {
+        setRunState({
+          status: "complete",
+          progress: 100,
+          phase: message.result.analysis.feasible
+            ? "Capacity check passed"
+            : "Capacity check failed",
+          onnxStatic: message.result,
+        });
+      } else {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "ONNX analysis failed",
+          error: "ONNX worker returned an unexpected result",
+        });
+      }
+      worker.terminate();
+      workerRef.current = undefined;
+    };
+    worker.onerror = (event) => {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "ONNX worker failed",
+        error: event.message,
+      });
+      worker.terminate();
+      workerRef.current = undefined;
+    };
+    worker.postMessage({
+      type: "run-onnx-static",
+      runId,
+      sourceFileName: selection.fileName,
+      artifactText: selection.artifactText,
+      config: nextConfig,
+    });
+  }, []);
+
+  const importOnnxManifest = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_ONNX_MANIFEST_FILE_BYTES) {
+        throw new Error("ONNX manifest exceeds the 64 MiB limit");
+      }
+      const artifactText = await file.text();
+      parseOnnxManifestFileText(artifactText, file.name);
+      const selection = { fileName: file.name, artifactText };
+      setOnnxManifest(selection);
+      setOnnxConfig(DEFAULT_ONNX_CONFIG);
+      runOnnxStatic(selection, DEFAULT_ONNX_CONFIG);
+    } catch (error) {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "ONNX manifest import failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [runOnnxStatic]);
+
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
@@ -573,6 +722,34 @@ export function App(): React.JSX.Element {
           </div>
           <div className="flex items-center gap-2">
             <RunBadge status={runState.status} />
+            <input
+              ref={onnxManifestInputRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              disabled={runState.status === "running"}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) {
+                  void importOnnxManifest(file);
+                }
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Import ONNX model manifest"
+                  onClick={() => onnxManifestInputRef.current?.click()}
+                  disabled={runState.status === "running"}
+                >
+                  <Database className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Import ONNX model manifest</TooltipContent>
+            </Tooltip>
             <input
               ref={frozenPlanInputRef}
               type="file"
@@ -648,26 +825,59 @@ export function App(): React.JSX.Element {
 
         <div className="workspace-grid">
           <aside className="border-b border-zinc-200 bg-white p-4 lg:border-b-0 lg:border-r">
-            <ConfigurationPanel
-              config={config}
-              disabled={runState.status === "running"}
-              onChange={changeConfig}
-              calibration={calibration}
-              onCalibrationFile={importCalibration}
-              onClearCalibration={clearCalibration}
-              tokenTrace={tokenTrace}
-              onTokenTraceFile={importTokenTrace}
-              onRuntimeCaptureFiles={importRuntimeCaptures}
-              onClearTokenTrace={clearTokenTrace}
-              onRun={() => run(config)}
-              onCancel={cancel}
-              running={runState.status === "running"}
-            />
+            {onnxManifest
+              ? (
+                  <OnnxConfigurationPanel
+                    selection={onnxManifest}
+                    config={onnxConfig}
+                    disabled={runState.status === "running"}
+                    running={runState.status === "running"}
+                    onChange={(nextConfig) => {
+                      setOnnxConfig(nextConfig);
+                      setRunState((current) => current.status === "running"
+                        ? current
+                        : {
+                            status: "idle",
+                            progress: 0,
+                            phase: "Configuration changed",
+                          });
+                    }}
+                    onRun={() => runOnnxStatic(onnxManifest, onnxConfig)}
+                    onCancel={cancel}
+                    onClose={() => {
+                      setOnnxManifest(undefined);
+                      setRunState({
+                        status: "idle",
+                        progress: 0,
+                        phase: "ONNX manifest closed",
+                      });
+                    }}
+                  />
+                )
+              : (
+                  <ConfigurationPanel
+                    config={config}
+                    disabled={runState.status === "running"}
+                    onChange={changeConfig}
+                    calibration={calibration}
+                    onCalibrationFile={importCalibration}
+                    onClearCalibration={clearCalibration}
+                    tokenTrace={tokenTrace}
+                    onTokenTraceFile={importTokenTrace}
+                    onRuntimeCaptureFiles={importRuntimeCaptures}
+                    onClearTokenTrace={clearTokenTrace}
+                    onRun={() => run(config)}
+                    onCancel={cancel}
+                    running={runState.status === "running"}
+                  />
+                )}
           </aside>
 
           <main className="min-w-0 overflow-y-auto p-4 sm:p-5">
             <RunProgress state={runState} />
-            {runState.frozenPlan
+            {runState.onnxStatic
+              ? <OnnxStaticResults result={runState.onnxStatic} />
+              : runState.frozenPlan
               ? <FrozenPlanResults result={runState.frozenPlan} />
               : result
               ? (
@@ -681,11 +891,259 @@ export function App(): React.JSX.Element {
           </main>
 
           <aside className="min-w-0 border-t border-zinc-200 bg-white p-4 xl:border-l xl:border-t-0">
-            <Inspector result={result} />
+            {runState.onnxStatic
+              ? <OnnxInspector result={runState.onnxStatic} />
+              : <Inspector result={result} />}
           </aside>
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+function OnnxConfigurationPanel({
+  selection,
+  config,
+  disabled,
+  running,
+  onChange,
+  onRun,
+  onCancel,
+  onClose,
+}: {
+  readonly selection: OnnxManifestSelection;
+  readonly config: OnnxStaticBrowserConfig;
+  readonly disabled: boolean;
+  readonly running: boolean;
+  readonly onChange: (config: OnnxStaticBrowserConfig) => void;
+  readonly onRun: () => void;
+  readonly onCancel: () => void;
+  readonly onClose: () => void;
+}): React.JSX.Element {
+  const setParallelism = (
+    field: keyof OnnxStaticBrowserConfig["parallelism"],
+    value: number,
+  ) => onChange({
+    ...config,
+    parallelism: { ...config.parallelism, [field]: value },
+  });
+  return (
+    <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
+      <div className="configuration-scroll">
+        <div className="mb-4 flex items-start gap-3 border-b border-zinc-200 pb-4">
+          <Database className="mt-0.5 size-4 shrink-0 text-sky-700" />
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-bold">{selection.fileName}</h2>
+            <p className="mt-0.5 text-xs text-zinc-500">ONNX model manifest</p>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                aria-label="Close ONNX model manifest"
+                disabled={disabled}
+                onClick={onClose}
+              >
+                <X className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Close ONNX model manifest</TooltipContent>
+          </Tooltip>
+        </div>
+
+        <Field label="Hardware">
+          <Select
+            value={config.hardwarePreset}
+            disabled={disabled}
+            onValueChange={(hardwarePreset) => onChange({
+              ...config,
+              hardwarePreset:
+                hardwarePreset as OnnxStaticBrowserConfig["hardwarePreset"],
+            })}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {ONNX_HARDWARE.map((hardware) => (
+                <SelectItem key={hardware.value} value={hardware.value}>
+                  {hardware.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="KV cache">
+            <QuantizationSelect
+              value={config.kvCacheQuantization}
+              disabled={disabled}
+              onChange={(kvCacheQuantization) => onChange({
+                ...config,
+                kvCacheQuantization,
+              })}
+            />
+          </Field>
+          <Field label="Activations">
+            <QuantizationSelect
+              value={config.activationQuantization}
+              disabled={disabled}
+              onChange={(activationQuantization) => onChange({
+                ...config,
+                activationQuantization,
+              })}
+            />
+          </Field>
+        </div>
+        <SliderField
+          label="Batch size"
+          value={config.batchSize}
+          minimum={1}
+          maximum={64}
+          step={1}
+          disabled={disabled}
+          onChange={(batchSize) => onChange({ ...config, batchSize })}
+        />
+        <SliderField
+          label="Input sequence"
+          value={config.inputSeqLen}
+          minimum={128}
+          maximum={32768}
+          step={128}
+          disabled={disabled}
+          onChange={(inputSeqLen) => onChange({ ...config, inputSeqLen })}
+        />
+        <SliderField
+          label="Output sequence"
+          value={config.outputSeqLen}
+          minimum={16}
+          maximum={4096}
+          step={16}
+          disabled={disabled}
+          onChange={(outputSeqLen) => onChange({ ...config, outputSeqLen })}
+        />
+        <div className="grid grid-cols-3 gap-3 border-y border-zinc-200 py-4">
+          <CompactParallelismSelect
+            label="TP"
+            value={config.parallelism.tensorParallel}
+            disabled={disabled}
+            onChange={(value) => setParallelism("tensorParallel", value)}
+          />
+          <CompactParallelismSelect
+            label="PP"
+            value={config.parallelism.pipelineParallel}
+            disabled={disabled}
+            onChange={(value) => setParallelism("pipelineParallel", value)}
+          />
+          <CompactParallelismSelect
+            label="EP"
+            value={config.parallelism.expertParallel}
+            disabled={disabled}
+            onChange={(value) => setParallelism("expertParallel", value)}
+          />
+        </div>
+        <Field label="Offload">
+          <Select
+            value={config.memory.offloadStrategy}
+            disabled={disabled}
+            onValueChange={(offloadStrategy) => onChange({
+              ...config,
+              memory: {
+                ...config.memory,
+                offloadStrategy:
+                  offloadStrategy as OnnxStaticBrowserConfig[
+                    "memory"
+                  ]["offloadStrategy"],
+              },
+            })}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">None</SelectItem>
+              <SelectItem value="partial">Partial</SelectItem>
+              <SelectItem value="full">Full</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
+        {running
+          ? (
+              <Button className="w-full" variant="destructive" onClick={onCancel}>
+                <Square className="size-4 fill-current" />
+                Cancel
+              </Button>
+            )
+          : (
+              <Button className="w-full" onClick={onRun}>
+                <Play className="size-4 fill-current" />
+                Analyze model
+              </Button>
+            )}
+      </div>
+    </div>
+  );
+}
+
+function QuantizationSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  readonly value: OnnxStaticBrowserConfig["kvCacheQuantization"];
+  readonly disabled: boolean;
+  readonly onChange: (
+    value: OnnxStaticBrowserConfig["kvCacheQuantization"],
+  ) => void;
+}): React.JSX.Element {
+  return (
+    <Select
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => onChange(
+        next as OnnxStaticBrowserConfig["kvCacheQuantization"],
+      )}
+    >
+      <SelectTrigger><SelectValue /></SelectTrigger>
+      <SelectContent>
+        {["fp32", "fp16", "bf16", "fp8", "int8", "int4"].map((quant) => (
+          <SelectItem key={quant} value={quant}>{quant.toUpperCase()}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function CompactParallelismSelect({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly disabled: boolean;
+  readonly onChange: (value: number) => void;
+}): React.JSX.Element {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
+        {label}
+      </span>
+      <Select
+        value={String(value)}
+        disabled={disabled}
+        onValueChange={(next) => onChange(Number(next))}
+      >
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {[1, 2, 4, 8, 16].map((count) => (
+            <SelectItem key={count} value={String(count)}>{count}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </label>
   );
 }
 
@@ -1448,6 +1906,152 @@ function ConfigurationPanel({
   );
 }
 
+function OnnxStaticResults({
+  result,
+}: {
+  readonly result: OnnxStaticBrowserResult;
+}): React.JSX.Element {
+  const firstDevice = result.analysis.memoryBreakdown[0];
+  const used = firstDevice === undefined
+    ? 0
+    : firstDevice.totalBytes - firstDevice.free;
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 pb-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-bold">{result.model.name}</h1>
+          <div className="mt-1 truncate text-xs text-zinc-500">
+            {result.manifest.modelFileName} · {result.manifest.fingerprint}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={result.analysis.feasible ? "success" : "danger"}>
+            {result.analysis.feasible ? "capacity fit" : "capacity exceeded"}
+          </Badge>
+          <Badge variant="warning">
+            {result.model.provenance.evidence} profile
+          </Badge>
+        </div>
+      </div>
+
+      <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4">
+        <OnnxMetric
+          label="Weight inventory"
+          value={formatBytes(result.manifest.initializerLogicalBytes)}
+          detail={`${result.model.totalParams.toLocaleString()} elements`}
+        />
+        <OnnxMetric
+          label="Device used"
+          value={firstDevice ? formatBytes(used) : "N/A"}
+          detail={firstDevice
+            ? `${formatBytes(firstDevice.totalBytes)} capacity`
+            : "No devices"}
+        />
+        <OnnxMetric
+          label="Decode"
+          value={formatRate(
+            result.analysis.estimatedThroughput.decodeToksPerSec,
+          )}
+          detail={`${result.analysis.estimatedThroughput.interTokenLatencyMs.toFixed(3)} ms ITL`}
+        />
+        <OnnxMetric
+          label="Prefill"
+          value={formatRate(
+            result.analysis.estimatedThroughput.prefillToksPerSec,
+          )}
+          detail={`${result.analysis.estimatedThroughput.timeToFirstTokenMs.toFixed(2)} ms TTFT`}
+        />
+      </div>
+
+      <section>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-bold">Per-device memory</h2>
+          <Badge variant="neutral">
+            {result.analysis.memoryBreakdown.length} devices
+          </Badge>
+        </div>
+        <div className="overflow-x-auto border-y border-zinc-200">
+          <table className="w-full min-w-[640px] text-left text-xs">
+            <thead className="bg-zinc-50 text-zinc-500">
+              <tr>
+                {["Device", "Weights", "Experts", "KV cache", "Activations", "Free"].map((label) => (
+                  <th key={label} className="px-3 py-2 font-semibold">{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-200 bg-white">
+              {result.analysis.memoryBreakdown.map((memory) => (
+                <tr key={memory.deviceId}>
+                  <td className="px-3 py-2 font-semibold">{memory.deviceId}</td>
+                  <td className="px-3 py-2 tabular-nums">{formatBytes(memory.weights)}</td>
+                  <td className="px-3 py-2 tabular-nums">{formatBytes(memory.expertCache)}</td>
+                  <td className="px-3 py-2 tabular-nums">{formatBytes(memory.kvCache)}</td>
+                  <td className="px-3 py-2 tabular-nums">{formatBytes(memory.activations)}</td>
+                  <td className={`px-3 py-2 font-semibold tabular-nums ${
+                    memory.free < 0 ? "text-rose-700" : "text-emerald-700"
+                  }`}>
+                    {formatSignedBytes(memory.free)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="border-y border-zinc-200 py-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-bold">Model evidence</h2>
+          <Badge variant="neutral">
+            {result.manifest.architectureSource.replaceAll("_", " ")}
+          </Badge>
+        </div>
+        <div className="space-y-2">
+          {result.model.provenance.assumptions.map((assumption) => (
+            <div key={assumption} className="flex gap-2 text-xs leading-5 text-zinc-600">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+              <span>{assumption}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {result.analysis.recommendations.length > 0
+        ? (
+            <section>
+              <h2 className="mb-2 text-sm font-bold">Recommendations</h2>
+              <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+                {result.analysis.recommendations.map((recommendation) => (
+                  <div key={recommendation} className="py-2 text-xs text-zinc-700">
+                    {recommendation}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )
+        : null}
+    </div>
+  );
+}
+
+function OnnxMetric({
+  label,
+  value,
+  detail,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly detail: string;
+}): React.JSX.Element {
+  return (
+    <div className="min-w-0 bg-white p-3">
+      <div className="text-[11px] font-semibold text-zinc-500">{label}</div>
+      <div className="mt-1 truncate text-lg font-bold tabular-nums">{value}</div>
+      <div className="mt-0.5 truncate text-[11px] text-zinc-500">{detail}</div>
+    </div>
+  );
+}
+
 function Results({
   result,
   artifact,
@@ -1933,6 +2537,62 @@ function downloadArtifact(artifact: DashboardArtifactDownload): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function OnnxInspector({
+  result,
+}: {
+  readonly result: OnnxStaticBrowserResult;
+}): React.JSX.Element {
+  const architecture = result.model.architecture;
+  const rows = [
+    ["Revision", String(result.manifest.revision)],
+    ["Graph", result.manifest.graphName || "unnamed"],
+    ["Nodes", result.manifest.nodeCount.toLocaleString()],
+    ["Initializers", result.manifest.initializerCount.toLocaleString()],
+    ["External files", result.manifest.externalDataFiles.toLocaleString()],
+    ["Architecture", architecture.kind.toUpperCase()],
+    ["Layers", architecture.numLayers.toLocaleString()],
+    ["Hidden", architecture.hiddenDim.toLocaleString()],
+    ["Attention heads", architecture.numHeads.toLocaleString()],
+    ["KV heads", architecture.numKVHeads.toLocaleString()],
+    ["Weight dtype", result.model.quantization.weights.toUpperCase()],
+    ["Bottleneck", result.analysis.bottleneck.replaceAll("_", " ")],
+  ] as const;
+  return (
+    <div className="mx-auto max-w-md xl:max-w-none">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-sm font-bold">Model inspector</h2>
+        <Badge variant={result.manifest.profileReadiness.ready
+          ? "success"
+          : "danger"}
+        >
+          {result.manifest.profileReadiness.ready ? "ready" : "incomplete"}
+        </Badge>
+      </div>
+      <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+        {rows.map(([label, value]) => (
+          <div
+            key={label}
+            className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 text-xs"
+          >
+            <span className="text-zinc-500">{label}</span>
+            <span className="max-w-40 truncate text-right font-semibold capitalize text-zinc-800">
+              {value}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4">
+        <div className="mb-1 text-[11px] font-semibold text-zinc-500">
+          Model SHA-256
+        </div>
+        <div className="break-all font-mono text-[10px] leading-4 text-zinc-600">
+          {result.manifest.modelSha256}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Inspector({ result }: { readonly result?: DashboardResult }): React.JSX.Element {
   const rows = useMemo(() => {
     if (result?.comparison) {
@@ -2246,10 +2906,21 @@ function servingMetrics(result: DashboardResult) {
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) {
+  const magnitude = Math.abs(bytes);
+  if (magnitude >= 1024 ** 3) {
     return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
   }
-  return `${(bytes / 1024 ** 2).toFixed(0)} MiB`;
+  if (magnitude >= 1024 ** 2) {
+    return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  }
+  if (magnitude >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${bytes.toFixed(0)} B`;
+}
+
+function formatSignedBytes(bytes: number): string {
+  return bytes < 0 ? `-${formatBytes(-bytes)}` : formatBytes(bytes);
 }
 
 function formatDuration(nanoseconds: number): string {
@@ -2260,8 +2931,14 @@ function formatDuration(nanoseconds: number): string {
 }
 
 function formatRate(tokensPerSecond: number): string {
-  const value = tokensPerSecond >= 1000
-    ? tokensPerSecond.toLocaleString(undefined, { maximumFractionDigits: 0 })
-    : tokensPerSecond.toFixed(1);
+  const value = tokensPerSecond >= 1_000_000_000
+    ? `${(tokensPerSecond / 1_000_000_000).toFixed(1)}B`
+    : tokensPerSecond >= 1_000_000
+      ? `${(tokensPerSecond / 1_000_000).toFixed(1)}M`
+      : tokensPerSecond >= 1000
+        ? tokensPerSecond.toLocaleString(undefined, {
+            maximumFractionDigits: 0,
+          })
+        : tokensPerSecond.toFixed(1);
   return `${value} tok/s`;
 }

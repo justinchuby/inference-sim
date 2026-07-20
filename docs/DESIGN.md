@@ -1474,6 +1474,14 @@ are provenance-labeled assumptions. Built-in model presets carry heuristic
 provenance too. MoE expert residency uses explicit per-layer units: PP assigns
 layers, EP shards routed experts, and shared experts remain replicated across
 EP ranks.
+The React workbench accepts that same revision-2 JSON manifest rather than
+decoding ONNX protobufs on the main thread. Import performs a bounded,
+fingerprint-validating parse; the Worker repeats validation before profile
+resolution and analysis. ONNX sessions have their own hardware, runtime dtype,
+sequence, parallelism, and offload controls and do not masquerade as replayable
+serving/speculative dashboard artifacts. The result exposes per-device
+weights, expert residency, KV, activation, and free capacity alongside the
+manifest inventory and profile assumptions.
 All CLI commands that consume one scenario resolve a shared scenario-target
 grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
 materialization, workload execution, serving, runtime-capture verification,

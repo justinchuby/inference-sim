@@ -2,11 +2,53 @@
 
 import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
 import { executeFrozenPlanWorkerRun } from "./frozen-plan-worker-run.js";
+import { executeOnnxStaticWorkerRun } from "./onnx-static-worker-run.js";
 import type { WorkerRequest, WorkerResponse } from "./types.js";
 
 const worker = self as DedicatedWorkerGlobalScope;
 
 worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
+  if (event.data.type === "run-onnx-static") {
+    const {
+      runId,
+      artifactText,
+      sourceFileName,
+      config,
+    } = event.data;
+    try {
+      post({
+        type: "progress",
+        runId,
+        progress: 18,
+        phase: "Validating ONNX manifest",
+      });
+      const startedAt = performance.now();
+      const result = executeOnnxStaticWorkerRun(
+        artifactText,
+        sourceFileName,
+        config,
+      );
+      post({
+        type: "progress",
+        runId,
+        progress: 92,
+        phase: "Checking model capacity",
+      });
+      post({
+        type: "onnx-static-result",
+        runId,
+        result,
+        durationMs: performance.now() - startedAt,
+      });
+    } catch (error) {
+      post({
+        type: "error",
+        runId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (event.data.type === "run-frozen-plan") {
     const { runId, artifactText, sourceFileName } = event.data;
     try {
