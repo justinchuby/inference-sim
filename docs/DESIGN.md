@@ -1,6 +1,6 @@
 # Inference Simulator Design
 
-**Status:** executable design, Phase 1 complete; Phase 2 in progress
+**Status:** executable design, Phases 1-2 complete; Phases 3-4 in progress
 **Protocol contract:** onnx-genai memory/distributed contract revision 2
 
 `inference-sim` is a deterministic discrete-event simulator for LLM inference
@@ -309,6 +309,14 @@ mutation.
 Admissions, operations, and terminals all consume the scenario `maxEvents`
 budget; manual admission cannot bypass the event/trace-size guard.
 
+A concurrent node fault requires every target execution to have been admitted
+and still be active before the fault timestamp. The fault atomically closes
+submission for the entire old epoch. Only the one shared global schedule prefix
+submitted strictly before fault observation may quiesce; every participating
+execution receives a node-derived failed/aborted rank terminal. Replay checks
+the global prefix, rejects any operation submitted at or after the fault, and
+rejects any dependency- and communicator-ready operation omitted before it.
+
 ### 8.5 Node Failover and Replan
 
 Failover is an explicit two-epoch transaction. A node fault must interrupt the
@@ -321,9 +329,10 @@ absent from that recovery scenario; it never edits or resumes the old plan.
 The handoff records the failed node and execution, old/new epochs, fault time,
 old-execution quiescence, and recovery admission. Independent replay validates
 both plan traces and reconstructs the handoff and total wall-clock completion.
-The current executable campaign handles one old-epoch execution. Coordinated
-node-fault fanout across every execution in a concurrent campaign remains
-required before Phase 2 is complete.
+The explicit failover runner handles one recovery plan. The concurrent
+node-failure campaign independently establishes the cluster-wide old-epoch
+quiescence coordinate from all active executions; a recovery controller may
+admit a separately validated newer-epoch plan only after that coordinate.
 
 ## 9. Speculative Decoding
 
@@ -933,7 +942,7 @@ tests.
   domains; and
 - capability/path validation for every placement and transfer.
 
-Status: in progress. Implemented:
+Status: complete. Implemented:
 
 - versioned capability/memory-domain scenario schema;
 - valid built-in scenarios for all six required topology families;
@@ -965,12 +974,10 @@ Status: in progress. Implemented:
   device/link/collective lanes, shared physical-allocation leases, per-group
   communicator ownership, and independent global trace replay; and
 - structured node-wide rank failure plus explicit quiesce-before-admit failover
-  to a separately validated newer-epoch scenario and replanned execution.
-
-Remaining Phase 2 work:
-
-- coordinated node-failure propagation and communicator abort across every
-  old-epoch execution in a concurrent campaign.
+  to a separately validated newer-epoch scenario and replanned execution; and
+- atomic node-fault fanout across every active concurrent old-epoch execution,
+  with one shared pre-fault schedule prefix, global quiescence, admission
+  closure, and independent prefix/terminal replay.
 
 ### Phase 3: Speculative, Workload, and Cache Dynamics
 
@@ -1089,6 +1096,10 @@ The `node-failover` command injects a structured node fault into an old-epoch
 plan, waits for terminal quiescence, then admits a separately compiled workload
 on a failed-node-free preset at the next topology epoch. Both execution traces
 and the handoff are independently replayed.
+The `concurrent-node-failure` command applies one node fault to a seeded
+multi-execution campaign, closes all old-epoch submission atomically, quiesces
+only the already submitted global prefix, and independently replays every
+failed execution terminal.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,

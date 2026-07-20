@@ -6,6 +6,7 @@ import {
   buildScenarioPreset,
   compileTopologyWorkloadPlan,
   executeConcurrentFrozenPlans,
+  executeConcurrentNodeFailure,
   replayConcurrentPlanTrace,
   runSeededConcurrentPlanCampaign,
   targetOnlyTopologyProfile,
@@ -463,5 +464,104 @@ describe("concurrent FrozenPlan execution", () => {
       );
       expect(campaign.replay.executions, preset).toHaveLength(4);
     }
+  });
+
+  it("fans one node fault out to every admitted old-epoch execution", () => {
+    const scenario = buildScenarioPreset("multi-node");
+    const template = compileTopologyWorkloadPlan(
+      scenario,
+      targetOnlyTopologyProfile(2),
+    );
+    const concurrentRequests = Array.from({ length: 4 }, (_, index) => ({
+      plan: {
+        ...template,
+        id: `${template.id}:node-fault:${index}`,
+        executionId: `${template.executionId}:node-fault:${index}`,
+      },
+      arrivalNs: 0,
+      admissionOrder: index,
+    }));
+    const fault = {
+      kind: "node_failure" as const,
+      atNs: 1,
+      nodeId: "node1",
+      reason: "node1 heartbeat expired",
+    };
+    const result = executeConcurrentNodeFailure(
+      scenario,
+      concurrentRequests,
+      fault,
+    );
+
+    expect(result.executions).toHaveLength(4);
+    expect(
+      result.executions.every((execution) => execution.status === "failed"),
+    ).toBe(true);
+    expect(
+      result.trace.operations.every(({ event }) => (
+        event.submittedAtNs < fault.atNs
+      )),
+    ).toBe(true);
+    expect(result.trace.terminals.every((terminal) => (
+      terminal.fault?.kind === "node_failure"
+      && terminal.fault.nodeId === "node1"
+    ))).toBe(true);
+    const replay = replayConcurrentPlanTrace(
+      scenario,
+      concurrentRequests,
+      result.trace,
+      { nodeFailure: fault },
+    );
+    expect(replay.completedAtNs).toBe(result.completedAtNs);
+    expect(replay.executions.every(
+      (execution) => execution.status === "failed",
+    )).toBe(true);
+
+    const operations = result.trace.operations.slice(0, -1);
+    expect(() => replayConcurrentPlanTrace(
+      scenario,
+      concurrentRequests,
+      { ...result.trace, operations },
+      { nodeFailure: fault },
+    )).toThrowError("was ready before node fault but omitted");
+  });
+
+  it("does not admit an execution at the node-fault timestamp", () => {
+    const scenario = buildScenarioPreset("multi-node");
+    const template = compileTopologyWorkloadPlan(
+      scenario,
+      targetOnlyTopologyProfile(1),
+    );
+    expect(() => executeConcurrentNodeFailure(
+      scenario,
+      [{
+        plan: template,
+        arrivalNs: 1,
+        admissionOrder: 0,
+      }],
+      {
+        kind: "node_failure",
+        atNs: 1,
+        nodeId: "node1",
+        reason: "node1 failed",
+      },
+    )).toThrowError("is not admitted before node fault");
+
+    const admitted = [{
+      plan: template,
+      arrivalNs: 0,
+      admissionOrder: 0,
+    }];
+    const baseline = executeConcurrentFrozenPlans(scenario, admitted);
+    expect(() => executeConcurrentNodeFailure(
+      scenario,
+      admitted,
+      {
+        kind: "node_failure",
+        atNs: baseline.completedAtNs + 1,
+        nodeId: "node1",
+        reason: "late node failure",
+      },
+    )).toThrowError("node fault occurs after executions completed");
   });
 });

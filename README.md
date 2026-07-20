@@ -18,7 +18,7 @@ Phase 1 is complete in `@inference-sim/core`:
 - independent trace replay with invariant checks;
 - composite speculative checkpoint/restore transaction semantics.
 
-Phase 2 is in progress:
+Phase 2 is complete:
 
 - capability-based scenarios for all six required topology families;
 - exact physical memory-domain ledgers and shared-allocation aliases;
@@ -35,6 +35,8 @@ Phase 2 is in progress:
   allocation leases, and independent global replay.
 - structured node failures and explicit quiesce-before-admit failover to a
   failed-node-free scenario and replanned workload at a newer topology epoch.
+- atomic node-fault fanout across all active old-epoch concurrent executions,
+  with one shared pre-fault schedule prefix and independent global replay.
 
 Phase 3 has an initial speculative workload slice:
 
@@ -139,6 +141,7 @@ pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
+pnpm sim concurrent-node-failure multi-node examples/concurrent-node-failure.yaml
 pnpm sim node-failover multi-node single-gpu-cpu examples/node-failover.yaml
 pnpm dev:web
 ```

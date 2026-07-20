@@ -619,6 +619,59 @@ target_only:
     expect(output.failedExecution.replayAppliedEvents).toBeGreaterThan(0);
     expect(output.recoveryExecution.replayAppliedEvents).toBeGreaterThan(0);
   });
+
+  it("fans a node failure out across a concurrent campaign", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "concurrent-node-failure.yaml");
+    await writeFile(path, `
+concurrent_campaign:
+  execution_count: 8
+  seed: 24301
+  arrival_window_ns: 0
+node_failure:
+  node_id: node1
+  at_ns: 1
+  reason: node1 heartbeat expired
+target_only:
+  token_count: 2
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli([
+      "concurrent-node-failure",
+      "multi-node",
+      path,
+    ], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      executionCount: number;
+      failedExecutions: number;
+      submittedOperations: number;
+      replayAppliedEvents: number;
+      fault: { kind: string; nodeId: string; atNs: number };
+      terminalsPreview: Array<{
+        status: string;
+        failureAtNs: number;
+      }>;
+    };
+    expect(output.executionCount).toBe(8);
+    expect(output.failedExecutions).toBe(8);
+    expect(output.submittedOperations).toBeGreaterThan(0);
+    expect(output.replayAppliedEvents).toBe(
+      output.executionCount * 2 + output.submittedOperations,
+    );
+    expect(output.fault).toEqual({
+      kind: "node_failure",
+      nodeId: "node1",
+      atNs: 1,
+      reason: "node1 heartbeat expired",
+    });
+    expect(output.terminalsPreview).toHaveLength(8);
+    expect(output.terminalsPreview.every(
+      (terminal) => (
+        terminal.status === "failed" && terminal.failureAtNs === 1
+      ),
+    )).toBe(true);
+  });
 });
 
 function calibrationConfig(scenarioIds: readonly string[]) {

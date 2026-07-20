@@ -1,0 +1,12 @@
+concurrent_campaign:
+  execution_count: 16
+  seed: 24301
+  arrival_window_ns: 0
+
+node_failure:
+  node_id: node1
+  at_ns: 1
+  reason: node1 heartbeat expired
+
+target_only:
+  token_count: 8

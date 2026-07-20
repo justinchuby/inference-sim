@@ -2,6 +2,7 @@ import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
   type FrozenPlanExecutionResult,
+  type PlanFault,
   type PlanExecutionTrace,
   type PlanOperation,
   type PlanReplayResult,
@@ -12,7 +13,10 @@ import {
   type RankCompletion,
   type RankTerminalState,
 } from "./plan-types.js";
-import type { SimulationScenario } from "./scenario-types.js";
+import type {
+  CommunicatorGroupSpec,
+  SimulationScenario,
+} from "./scenario-types.js";
 import { DiscreteEventSimulator } from "./event-loop.js";
 import {
   CollectiveSubmitSequencer,
@@ -61,6 +65,15 @@ export interface ConcurrentPlanReplayResult {
   readonly executions: readonly PlanReplayResult[];
 }
 
+export type ConcurrentNodeFailure = Extract<
+  PlanFault,
+  { readonly kind: "node_failure" }
+>;
+
+export interface ConcurrentPlanReplayOptions {
+  readonly nodeFailure?: ConcurrentNodeFailure;
+}
+
 export interface ConcurrentPlanCampaignOptions {
   readonly executionCount: number;
   readonly seed: number;
@@ -69,6 +82,14 @@ export interface ConcurrentPlanCampaignOptions {
 
 export interface ConcurrentPlanCampaignResult {
   readonly options: ConcurrentPlanCampaignOptions;
+  readonly requests: readonly ConcurrentPlanAdmission[];
+  readonly execution: ConcurrentPlanExecutionResult;
+  readonly replay: ConcurrentPlanReplayResult;
+}
+
+export interface ConcurrentNodeFailureCampaignResult {
+  readonly options: ConcurrentPlanCampaignOptions;
+  readonly fault: ConcurrentNodeFailure;
   readonly requests: readonly ConcurrentPlanAdmission[];
   readonly execution: ConcurrentPlanExecutionResult;
   readonly replay: ConcurrentPlanReplayResult;
@@ -312,10 +333,82 @@ export function executeConcurrentFrozenPlans(
   };
 }
 
+export function executeConcurrentNodeFailure(
+  scenario: SimulationScenario,
+  requests: readonly ConcurrentPlanRequest[],
+  fault: ConcurrentNodeFailure,
+): ConcurrentPlanExecutionResult {
+  const ordered = validateConcurrentNodeFailure(scenario, requests, fault);
+  const baseline = executeConcurrentFrozenPlans(scenario, ordered);
+  const completedBeforeFault = baseline.executions.filter(
+    (execution) => execution.completedAtNs < fault.atNs,
+  );
+  if (completedBeforeFault.length > 0) {
+    throw new FrozenPlanExecutionError(
+      `node fault occurs after executions completed: ${
+        completedBeforeFault.map((execution) => execution.executionId).join(", ")
+      }`,
+    );
+  }
+  const operations = baseline.trace.operations.filter(
+    ({ event }) => event.submittedAtNs < fault.atNs,
+  );
+  const terminals: PlanTerminalEvent[] = [];
+  const executions = ordered.map((request): FrozenPlanExecutionResult => {
+    const localOperations = operations
+      .map(({ event }) => event)
+      .filter((event) => event.executionId === request.plan.executionId);
+    const terminal = nodeFailureTerminal(
+      scenario,
+      request.plan,
+      localOperations,
+      fault,
+    );
+    terminals.push(terminal);
+    const trace: PlanExecutionTrace = {
+      operations: localOperations,
+      terminal,
+    };
+    return {
+      status: "failed",
+      executionId: request.plan.executionId,
+      completedAtNs: terminal.timestampNs,
+      trace,
+      rankCompletions: terminal.rankStates
+        .filter((state) => state.status === "succeeded")
+        .map((state) => ({
+          rankId: state.rankId,
+          completedAtNs: state.terminalAtNs,
+        })),
+      rankStates: terminal.rankStates,
+    };
+  });
+  terminals.sort(compareTerminals(ordered));
+  const completedAtNs = executions.reduce(
+    (maximum, execution) => Math.max(maximum, execution.completedAtNs),
+    fault.atNs,
+  );
+  return {
+    completedAtNs,
+    maximumConcurrentExecutions: maximumConcurrency(
+      baseline.trace.admissions,
+      terminals,
+    ),
+    executions,
+    trace: {
+      revision: CONCURRENT_PLAN_TRACE_REVISION,
+      admissions: baseline.trace.admissions,
+      operations,
+      terminals,
+    },
+  };
+}
+
 export function replayConcurrentPlanTrace(
   scenario: SimulationScenario,
   requests: readonly ConcurrentPlanRequest[],
   trace: ConcurrentPlanExecutionTrace,
+  options: ConcurrentPlanReplayOptions = {},
 ): ConcurrentPlanReplayResult {
   const ordered = validateConcurrentRequests(scenario, requests);
   if (trace.revision !== CONCURRENT_PLAN_TRACE_REVISION) {
@@ -570,6 +663,18 @@ export function replayConcurrentPlanTrace(
     }
   }
 
+  if (options.nodeFailure) {
+    return replayConcurrentNodeFailureTerminals(
+      scenario,
+      ordered,
+      trace,
+      options.nodeFailure,
+      eventsByExecution,
+      priorGroupOwner,
+      finalCollectiveSubmission,
+    );
+  }
+
   const expectedTerminals: PlanTerminalEvent[] = [];
   const replayExecutions: PlanReplayResult[] = [];
   for (const request of ordered) {
@@ -620,70 +725,40 @@ export function runSeededConcurrentPlanCampaign(
   template: FrozenPlan,
   options: ConcurrentPlanCampaignOptions,
 ): ConcurrentPlanCampaignResult {
-  validateCampaignOptions(options);
-  const validation = validateFrozenPlan(scenario, template);
-  if (!validation.valid) {
-    throw new FrozenPlanExecutionError(
-      `invalid campaign template: ${
-        validation.issues.map((issue) => issue.message).join("; ")
-      }`,
-    );
-  }
-  const completionEvents = options.executionCount * template.steps.length;
-  const traceEvents = completionEvents + options.executionCount * 2;
-  if (
-    !Number.isSafeInteger(completionEvents)
-    || !Number.isSafeInteger(traceEvents)
-    || traceEvents > scenario.execution.maxEvents
-  ) {
-    throw new FrozenPlanExecutionError(
-      `campaign requires ${traceEvents} trace events, limit is ${scenario.execution.maxEvents}`,
-    );
-  }
-  const random = new SeededRandom(options.seed);
-  const admissionTieBreakers = shuffledIndices(
-    options.executionCount,
-    random,
-  );
-  const arrivalRange = checkedAdd(
-    options.arrivalWindowNs,
-    1,
-    "campaign arrival range",
-  );
-  const arrivals = Array.from({ length: options.executionCount }, () => (
-    Math.floor(random.nextFloat() * arrivalRange)
-  ));
-  const firstArrival = arrivals.reduce(
-    (minimum, arrivalNs) => Math.min(minimum, arrivalNs),
-    Number.MAX_SAFE_INTEGER,
-  );
-  const normalizedArrivals = arrivals.map(
-    (arrivalNs) => arrivalNs - firstArrival,
-  );
-  const admissionOrderByIndex = new Array<number>(options.executionCount);
-  [...normalizedArrivals.keys()]
-    .sort((left, right) => (
-      normalizedArrivals[left] - normalizedArrivals[right]
-      || admissionTieBreakers[left] - admissionTieBreakers[right]
-      || left - right
-    ))
-    .forEach((requestIndex, admissionOrder) => {
-      admissionOrderByIndex[requestIndex] = admissionOrder;
-    });
-  const requests = arrivals.map((arrivalNs, index): ConcurrentPlanRequest => ({
-    plan: {
-      ...template,
-      id: `${template.id}:campaign:${index}`,
-      executionId: `${template.executionId}:campaign:${index}`,
-      steps: template.steps,
-    },
-    arrivalNs: normalizedArrivals[index],
-    admissionOrder: admissionOrderByIndex[index],
-  }));
+  validateCampaignInputs(scenario, template, options);
+  const requests = buildSeededRequests(template, options);
   const execution = executeConcurrentFrozenPlans(scenario, requests);
   const replay = replayConcurrentPlanTrace(scenario, requests, execution.trace);
   return {
     options: { ...options },
+    requests: execution.trace.admissions,
+    execution,
+    replay,
+  };
+}
+
+export function runSeededConcurrentNodeFailureCampaign(
+  scenario: SimulationScenario,
+  template: FrozenPlan,
+  options: ConcurrentPlanCampaignOptions,
+  fault: ConcurrentNodeFailure,
+): ConcurrentNodeFailureCampaignResult {
+  validateCampaignInputs(scenario, template, options);
+  const requests = buildSeededRequests(template, options);
+  const execution = executeConcurrentNodeFailure(
+    scenario,
+    requests,
+    fault,
+  );
+  const replay = replayConcurrentPlanTrace(
+    scenario,
+    requests,
+    execution.trace,
+    { nodeFailure: fault },
+  );
+  return {
+    options: { ...options },
+    fault: { ...fault },
     requests: execution.trace.admissions,
     execution,
     replay,
@@ -883,6 +958,229 @@ function successfulTerminal(
       0,
     ),
     rankStates,
+  };
+}
+
+function validateConcurrentNodeFailure(
+  scenario: SimulationScenario,
+  requests: readonly ConcurrentPlanRequest[],
+  fault: ConcurrentNodeFailure,
+): ConcurrentPlanRequest[] {
+  const ordered = validateConcurrentRequests(scenario, requests);
+  if (
+    !Number.isSafeInteger(fault.atNs)
+    || fault.atNs <= 0
+    || typeof fault.nodeId !== "string"
+    || fault.nodeId.length === 0
+    || typeof fault.reason !== "string"
+    || fault.reason.length === 0
+    || !scenario.devices.some((device) => device.nodeId === fault.nodeId)
+  ) {
+    throw new FrozenPlanExecutionError(
+      "concurrent node fault must identify a known node, positive safe time, and non-empty reason",
+    );
+  }
+  const rankDevices = buildRankDeviceMap(scenario.groups);
+  const deviceNodes = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId]),
+  );
+  for (const request of ordered) {
+    if (request.arrivalNs >= fault.atNs) {
+      throw new FrozenPlanExecutionError(
+        `execution ${request.plan.executionId} is not admitted before node fault at ${fault.atNs}ns`,
+      );
+    }
+    if (!planRanks(request.plan).some((rankId) => (
+      deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
+    ))) {
+      throw new FrozenPlanExecutionError(
+        `execution ${request.plan.executionId} does not participate on failed node ${fault.nodeId}`,
+      );
+    }
+  }
+  return ordered;
+}
+
+function nodeFailureTerminal(
+  scenario: SimulationScenario,
+  plan: FrozenPlan,
+  operations: readonly PlanTraceEvent[],
+  fault: ConcurrentNodeFailure,
+): PlanTerminalEvent {
+  const submittedStepIds = new Set(operations.map((event) => event.stepId));
+  const unsubmittedStepIds = plan.steps
+    .filter((step) => !submittedStepIds.has(step.id))
+    .map((step) => step.id);
+  const quiescedAtNs = operations.reduce(
+    (maximum, event) => Math.max(maximum, event.finishNs),
+    fault.atNs,
+  );
+  const rankCompletions = new Map<string, number>();
+  for (const event of operations) {
+    for (const rankId of event.participants) {
+      rankCompletions.set(
+        rankId,
+        Math.max(rankCompletions.get(rankId) ?? 0, event.finishNs),
+      );
+    }
+  }
+  const rankDevices = buildRankDeviceMap(scenario.groups);
+  const deviceNodes = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId]),
+  );
+  const failedRanks = new Set(planRanks(plan).filter((rankId) => (
+    deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
+  )));
+  const rankStates = planRanks(plan).map((rankId): RankTerminalState => {
+    const rankStepIds = plan.steps
+      .filter((step) => step.participants.includes(rankId))
+      .map((step) => step.id);
+    const allStepsSubmitted = rankStepIds.every(
+      (stepId) => submittedStepIds.has(stepId),
+    );
+    const completedAtNs = rankCompletions.get(rankId) ?? 0;
+    if (allStepsSubmitted && completedAtNs < fault.atNs) {
+      return { rankId, status: "succeeded", terminalAtNs: completedAtNs };
+    }
+    if (failedRanks.has(rankId)) {
+      return { rankId, status: "failed", terminalAtNs: fault.atNs };
+    }
+    if (allStepsSubmitted) {
+      return { rankId, status: "succeeded", terminalAtNs: completedAtNs };
+    }
+    return { rankId, status: "aborted", terminalAtNs: quiescedAtNs };
+  });
+  return {
+    contractRevision: PLAN_CONTRACT_REVISION,
+    executionId: plan.executionId,
+    topologyEpoch: plan.topologyEpoch,
+    sourceSequence: operations.length,
+    kind: "execution_terminal",
+    status: "failed",
+    timestampNs: quiescedAtNs,
+    failureAtNs: fault.atNs,
+    reason: fault.reason,
+    fault: { ...fault },
+    unsubmittedStepIds,
+    rankStates,
+  };
+}
+
+function replayConcurrentNodeFailureTerminals(
+  scenario: SimulationScenario,
+  ordered: readonly ConcurrentPlanRequest[],
+  trace: ConcurrentPlanExecutionTrace,
+  fault: ConcurrentNodeFailure,
+  eventsByExecution: ReadonlyMap<
+    string,
+    ReadonlyMap<number, PlanTraceEvent>
+  >,
+  priorGroupOwner: ReadonlyMap<string, string>,
+  finalCollectiveSubmission: ReadonlyMap<string, number>,
+): ConcurrentPlanReplayResult {
+  validateConcurrentNodeFailure(scenario, ordered, fault);
+  if (trace.operations.some(({ event }) => event.submittedAtNs >= fault.atNs)) {
+    throw new PlanReplayError(
+      "concurrent operation was submitted at or after node fault",
+    );
+  }
+  const expectedTerminals: PlanTerminalEvent[] = [];
+  const replayExecutions: PlanReplayResult[] = [];
+  for (const request of ordered) {
+    const eventMap = eventsByExecution.get(request.plan.executionId);
+    if (!eventMap) {
+      throw new PlanReplayError(
+        `missing operation prefix for ${request.plan.executionId}`,
+      );
+    }
+    for (const step of request.plan.steps) {
+      if (eventMap.has(step.id)) {
+        continue;
+      }
+      let readyAtNs = request.arrivalNs;
+      let dependenciesComplete = true;
+      for (const dependency of step.dependencies) {
+        const dependencyEvent = eventMap.get(dependency);
+        if (!dependencyEvent) {
+          dependenciesComplete = false;
+          break;
+        }
+        readyAtNs = Math.max(readyAtNs, dependencyEvent.finishNs);
+      }
+      if (!dependenciesComplete) {
+        continue;
+      }
+      if (step.operation.kind === "collective") {
+        const priorOwner = priorGroupOwner.get(identityKey(
+          request.plan.executionId,
+          step.operation.groupId,
+        ));
+        if (priorOwner) {
+          const priorFinal = finalCollectiveSubmission.get(identityKey(
+            priorOwner,
+            step.operation.groupId,
+          ));
+          if (priorFinal === undefined) {
+            continue;
+          }
+          readyAtNs = Math.max(readyAtNs, priorFinal);
+        }
+      }
+      if (readyAtNs < fault.atNs) {
+        throw new PlanReplayError(
+          `${request.plan.executionId}/${step.id} was ready before node fault but omitted`,
+        );
+      }
+    }
+    const operations = [...eventMap.values()]
+      .sort((left, right) => left.sourceSequence - right.sourceSequence);
+    if (
+      operations.length === request.plan.steps.length
+      && operations.every((event) => event.finishNs < fault.atNs)
+    ) {
+      throw new PlanReplayError(
+        `${request.plan.executionId} completed before node fault`,
+      );
+    }
+    const terminal = nodeFailureTerminal(
+      scenario,
+      request.plan,
+      operations,
+      fault,
+    );
+    expectedTerminals.push(terminal);
+    replayExecutions.push({
+      status: "failed",
+      appliedEvents: operations.length + 1,
+      completedAtNs: terminal.timestampNs,
+      rankCompletions: terminal.rankStates
+        .filter((state) => state.status === "succeeded")
+        .map((state) => ({
+          rankId: state.rankId,
+          completedAtNs: state.terminalAtNs,
+        })),
+      rankStates: terminal.rankStates,
+    });
+  }
+  expectedTerminals.sort(compareTerminals(ordered));
+  if (!terminalsEqual(trace.terminals, expectedTerminals)) {
+    throw new PlanReplayError(
+      "concurrent node-failure terminals do not match global quiescence",
+    );
+  }
+  const completedAtNs = expectedTerminals.reduce(
+    (maximum, terminal) => Math.max(maximum, terminal.timestampNs),
+    fault.atNs,
+  );
+  return {
+    appliedEvents:
+      trace.admissions.length + trace.operations.length + trace.terminals.length,
+    completedAtNs,
+    maximumConcurrentExecutions: maximumConcurrency(
+      trace.admissions,
+      trace.terminals,
+    ),
+    executions: replayExecutions,
   };
 }
 
@@ -1249,6 +1547,79 @@ function validateCampaignOptions(options: ConcurrentPlanCampaignOptions): void {
   }
 }
 
+function validateCampaignInputs(
+  scenario: SimulationScenario,
+  template: FrozenPlan,
+  options: ConcurrentPlanCampaignOptions,
+): void {
+  validateCampaignOptions(options);
+  const validation = validateFrozenPlan(scenario, template);
+  if (!validation.valid) {
+    throw new FrozenPlanExecutionError(
+      `invalid campaign template: ${
+        validation.issues.map((issue) => issue.message).join("; ")
+      }`,
+    );
+  }
+  const completionEvents = options.executionCount * template.steps.length;
+  const traceEvents = completionEvents + options.executionCount * 2;
+  if (
+    !Number.isSafeInteger(completionEvents)
+    || !Number.isSafeInteger(traceEvents)
+    || traceEvents > scenario.execution.maxEvents
+  ) {
+    throw new FrozenPlanExecutionError(
+      `campaign requires ${traceEvents} trace events, limit is ${scenario.execution.maxEvents}`,
+    );
+  }
+}
+
+function buildSeededRequests(
+  template: FrozenPlan,
+  options: ConcurrentPlanCampaignOptions,
+): ConcurrentPlanRequest[] {
+  const random = new SeededRandom(options.seed);
+  const admissionTieBreakers = shuffledIndices(
+    options.executionCount,
+    random,
+  );
+  const arrivalRange = checkedAdd(
+    options.arrivalWindowNs,
+    1,
+    "campaign arrival range",
+  );
+  const arrivals = Array.from({ length: options.executionCount }, () => (
+    Math.floor(random.nextFloat() * arrivalRange)
+  ));
+  const firstArrival = arrivals.reduce(
+    (minimum, arrivalNs) => Math.min(minimum, arrivalNs),
+    Number.MAX_SAFE_INTEGER,
+  );
+  const normalizedArrivals = arrivals.map(
+    (arrivalNs) => arrivalNs - firstArrival,
+  );
+  const admissionOrderByIndex = new Array<number>(options.executionCount);
+  [...normalizedArrivals.keys()]
+    .sort((left, right) => (
+      normalizedArrivals[left] - normalizedArrivals[right]
+      || admissionTieBreakers[left] - admissionTieBreakers[right]
+      || left - right
+    ))
+    .forEach((requestIndex, admissionOrder) => {
+      admissionOrderByIndex[requestIndex] = admissionOrder;
+    });
+  return arrivals.map((_arrivalNs, index): ConcurrentPlanRequest => ({
+    plan: {
+      ...template,
+      id: `${template.id}:campaign:${index}`,
+      executionId: `${template.executionId}:campaign:${index}`,
+      steps: template.steps,
+    },
+    arrivalNs: normalizedArrivals[index],
+    admissionOrder: admissionOrderByIndex[index],
+  }));
+}
+
 function shuffledIndices(
   count: number,
   random: SeededRandom,
@@ -1287,6 +1658,24 @@ function arraysEqual<T>(
 ): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
+}
+
+function buildRankDeviceMap(
+  groups: readonly CommunicatorGroupSpec[],
+): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const group of groups) {
+    for (const rank of group.orderedRanks) {
+      if (!result.has(rank.rankId)) {
+        result.set(rank.rankId, rank.deviceId);
+      }
+    }
+  }
+  return result;
+}
+
+function planRanks(plan: FrozenPlan): string[] {
+  return [...new Set(plan.steps.flatMap((step) => step.participants))].sort();
 }
 
 function identityKey(...parts: readonly (string | number)[]): string {

@@ -25,6 +25,7 @@ import {
   simulateTopologyWorkload,
   runPlanFaultCampaign,
   runNodeFailoverCampaign,
+  runSeededConcurrentNodeFailureCampaign,
   runSeededConcurrentPlanCampaign,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
@@ -413,6 +414,56 @@ export async function runCli(
               replannedPlan,
             },
           )),
+        );
+        return 0;
+      }
+      case "concurrent-node-failure": {
+        if (
+          !argument
+          || !SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)
+        ) {
+          throw new Error(`unknown scenario preset ${String(argument)}`);
+        }
+        const config = await loadRequiredConfig(
+          secondArgument,
+          "concurrent-node-failure",
+        );
+        const failure = requireRecord(config.node_failure, "node_failure");
+        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const costModel = await loadCostModel(thirdArgument);
+        const plan = compileTopologyWorkloadPlan(
+          scenario,
+          buildTopologyProfile(config),
+          costModel,
+        );
+        printJson(
+          io,
+          summarizeConcurrentNodeFailure(
+            runSeededConcurrentNodeFailureCampaign(
+              scenario,
+              plan,
+              parseConcurrentCampaignOptions(config, scenario.execution.seed),
+              {
+                kind: "node_failure",
+                atNs: requireNumber(
+                  failure,
+                  "at_ns",
+                  "node_failure",
+                ),
+                nodeId: requireString(
+                  failure,
+                  "node_id",
+                  "node_failure",
+                ),
+                reason: optionalString(
+                  failure,
+                  "reason",
+                  "node heartbeat expired",
+                  "node_failure",
+                ),
+              },
+            ),
+          ),
         );
         return 0;
       }
@@ -1083,6 +1134,39 @@ function summarizeNodeFailover(
   };
 }
 
+function summarizeConcurrentNodeFailure(
+  result: ReturnType<typeof runSeededConcurrentNodeFailureCampaign>,
+) {
+  return {
+    options: result.options,
+    fault: result.fault,
+    assumptions: [
+      "all campaign executions must be admitted before the node-fault timestamp",
+      "the node fault atomically closes new submission for every old-epoch execution",
+      "only the shared global schedule prefix submitted before the fault may quiesce",
+    ],
+    completedAtNs: result.execution.completedAtNs,
+    executionCount: result.execution.executions.length,
+    maximumConcurrentExecutions:
+      result.execution.maximumConcurrentExecutions,
+    submittedOperations: result.execution.trace.operations.length,
+    replayAppliedEvents: result.replay.appliedEvents,
+    failedExecutions: result.execution.executions.filter(
+      (execution) => execution.status === "failed",
+    ).length,
+    terminalsPreview: result.execution.trace.terminals.slice(0, 8)
+      .map((terminal) => ({
+        executionId: terminal.executionId,
+        status: terminal.status,
+        timestampNs: terminal.timestampNs,
+        failureAtNs: terminal.failureAtNs,
+        submittedOperations: terminal.sourceSequence,
+        unsubmittedOperations: terminal.unsubmittedStepIds?.length ?? 0,
+        rankStates: terminal.rankStates,
+      })),
+  };
+}
+
 function percentile(values: readonly number[], quantile: number): number {
   if (values.length === 0) {
     return 0;
@@ -1258,6 +1342,7 @@ Usage:
   inference-sim fault-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
   inference-sim concurrent-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
   inference-sim node-failover <failed-preset> <recovery-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim concurrent-node-failure <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
 `;
 }
 

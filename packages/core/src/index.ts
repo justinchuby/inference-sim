@@ -275,15 +275,20 @@ export {
 export {
   CONCURRENT_PLAN_TRACE_REVISION,
   executeConcurrentFrozenPlans,
+  executeConcurrentNodeFailure,
   replayConcurrentPlanTrace,
+  runSeededConcurrentNodeFailureCampaign,
   runSeededConcurrentPlanCampaign,
   type ConcurrentPlanAdmission,
   type ConcurrentPlanCampaignOptions,
   type ConcurrentPlanCampaignResult,
+  type ConcurrentNodeFailure,
+  type ConcurrentNodeFailureCampaignResult,
   type ConcurrentPlanExecutionResult,
   type ConcurrentPlanExecutionTrace,
   type ConcurrentPlanOperationEvent,
   type ConcurrentPlanReplayResult,
+  type ConcurrentPlanReplayOptions,
   type ConcurrentPlanRequest,
 } from "./concurrent-plan.js";
 export {
