@@ -42,6 +42,48 @@ describe("ExpertCacheSimulator", () => {
       + snapshot.metrics.coldMisses).toBe(2);
   });
 
+  it("holds route access until externally retimed demand loads complete", () => {
+    const cache = new ExpertCacheSimulator({
+      ...config,
+      initialHotExpertIds: [],
+      initialWarmExpertIds: [],
+    });
+    const pendingRoute = cache.beginTokenRoute({
+      tokenIndex: 0,
+      topK: 1,
+      atNs: 0,
+    });
+    const [loadId] = pendingRoute.newDemandLoadIds;
+
+    expect(loadId).toBeDefined();
+    expect(pendingRoute.requiredLoadIds).toEqual([loadId]);
+    expect(cache.trace().some((event) => event.kind === "access")).toBe(false);
+    expect(() => cache.beginTokenRoute({
+      tokenIndex: 1,
+      topK: 1,
+      atNs: 0,
+    })).toThrow("must complete before another route begins");
+    expect(() => cache.prefetch(["e0"], "warm", 0))
+      .toThrow("must complete before prefetch");
+    expect(() => cache.retimePendingPrefetch(loadId, 30))
+      .toThrow("cannot retime non-prefetch");
+
+    cache.retimePendingLoad(loadId, 37, 37);
+    const completed = cache.completeTokenRoute(pendingRoute.requestId);
+
+    expect(completed.readyAtNs).toBe(37);
+    expect(completed.stallNs).toBe(37);
+    expect(cache.snapshot().pendingLoads).toHaveLength(0);
+    expect(replayExpertCacheTrace(cache.trace()).snapshot)
+      .toEqual(cache.snapshot());
+
+    const omittedAccess = cache.trace().filter(
+      (event) => event.kind !== "access",
+    );
+    expect(() => replayExpertCacheTrace(omittedAccess))
+      .toThrow("did not complete");
+  });
+
   it("prefetches asynchronously and turns a completed copy into a hit", () => {
     const cache = new ExpertCacheSimulator(config);
     const [loadId] = cache.prefetch(["e3"], "hot", 10);

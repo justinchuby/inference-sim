@@ -202,6 +202,7 @@ export {
   type ExpertLoadKind,
   type ExpertLoadTarget,
   type ExpertPendingLoadSnapshot,
+  type ExpertPendingRoute,
   type ExpertRouteRequest,
   type ExpertRouteResult,
   type ExpertSpec,

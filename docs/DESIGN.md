@@ -597,6 +597,15 @@ LRU victims, latency, capacity, and route-to-access correspondence. Metrics
 include hot/warm/cold outcomes, bytes moved, evictions, load counts, stall time,
 and per-tier high-water bytes.
 
+Revision-4 cache execution separates route admission from route access.
+`beginTokenRoute()` freezes the seeded expert decision, reserves any required
+demand loads, and returns stable load IDs. The caller may retime those pending
+loads from physical evidence before `completeTokenRoute()` advances cache time
+and emits access. Only one route transaction may be active; prefetch and a
+second route are rejected until it completes. The original `processToken()`
+entry point composes both phases with configured logical latency for standalone
+workloads.
+
 Adaptive prefetch is a bounded warm-tier feedback policy, not a future-route
 oracle. After configured token intervals, it ranks only previously completed
 route observations by frequency, then recency, then expert ID. Candidates
@@ -694,8 +703,8 @@ derived from the authoritative global operation trace, not by summing
 isolated per-batch utilization. Utilization divides by
 `resourceObservationNs * capacityLanes` and fails closed above one.
 
-Revision-3 expert-cache traces permit a pending prefetch completion to be
-retimed without changing its reservation. In composed serving, each adaptive
+Revision-4 expert-cache traces permit a pending load completion to be retimed
+without changing its reservation. In composed serving, each adaptive
 warm load is first deferred so later routes in the same aggregate batch cannot
 consume a provisional fixed-latency copy. Every step on its physical storage
 path receives an absolute not-before constraint equal to the recorded policy

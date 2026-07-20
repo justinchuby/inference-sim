@@ -1,6 +1,6 @@
 import { DiscreteEventSimulator } from "./event-loop.js";
 
-export const EXPERT_CACHE_CONTRACT_REVISION = 3;
+export const EXPERT_CACHE_CONTRACT_REVISION = 4;
 
 export type ExpertCacheTier = "hot" | "warm" | "cold";
 export type ExpertLoadTarget = "hot" | "warm";
@@ -46,6 +46,16 @@ export interface ExpertRouteResult {
   readonly readyAtNs: number;
   readonly stallNs: number;
   readonly sourceTiers: readonly ExpertCacheTier[];
+}
+
+export interface ExpertPendingRoute {
+  readonly requestId: string;
+  readonly tokenIndex: number;
+  readonly expertIds: readonly string[];
+  readonly requestedAtNs: number;
+  readonly sourceTiers: readonly ExpertCacheTier[];
+  readonly requiredLoadIds: readonly string[];
+  readonly newDemandLoadIds: readonly string[];
 }
 
 export interface ExpertCacheMetrics {
@@ -253,6 +263,7 @@ export class ExpertCacheSimulator {
   private nextRequestId = 1;
   private nextSourceSequence = 0;
   private observedRoutes = 0;
+  private activeRoute?: ExpertPendingRoute;
 
   constructor(config: ExpertCacheConfig) {
     validateConfig(config);
@@ -272,6 +283,16 @@ export class ExpertCacheSimulator {
   }
 
   processToken(request: ExpertRouteRequest): ExpertRouteResult {
+    const route = this.beginTokenRoute(request);
+    return this.completeTokenRoute(route.requestId);
+  }
+
+  beginTokenRoute(request: ExpertRouteRequest): ExpertPendingRoute {
+    if (this.activeRoute !== undefined) {
+      throw new ExpertCacheProtocolError(
+        `route ${this.activeRoute.requestId} must complete before another route begins`,
+      );
+    }
     assertNonNegativeSafeInteger(request.tokenIndex, "token index");
     assertPositiveSafeInteger(request.topK, "topK");
     this.advanceTo(request.atNs);
@@ -331,35 +352,69 @@ export class ExpertCacheSimulator {
     });
 
     const protectedIds = new Set(expertIds);
-    let readyAtNs = request.atNs;
+    const requiredLoadIds: string[] = [];
+    const newDemandLoadIds: string[] = [];
     for (let index = 0; index < expertIds.length; index++) {
       const id = expertIds[index];
       const sourceTier = sourceTiers[index];
       if (sourceTier === "hot") {
-        this.metrics.hotHits++;
         continue;
-      }
-      if (sourceTier === "warm") {
-        this.metrics.warmMisses++;
-      } else {
-        this.metrics.coldMisses++;
       }
       const existing = this.pendingTarget(id, "hot");
       const load = existing
         ?? this.startLoad(id, "hot", "demand", request.atNs, protectedIds);
-      readyAtNs = Math.max(readyAtNs, load.completesAtNs);
+      requiredLoadIds.push(load.loadId);
+      if (existing === undefined) {
+        newDemandLoadIds.push(load.loadId);
+      }
     }
 
+    const route: ExpertPendingRoute = {
+      requestId,
+      tokenIndex: request.tokenIndex,
+      expertIds,
+      requestedAtNs: request.atNs,
+      sourceTiers,
+      requiredLoadIds,
+      newDemandLoadIds,
+    };
+    this.activeRoute = route;
+    return structuredClone(route);
+  }
+
+  completeTokenRoute(requestId: string): ExpertRouteResult {
+    const route = this.activeRoute;
+    if (route === undefined || route.requestId !== requestId) {
+      throw new ExpertCacheProtocolError(
+        `cannot complete inactive route ${requestId}`,
+      );
+    }
+    let readyAtNs = Math.max(route.requestedAtNs, this.currentTimeNs);
+    for (const loadId of route.requiredLoadIds) {
+      const load = this.pending.get(loadId);
+      if (load !== undefined) {
+        readyAtNs = Math.max(readyAtNs, load.completesAtNs);
+      }
+    }
     this.advanceTo(readyAtNs);
-    for (const id of expertIds) {
+    for (const id of route.expertIds) {
       if (!this.hot.has(id)) {
         throw new ExpertCacheProtocolError(
-          `expert ${id} was not hot when request ${requestId} became ready`,
+          `expert ${id} was not hot when request ${route.requestId} became ready`,
         );
       }
       this.touch(this.hot, id);
     }
-    const stallNs = readyAtNs - request.atNs;
+    for (const sourceTier of route.sourceTiers) {
+      if (sourceTier === "hot") {
+        this.metrics.hotHits++;
+      } else if (sourceTier === "warm") {
+        this.metrics.warmMisses++;
+      } else {
+        this.metrics.coldMisses++;
+      }
+    }
+    const stallNs = readyAtNs - route.requestedAtNs;
     this.metrics.stallNs = checkedAdd(
       this.metrics.stallNs,
       stallNs,
@@ -367,22 +422,23 @@ export class ExpertCacheSimulator {
     );
     this.commitEvent({
       kind: "access",
-      requestId,
-      requestedAtNs: request.atNs,
+      requestId: route.requestId,
+      requestedAtNs: route.requestedAtNs,
       readyAtNs,
-      expertIds,
-      sourceTiers,
+      expertIds: route.expertIds,
+      sourceTiers: route.sourceTiers,
       stallNs,
     });
-    this.observeRoute(request.tokenIndex, expertIds);
-    this.runAdaptivePrefetch(request.tokenIndex, readyAtNs);
+    this.observeRoute(route.tokenIndex, route.expertIds);
+    this.activeRoute = undefined;
+    this.runAdaptivePrefetch(route.tokenIndex, readyAtNs);
     return {
-      requestId,
-      expertIds,
-      requestedAtNs: request.atNs,
+      requestId: route.requestId,
+      expertIds: route.expertIds,
+      requestedAtNs: route.requestedAtNs,
       readyAtNs,
       stallNs,
-      sourceTiers,
+      sourceTiers: route.sourceTiers,
     };
   }
 
@@ -391,6 +447,11 @@ export class ExpertCacheSimulator {
     targetTier: ExpertLoadTarget,
     atNs: number,
   ): readonly string[] {
+    if (this.activeRoute !== undefined) {
+      throw new ExpertCacheProtocolError(
+        `route ${this.activeRoute.requestId} must complete before prefetch`,
+      );
+    }
     return this.prefetchWithTrigger(expertIds, targetTier, atNs, "manual");
   }
 
@@ -540,9 +601,27 @@ export class ExpertCacheSimulator {
     completesAtNs: number,
     physicalCompletesAtNs?: number,
   ): ExpertPendingLoadSnapshot {
+    const load = this.pending.get(loadId);
+    if (load?.kind !== "prefetch") {
+      throw new ExpertCacheProtocolError(
+        `cannot retime non-prefetch load ${loadId}`,
+      );
+    }
+    return this.retimePendingLoad(
+      loadId,
+      completesAtNs,
+      physicalCompletesAtNs,
+    );
+  }
+
+  retimePendingLoad(
+    loadId: string,
+    completesAtNs: number,
+    physicalCompletesAtNs?: number,
+  ): ExpertPendingLoadSnapshot {
     assertNonNegativeSafeInteger(
       completesAtNs,
-      "retimed prefetch completion",
+      "retimed load completion",
     );
     const load = this.pending.get(loadId);
     if (load === undefined) {
@@ -550,17 +629,12 @@ export class ExpertCacheSimulator {
         `cannot retime unknown pending load ${loadId}`,
       );
     }
-    if (load.kind !== "prefetch") {
-      throw new ExpertCacheProtocolError(
-        `cannot retime demand load ${loadId}`,
-      );
-    }
     if (
       completesAtNs < this.currentTimeNs
       || completesAtNs < load.startedAtNs
     ) {
       throw new ExpertCacheProtocolError(
-        `retimed prefetch ${loadId} completion ${completesAtNs}ns precedes current/load time`,
+        `retimed load ${loadId} completion ${completesAtNs}ns precedes current/load time`,
       );
     }
     if (
@@ -572,7 +646,7 @@ export class ExpertCacheSimulator {
       )
     ) {
       throw new ExpertCacheProtocolError(
-        `retimed prefetch ${loadId} has invalid physical completion ${physicalCompletesAtNs}`,
+        `retimed load ${loadId} has invalid physical completion ${physicalCompletesAtNs}`,
       );
     }
     if (
@@ -888,6 +962,9 @@ export function replayExpertCacheTrace(
             rng,
           ).map((expert) => expert.id);
           assertArrayEqual(expected, event.expertIds, "route expert ids");
+          if (outstandingRoutes.size > 0) {
+            replayFail("a route began before the prior route completed");
+          }
           if (outstandingRoutes.has(event.requestId)) {
             replayFail(`duplicate request id ${event.requestId}`);
           }
@@ -1090,7 +1167,6 @@ export function replayExpertCacheTrace(
           const load = pending.get(event.loadId);
           if (
             load === undefined
-            || load.kind !== "prefetch"
             || load.completesAtNs !== event.priorCompletesAtNs
             || event.completesAtNs < event.atNs
             || event.completesAtNs < load.startedAtNs
@@ -1103,7 +1179,7 @@ export function replayExpertCacheTrace(
               )
             )
           ) {
-            replayFail(`invalid prefetch retime for ${event.loadId}`);
+            replayFail(`invalid load retime for ${event.loadId}`);
           }
           pending.set(event.loadId, {
             ...load,
@@ -1200,6 +1276,11 @@ export function replayExpertCacheTrace(
   }
   if (expectedAdaptivePrefetch !== undefined) {
     replayFail("adaptive prefetch request was omitted");
+  }
+  if (outstandingRoutes.size > 0) {
+    replayFail(
+      `route ${[...outstandingRoutes.keys()][0]} did not complete`,
+    );
   }
 
   return {
