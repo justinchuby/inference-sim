@@ -64,6 +64,18 @@ export interface TopologyBackgroundPrefetch {
   readonly bytes: number;
 }
 
+export interface TopologyExpertLoad {
+  readonly id: string;
+  readonly sourceTier: "warm" | "cold";
+  readonly bytes: number;
+}
+
+export interface TopologyExpertLoadPlan {
+  readonly load: TopologyExpertLoad;
+  readonly plan?: FrozenPlan;
+  readonly terminalStepIds: readonly number[];
+}
+
 export interface DeviceCapabilityCost {
   readonly invocationOverheadNs: number;
   readonly attentionNsPerToken: number;
@@ -320,6 +332,45 @@ export function compileTopologyWorkloadPlan(
   return compileTopologyWorkload(scenario, profile, costModel).plan;
 }
 
+export function compileTopologyExpertLoadPlan(
+  scenario: SimulationScenario,
+  load: TopologyExpertLoad,
+  costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
+): TopologyExpertLoadPlan {
+  if (load.id.length === 0) {
+    throw new TopologyWorkloadError("expert load id must be non-empty");
+  }
+  if (load.sourceTier !== "warm" && load.sourceTier !== "cold") {
+    throw new TopologyWorkloadError(
+      `expert load ${load.id} has invalid source tier ${String(load.sourceTier)}`,
+    );
+  }
+  assertPositiveSafeInteger(load.bytes, `expert load ${load.id} bytes`);
+  if (costModel.revision !== TOPOLOGY_COST_MODEL_REVISION) {
+    throw new TopologyWorkloadError(
+      `unsupported topology cost revision ${costModel.revision}`,
+    );
+  }
+  const compiler = new WorkloadPlanCompiler(
+    scenario,
+    {
+      id: `expert-load:${load.id}`,
+      batchSize: 1,
+      units: [{
+        id: "unused-load-envelope",
+        targetTokenWidth: 1,
+        committedTokens: 0,
+        draftTokens: 0,
+        activeExperts: 1,
+        warmLoadBytes: 0,
+        coldLoadBytes: 0,
+      }],
+    },
+    costModel,
+  );
+  return compiler.compileExpertLoad(load);
+}
+
 function compileTopologyWorkload(
   scenario: SimulationScenario,
   profile: TopologyWorkloadProfile,
@@ -537,6 +588,103 @@ class WorkloadPlanCompiler {
       executionId: `${this.scenario.id}:${this.profile.id}`,
       topologyEpoch: this.scenario.execution.topologyEpoch,
       steps: this.steps,
+    };
+  }
+
+  compileExpertLoad(load: TopologyExpertLoad): TopologyExpertLoadPlan {
+    const ffnPlacements = this.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("ffn")
+    ));
+    if (ffnPlacements.length === 0) {
+      throw new TopologyWorkloadError(
+        `scenario ${this.scenario.id} has no FFN placement for ${load.id}`,
+      );
+    }
+    const placementsByTarget = new Map<string, PartitionPlacement[]>();
+    for (const placement of ffnPlacements) {
+      const targetDomainId = workspaceDomain(placement);
+      const placements = placementsByTarget.get(targetDomainId) ?? [];
+      placements.push(placement);
+      placementsByTarget.set(targetDomainId, placements);
+    }
+    const terminalStepIds: number[] = [];
+    const lastColdTerminalByNode = new Map<string, number>();
+    for (const [targetDomainId, targetPlacements] of [
+      ...placementsByTarget.entries(),
+    ].sort(([left], [right]) => left.localeCompare(right))) {
+      const target = this.scenario.memoryDomains.find(
+        (domain) => domain.id === targetDomainId,
+      );
+      const placement = targetPlacements[0];
+      if (target === undefined || placement === undefined) {
+        throw new TopologyWorkloadError(
+          `expert load ${load.id} has unknown target ${targetDomainId}`,
+        );
+      }
+      const sourceDomainId = load.sourceTier === "warm"
+        ? this.cacheSourceDomain(targetDomainId)
+        : this.scenario.memoryDomains.find((domain) => (
+            domain.nodeId === target.nodeId && domain.kind === "storage"
+          ))?.id;
+      if (sourceDomainId === undefined) {
+        throw new TopologyWorkloadError(
+          `expert load ${load.id} has no ${load.sourceTier} source on ${target.nodeId}`,
+        );
+      }
+      if (sourceDomainId === targetDomainId) {
+        continue;
+      }
+      const shardBytes = Math.ceil(
+        checkedMultiply(
+          load.bytes,
+          targetPlacements.length,
+          `expert load ${load.id} target bytes`,
+        ) / ffnPlacements.length,
+      );
+      const sourceAllocationId = load.sourceTier === "warm"
+        ? `expert-warm-cache:${target.nodeId}`
+        : `expert-backing:${target.nodeId}`;
+      const priorColdTerminal = load.sourceTier === "cold"
+        ? lastColdTerminalByNode.get(target.nodeId)
+        : undefined;
+      const stepIds = this.addTransferPath(
+        sourceDomainId,
+        targetDomainId,
+        shardBytes,
+        priorColdTerminal === undefined ? [] : [priorColdTerminal],
+        [this.rank(placement.deviceId)],
+        {
+          sourceAllocationId,
+          targetAllocationId: workspaceId(placement),
+        },
+      );
+      if (stepIds.length === 0) {
+        throw new TopologyWorkloadError(
+          `expert load ${load.id} produced no path to ${targetDomainId}`,
+        );
+      }
+      const terminalStepId = stepIds[stepIds.length - 1];
+      terminalStepIds.push(terminalStepId);
+      if (load.sourceTier === "cold") {
+        lastColdTerminalByNode.set(target.nodeId, terminalStepId);
+      }
+    }
+    if (this.steps.length === 0) {
+      return {
+        load: { ...load },
+        terminalStepIds: [],
+      };
+    }
+    return {
+      load: { ...load },
+      plan: {
+        contractRevision: PLAN_CONTRACT_REVISION,
+        id: `topology-expert-load:${load.id}`,
+        executionId: `${this.scenario.id}:expert-load:${load.id}`,
+        topologyEpoch: this.scenario.execution.topologyEpoch,
+        steps: [...this.steps],
+      },
+      terminalStepIds,
     };
   }
 

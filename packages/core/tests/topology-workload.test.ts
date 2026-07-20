@@ -4,7 +4,10 @@ import {
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   compareTopologyWorkloads,
+  compileTopologyExpertLoadPlan,
   defaultSpeculativeEligibility,
+  executeFrozenPlan,
+  replayPlanTrace,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyWorkload,
@@ -32,6 +35,84 @@ describe("topology-aware workload execution", () => {
       expect(result.metrics.tokensPerSecond).toBeGreaterThan(0);
       expect(result.plan.steps.length).toBeGreaterThanOrEqual(8);
     }
+  });
+
+  it("compiles expert demand loads into replayable physical plans", () => {
+    const localWarmScenarios = new Set(["cpu-only", "unified-memory"]);
+    for (const name of SCENARIO_PRESET_NAMES) {
+      const scenario = buildScenarioPreset(name);
+      const cold = compileTopologyExpertLoadPlan(scenario, {
+        id: `cold-${name}`,
+        sourceTier: "cold",
+        bytes: 64 * 1024 ** 2,
+      });
+
+      expect(cold.plan).toBeDefined();
+      expect(cold.terminalStepIds.length).toBeGreaterThan(0);
+      expect(cold.plan?.steps.every((step) => (
+        step.operation.kind === "transfer"
+      ))).toBe(true);
+      expect(cold.plan?.steps.some((step) => (
+        step.operation.kind === "transfer"
+        && step.operation.linkId.endsWith(":storage-read")
+      ))).toBe(true);
+      const coldExecution = executeFrozenPlan(scenario, cold.plan!);
+      expect(coldExecution.status).toBe("succeeded");
+      expect(replayPlanTrace(
+        scenario,
+        cold.plan!,
+        coldExecution.trace,
+      ).status).toBe("succeeded");
+      expect(cold.terminalStepIds.every((stepId) => (
+        coldExecution.trace.operations.some((event) => (
+          event.stepId === stepId
+        ))
+      ))).toBe(true);
+
+      const warm = compileTopologyExpertLoadPlan(scenario, {
+        id: `warm-${name}`,
+        sourceTier: "warm",
+        bytes: 64 * 1024 ** 2,
+      });
+      if (localWarmScenarios.has(name)) {
+        expect(warm.plan).toBeUndefined();
+        expect(warm.terminalStepIds).toEqual([]);
+      } else {
+        expect(warm.plan).toBeDefined();
+        expect(warm.terminalStepIds.length).toBeGreaterThan(0);
+        expect(warm.plan?.steps.every((step) => (
+          step.operation.kind === "transfer"
+          && !step.operation.linkId.endsWith(":storage-read")
+        ))).toBe(true);
+        const warmExecution = executeFrozenPlan(scenario, warm.plan!);
+        expect(warmExecution.status).toBe("succeeded");
+        expect(replayPlanTrace(
+          scenario,
+          warm.plan!,
+          warmExecution.trace,
+        ).status).toBe("succeeded");
+      }
+    }
+  });
+
+  it("rejects malformed physical expert loads", () => {
+    const scenario = buildScenarioPreset("single-gpu-cpu");
+
+    expect(() => compileTopologyExpertLoadPlan(scenario, {
+      id: "",
+      sourceTier: "cold",
+      bytes: 1,
+    })).toThrow("expert load id must be non-empty");
+    expect(() => compileTopologyExpertLoadPlan(scenario, {
+      id: "zero",
+      sourceTier: "cold",
+      bytes: 0,
+    })).toThrow("expert load zero bytes must be a positive safe integer");
+    expect(() => compileTopologyExpertLoadPlan(scenario, {
+      id: "invalid-tier",
+      sourceTier: "remote" as "cold",
+      bytes: 1,
+    })).toThrow("expert load invalid-tier has invalid source tier remote");
   });
 
   it("executes speculative and expert profiles on every topology family", () => {
