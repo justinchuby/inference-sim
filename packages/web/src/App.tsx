@@ -2296,7 +2296,8 @@ function ConfigurationPanel({
                           </div>
                           <div className="truncate text-[11px] text-zinc-500">
                             {customScenario.fileName ?? "Embedded scenario"} ·{" "}
-                            {config.customScenario.devices.length} devices ·{" "}
+                            {formatScenarioSystemCount(config.customScenario)} ·{" "}
+                            {config.customScenario.devices.length} chips ·{" "}
                             {config.customScenario.links.length} links
                           </div>
                         </div>
@@ -2363,7 +2364,10 @@ function ConfigurationPanel({
                         <div className="mb-2 min-w-0">
                           <div className="min-w-0">
                             <div className="truncate text-xs font-semibold text-zinc-700">
-                              {selectedScenario.devices.length} devices ·{" "}
+                              {formatScenarioSystemCount(selectedScenario)} ·{" "}
+                              {selectedScenario.devices.length} compute chips
+                            </div>
+                            <div className="truncate text-[11px] text-zinc-500">
                               {selectedScenario.memoryDomains.length} memory domains
                             </div>
                             <div className="truncate text-[11px] text-zinc-500">
@@ -3449,7 +3453,8 @@ function TopologyVisualizationSection({
       <div className="mb-2 flex items-center justify-between gap-3">
         <h2 className="text-sm font-bold">{title}</h2>
         <Badge variant="neutral">
-          {scenario.devices.length} devices · {scenario.links.length} links
+          {formatScenarioSystemCount(scenario)} ·{" "}
+          {scenario.devices.length} chips · {scenario.links.length} links
         </Badge>
       </div>
       <Suspense
@@ -3463,6 +3468,14 @@ function TopologyVisualizationSection({
       </Suspense>
     </section>
   );
+}
+
+function formatScenarioSystemCount(scenario: SimulationScenario): string {
+  const count = new Set([
+    ...scenario.devices.map((device) => device.nodeId),
+    ...scenario.memoryDomains.map((domain) => domain.nodeId),
+  ]).size;
+  return `${count} system${count === 1 ? "" : "s"}`;
 }
 
 function Results({

@@ -22,11 +22,12 @@ import {
 
 type FlowNodeData = TopologyGraphNodeData & Record<string, unknown>;
 type FlowEdgeData = TopologyGraphEdgeData & Record<string, unknown>;
-type FlowNode = Node<FlowNodeData, "topology">;
+type FlowNode = Node<FlowNodeData, "topology" | "topologyGroup">;
 type FlowEdge = Edge<FlowEdgeData>;
 
 const nodeTypes = {
   topology: memo(TopologyNode),
+  topologyGroup: memo(TopologyGroupNode),
 };
 
 export default function TopologyGraph({
@@ -109,6 +110,7 @@ export default function TopologyGraph({
       </ReactFlow>
 
       <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
+        <Legend color="bg-zinc-800" label="System" />
         <Legend color="bg-sky-700" label="Compute" />
         <Legend color="bg-emerald-700" label="Memory" />
         <Legend color="bg-zinc-400" label="Access" dashed />
@@ -125,7 +127,7 @@ export default function TopologyGraph({
                         {selection.data.title}
                       </div>
                       <div className="mt-0.5 text-[11px] text-zinc-500">
-                        {selection.data.kind} · {selection.data.nodeId}
+                        {selection.data.kind} · {selection.data.category}
                       </div>
                       <div className="mt-1 text-[11px] text-zinc-600">
                         {selection.data.details.join(" · ")}
@@ -137,6 +139,9 @@ export default function TopologyGraph({
                       <div className="text-xs font-bold">
                         {selection.data.kind}
                       </div>
+                      <div className="mt-0.5 text-[11px] font-semibold text-zinc-500">
+                        {selection.data.scope}
+                      </div>
                       <div className="mt-1 text-[11px] text-zinc-600">
                         {selection.data.category === "access"
                           ? "Device-visible memory relationship"
@@ -147,6 +152,32 @@ export default function TopologyGraph({
             </div>
           )
         : null}
+    </div>
+  );
+}
+
+function TopologyGroupNode({
+  data,
+  selected,
+}: NodeProps<FlowNode>): React.JSX.Element {
+  return (
+    <div
+      className={[
+        "size-full rounded-md border bg-zinc-50/80",
+        selected
+          ? "border-zinc-700 ring-2 ring-zinc-200"
+          : "border-zinc-300",
+      ].join(" ")}
+    >
+      <div className="flex h-12 items-center justify-between gap-4 border-b border-zinc-200 px-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="size-2 shrink-0 rounded-sm bg-zinc-800" />
+          <div className="truncate text-xs font-bold">{data.title}</div>
+        </div>
+        <div className="shrink-0 text-[10px] font-semibold uppercase text-zinc-500">
+          physical system
+        </div>
+      </div>
     </div>
   );
 }
@@ -240,6 +271,8 @@ function Legend({
 
 function accentColor(accent: TopologyGraphNodeData["accent"]): string {
   switch (accent) {
+    case "system":
+      return "bg-zinc-800";
     case "cpu":
       return "bg-zinc-700";
     case "gpu":

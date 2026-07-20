@@ -1,23 +1,38 @@
 import type { SimulationScenario } from "@inference-sim/core";
 
 export interface TopologyGraphNodeData {
-  readonly category: "device" | "memory";
+  readonly category: "system" | "device" | "memory";
   readonly title: string;
   readonly kind: string;
   readonly nodeId: string;
   readonly details: readonly string[];
-  readonly accent: "cpu" | "gpu" | "npu" | "host" | "device" | "unified" | "storage";
+  readonly accent:
+    | "system"
+    | "cpu"
+    | "gpu"
+    | "npu"
+    | "host"
+    | "device"
+    | "unified"
+    | "storage";
 }
 
 export interface TopologyGraphNode {
   readonly id: string;
-  readonly type: "topology";
+  readonly type: "topology" | "topologyGroup";
   readonly position: { readonly x: number; readonly y: number };
+  readonly parentId?: string;
+  readonly extent?: "parent";
+  readonly style?: {
+    readonly width: number;
+    readonly height: number;
+  };
   readonly data: TopologyGraphNodeData;
 }
 
 export interface TopologyGraphEdgeData {
   readonly category: "access" | "link";
+  readonly scope: "intra-node" | "inter-node";
   readonly kind: string;
   readonly bandwidthBytesPerSec?: number;
   readonly latencyNs?: number;
@@ -48,8 +63,13 @@ export interface TopologyGraphEdge {
 const NODE_WIDTH = 210;
 const NODE_GAP = 100;
 const GROUP_GAP = 90;
-const DEVICE_Y = 30;
-const MEMORY_Y = 220;
+const GROUP_X = 30;
+const GROUP_Y = 30;
+const GROUP_PADDING_X = 30;
+const GROUP_HEADER_HEIGHT = 70;
+const GROUP_HEIGHT = 390;
+const DEVICE_Y = GROUP_HEADER_HEIGHT;
+const MEMORY_Y = 245;
 
 export function buildTopologyGraph(
   scenario: SimulationScenario,
@@ -63,7 +83,13 @@ export function buildTopologyGraph(
   ])].sort();
   const nodes: TopologyGraphNode[] = [];
   const positionById = new Map<string, { readonly x: number; readonly y: number }>();
-  let groupOffset = 30;
+  const systemByDomain = new Map(
+    scenario.memoryDomains.map((domain) => [domain.id, domain.nodeId]),
+  );
+  const systemByDevice = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId]),
+  );
+  let groupOffset = GROUP_X;
 
   for (const nodeId of nodeIds) {
     const devices = scenario.devices
@@ -73,16 +99,42 @@ export function buildTopologyGraph(
       .filter((domain) => domain.nodeId === nodeId)
       .sort((left, right) => left.id.localeCompare(right.id));
     const columns = Math.max(devices.length, domains.length, 1);
+    const groupWidth = GROUP_PADDING_X * 2
+      + columns * NODE_WIDTH
+      + Math.max(0, columns - 1) * NODE_GAP;
+    nodes.push({
+      id: `system:${nodeId}`,
+      type: "topologyGroup",
+      position: { x: groupOffset, y: GROUP_Y },
+      style: { width: groupWidth, height: GROUP_HEIGHT },
+      data: {
+        category: "system",
+        title: nodeId,
+        kind: "system",
+        nodeId,
+        accent: "system",
+        details: [
+          `${devices.length} compute chip${devices.length === 1 ? "" : "s"}`,
+          `${domains.length} memory domain${domains.length === 1 ? "" : "s"}`,
+          "physical fault and transport boundary",
+        ],
+      },
+    });
     devices.forEach((device, index) => {
-      const position = {
-        x: groupOffset + centeredColumn(index, devices.length, columns),
+      const localPosition = {
+        x: GROUP_PADDING_X + centeredColumn(index, devices.length, columns),
         y: DEVICE_Y,
       };
-      positionById.set(device.id, position);
+      positionById.set(device.id, {
+        x: groupOffset + localPosition.x,
+        y: GROUP_Y + localPosition.y,
+      });
       nodes.push({
         id: device.id,
         type: "topology",
-        position,
+        position: localPosition,
+        parentId: `system:${nodeId}`,
+        extent: "parent",
         data: {
           category: "device",
           title: device.id,
@@ -99,15 +151,20 @@ export function buildTopologyGraph(
       });
     });
     domains.forEach((domain, index) => {
-      const position = {
-        x: groupOffset + centeredColumn(index, domains.length, columns),
+      const localPosition = {
+        x: GROUP_PADDING_X + centeredColumn(index, domains.length, columns),
         y: MEMORY_Y,
       };
-      positionById.set(domain.id, position);
+      positionById.set(domain.id, {
+        x: groupOffset + localPosition.x,
+        y: GROUP_Y + localPosition.y,
+      });
       nodes.push({
         id: domain.id,
         type: "topology",
-        position,
+        position: localPosition,
+        parentId: `system:${nodeId}`,
+        extent: "parent",
         data: {
           category: "memory",
           title: domain.id,
@@ -123,7 +180,7 @@ export function buildTopologyGraph(
         },
       });
     });
-    groupOffset += columns * (NODE_WIDTH + NODE_GAP) + GROUP_GAP;
+    groupOffset += groupWidth + GROUP_GAP;
   }
 
   const accessEdges: TopologyGraphEdge[] = scenario.devices.flatMap(
@@ -142,6 +199,9 @@ export function buildTopologyGraph(
       },
       data: {
         category: "access" as const,
+        scope: systemByDevice.get(device.id) === systemByDomain.get(domainId)
+          ? "intra-node" as const
+          : "inter-node" as const,
         kind: "memory access",
       },
     })),
@@ -193,6 +253,10 @@ export function buildTopologyGraph(
       },
       data: {
         category: "link",
+        scope: systemByDomain.get(link.sourceDomainId)
+            === systemByDomain.get(link.targetDomainId)
+          ? "intra-node"
+          : "inter-node",
         kind: link.kind,
         bandwidthBytesPerSec: link.bandwidthBytesPerSec,
         latencyNs: link.latencyNs,

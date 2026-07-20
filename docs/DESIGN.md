@@ -1281,13 +1281,22 @@ path as built-in presets.
 
 The projection includes:
 
-- one node for every compute device and physical memory domain;
+- a physical-system parent node for every distinct `nodeId`;
+- compute-chip and physical-memory child nodes contained by their owning
+  system, giving every topology at least the system and chip/domain levels;
 - dashed access edges for each declared device-to-memory visibility relation;
 - every directed transport link, including both directions when the scenario
   declares a bidirectional physical connection;
 - device provider, concurrency, capability, and dtype evidence;
 - memory capacity, local bandwidth, latency, and coherence evidence; and
 - link kind, bandwidth, latency, and concurrency lanes.
+
+`SimDeviceSpec` denotes a schedulable compute chip or accelerator endpoint,
+not the enclosing host system. Its `nodeId` is the authoritative parent-system
+identity. The projection derives system containers from that identity rather
+than maintaining a second hierarchy. Link inspection classifies every access
+and transport edge as `intra-node` or `inter-node`; cross-system links remain
+connected to their exact source and target memory-domain children.
 
 Layout coordinates and UI selection are presentation state only. Pan, zoom,
 fit, and node/edge inspection cannot alter the scenario. Topology mutation is

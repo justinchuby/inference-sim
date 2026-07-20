@@ -33,7 +33,7 @@ export default function ResultCharts({
       <section className="panel">
         <SectionHeading
           title="Memory domains"
-          detail={`${result.scenario.deviceCount} devices · ${result.scenario.linkCount} links`}
+          detail={`${result.scenario.deviceCount} compute chips · ${result.scenario.linkCount} links`}
         />
         <MemoryChart result={result} />
       </section>

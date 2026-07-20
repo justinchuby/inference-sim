@@ -96,6 +96,10 @@ export default function TopologyEditorDialog({
       )),
     }));
   };
+  const systemCount = new Set([
+    ...draft.devices.map((device) => device.nodeId),
+    ...draft.memoryDomains.map((domain) => domain.nodeId),
+  ]).size;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -105,7 +109,8 @@ export default function TopologyEditorDialog({
             Device topology
           </DialogTitle>
           <DialogDescription className="mt-1 text-xs text-zinc-500">
-            {draft.id} · {draft.devices.length} devices · {draft.links.length} directed links
+            {draft.id} · {systemCount} system{systemCount === 1 ? "" : "s"} ·{" "}
+            {draft.devices.length} compute chips · {draft.links.length} directed links
           </DialogDescription>
         </div>
 

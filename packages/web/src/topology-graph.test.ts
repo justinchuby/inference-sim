@@ -10,10 +10,30 @@ describe("topology graph projection", () => {
   it("projects every device, memory domain, access, and directed link", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const graph = buildTopologyGraph(scenario);
+    const systemIds = new Set([
+      ...scenario.devices.map((device) => device.nodeId),
+      ...scenario.memoryDomains.map((domain) => domain.nodeId),
+    ]);
 
     expect(graph.nodes).toHaveLength(
-      scenario.devices.length + scenario.memoryDomains.length,
+      systemIds.size + scenario.devices.length + scenario.memoryDomains.length,
     );
+    expect(graph.nodes.find((node) => node.id === "system:node0"))
+      .toMatchObject({
+        type: "topologyGroup",
+        data: {
+          category: "system",
+          title: "node0",
+        },
+      });
+    expect(graph.nodes.find((node) => node.id === "node0:gpu0"))
+      .toMatchObject({
+        parentId: "system:node0",
+        extent: "parent",
+        data: {
+          category: "device",
+        },
+      });
     expect(graph.edges).toHaveLength(
       scenario.devices.reduce(
         (sum, device) => sum + device.memoryDomainIds.length,
@@ -28,6 +48,7 @@ describe("topology graph projection", () => {
         target: "node0:gpu1:vram",
         label: "600 GB/s · 500 ns",
         markerEnd: { type: "arrowclosed" },
+        data: { scope: "intra-node" },
       });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
       .toBeUndefined();
@@ -39,10 +60,23 @@ describe("topology graph projection", () => {
     const first = buildTopologyGraph(buildScenarioPreset("multi-node"));
     const second = buildTopologyGraph(buildScenarioPreset("multi-node"));
     expect(first).toEqual(second);
-    const node0 = first.nodes.filter((node) => node.data.nodeId === "node0");
-    const node1 = first.nodes.filter((node) => node.data.nodeId === "node1");
-    expect(Math.max(...node0.map((node) => node.position.x)))
-      .toBeLessThan(Math.min(...node1.map((node) => node.position.x)));
+    const node0 = first.nodes.find((node) => node.id === "system:node0")!;
+    const node1 = first.nodes.find((node) => node.id === "system:node1")!;
+    expect(node0.position.x + Number(node0.style?.width))
+      .toBeLessThan(node1.position.x);
+    expect(
+      first.nodes
+        .filter((node) => node.data.nodeId === "node0")
+        .every((node) => (
+          node.data.category === "system"
+          || node.parentId === "system:node0"
+        )),
+    ).toBe(true);
+    expect(
+      first.edges
+        .filter((edge) => edge.data.category === "link")
+        .some((edge) => edge.data.scope === "inter-node"),
+    ).toBe(true);
   });
 
   it("formats transport evidence without hiding units", () => {
