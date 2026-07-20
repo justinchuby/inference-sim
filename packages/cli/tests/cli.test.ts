@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fromJson, toBinary } from "@bufbuild/protobuf";
 import { ModelProtoSchema } from "onnx-buf";
 import { describe, expect, it } from "vitest";
+import { buildScenarioPreset } from "@inference-sim/core";
 import { runCli, type CliIo } from "../src/main.js";
 
 function captureIo(): {
@@ -66,11 +67,13 @@ describe("CLI", () => {
     const output = JSON.parse(capture.stdout()) as {
       scenarios: string[];
       parameterizedScenario: string;
+      customScenario: string;
       hardware: { topologies: string[] };
       models: string[];
     };
     expect(output.scenarios).toContain("gpu-npu");
     expect(output.parameterizedScenario).toBe("multi-gpu-ring-<2..64>");
+    expect(output.customScenario).toBe("<scenario.yaml|json>");
     expect(output.hardware.topologies).toContain("dgx-h100");
     expect(output.models).toContain("deepseek-v2");
   });
@@ -360,6 +363,104 @@ describe("CLI", () => {
     expect(rejected.stderr()).toContain(
       "multi-GPU ring count must be a safe integer from 2 through 64",
     );
+  });
+
+  it("runs a strictly parsed custom device scenario across CLI surfaces", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-custom-"));
+    const scenarioPath = join(directory, "scenario.json");
+    const workloadPath = join(directory, "target-only.yaml");
+    const scenario = {
+      ...buildScenarioPreset("multi-gpu"),
+      id: "custom-dual-gpu",
+      family: "custom" as const,
+    };
+    await writeFile(scenarioPath, JSON.stringify(scenario), "utf8");
+    await writeFile(workloadPath, `
+target_only:
+  token_count: 3
+`, "utf8");
+
+    const materialized = captureIo();
+    expect(await runCli(
+      ["scenario", scenarioPath],
+      materialized.io,
+    )).toBe(0);
+    const scenarioOutput = JSON.parse(materialized.stdout()) as {
+      scenario: { id: string; family: string };
+      memoryLedger: unknown[];
+    };
+    expect(scenarioOutput.scenario).toMatchObject({
+      id: "custom-dual-gpu",
+      family: "custom",
+    });
+    expect(scenarioOutput.memoryLedger.length).toBeGreaterThan(0);
+
+    const run = captureIo();
+    expect(await runCli(
+      ["run", scenarioPath, workloadPath],
+      run.io,
+    )).toBe(0);
+    expect(JSON.parse(run.stdout())).toMatchObject({
+      scenarioId: "custom-dual-gpu",
+      status: "succeeded",
+      metrics: { committedTokens: 3 },
+    });
+
+    const exported = captureIo();
+    expect(await runCli(
+      ["plan-export", scenarioPath, workloadPath],
+      exported.io,
+    )).toBe(0);
+    const artifact = JSON.parse(exported.stdout()) as {
+      scenario: { id: string; family: string };
+      plan: { steps: unknown[] };
+    };
+    expect(artifact.scenario).toMatchObject({
+      id: "custom-dual-gpu",
+      family: "custom",
+    });
+    expect(artifact.plan.steps.length).toBeGreaterThan(0);
+  });
+
+  it("rejects unknown fields and enum values in custom scenarios", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-custom-"));
+    const scenario = buildScenarioPreset("single-gpu-cpu");
+    const unknownPath = join(directory, "unknown.json");
+    const unknown = structuredClone(scenario) as unknown as Record<
+      string,
+      unknown
+    >;
+    unknown.implicitRuntimeDefault = true;
+    await writeFile(unknownPath, JSON.stringify(unknown), "utf8");
+    const unknownCapture = captureIo();
+
+    expect(await runCli(["scenario", unknownPath], unknownCapture.io)).toBe(1);
+    expect(unknownCapture.stderr()).toContain(
+      "unknown fields implicitRuntimeDefault",
+    );
+    const validationCapture = captureIo();
+    expect(await runCli(["validate", unknownPath], validationCapture.io))
+      .toBe(2);
+    expect(JSON.parse(validationCapture.stdout())).toMatchObject({
+      valid: false,
+      issues: [{
+        code: "scenario_boundary",
+        message: expect.stringContaining(
+          "unknown fields implicitRuntimeDefault",
+        ),
+      }],
+    });
+
+    const invalidPath = join(directory, "invalid.json");
+    const invalid = {
+      ...scenario,
+      family: "single_accelerator_maybe",
+    };
+    await writeFile(invalidPath, JSON.stringify(invalid), "utf8");
+    const invalidCapture = captureIo();
+
+    expect(await runCli(["scenario", invalidPath], invalidCapture.io)).toBe(1);
+    expect(invalidCapture.stderr()).toContain("family: must be one of");
   });
 
   it("runs a speculative YAML workload deterministically", async () => {

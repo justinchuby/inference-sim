@@ -9,6 +9,7 @@ import {
   createFrozenPlanArtifact,
   executeFrozenPlan,
   parseFrozenPlanArtifact,
+  parseSimulationScenario,
   replayPlanTrace,
   serializeFrozenPlanArtifact,
   targetOnlyTopologyProfile,
@@ -24,6 +25,28 @@ function fixture() {
 }
 
 describe("FrozenPlan artifacts", () => {
+  it("strictly parses standalone scenarios through the artifact boundary", () => {
+    const scenario = buildScenarioPreset("gpu-npu");
+
+    expect(parseSimulationScenario(structuredClone(scenario))).toEqual(
+      scenario,
+    );
+
+    const unknown = structuredClone(scenario) as unknown as {
+      devices: Array<Record<string, unknown>>;
+    };
+    unknown.devices[0].implicitRuntimeDefault = true;
+    expect(() => parseSimulationScenario(unknown))
+      .toThrow("unknown fields implicitRuntimeDefault");
+
+    const invalid = {
+      ...scenario,
+      family: "implicit_heterogeneous_default",
+    };
+    expect(() => parseSimulationScenario(invalid))
+      .toThrow("family: must be one of");
+  });
+
   it("round-trips deterministically and executes with exact replay", () => {
     const { scenario, plan } = fixture();
     const first = createFrozenPlanArtifact(scenario, plan);
@@ -59,6 +82,21 @@ describe("FrozenPlan artifacts", () => {
 
     expect(() => parseFrozenPlanArtifact(tampered))
       .toThrow("plan fingerprint mismatch");
+  });
+
+  it("checks an embedded scenario fingerprint before its semantics", () => {
+    const { scenario, plan } = fixture();
+    const artifact = createFrozenPlanArtifact(scenario, plan);
+    const tampered = {
+      ...artifact,
+      scenario: {
+        ...artifact.scenario,
+        family: "implicit_runtime_default",
+      },
+    };
+
+    expect(() => parseFrozenPlanArtifact(tampered))
+      .toThrow("scenario fingerprint mismatch");
   });
 
   it("rejects stale revisions even when the envelope is re-fingerprinted", () => {

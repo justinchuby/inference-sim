@@ -12,6 +12,67 @@ import {
   type TransferRoute,
 } from "./scenario-types.js";
 
+const SCENARIO_FAMILIES = [
+  "cpu_only",
+  "single_discrete",
+  "multi_gpu",
+  "gpu_npu",
+  "unified",
+  "multi_node",
+  "custom",
+] as const;
+const MEMORY_DOMAIN_KINDS = ["host", "device", "unified", "storage"] as const;
+const ALLOCATION_CLASSES = [
+  "pageable",
+  "pinned",
+  "device",
+  "unified",
+  "storage",
+] as const;
+const DEVICE_KINDS = ["cpu", "gpu", "npu"] as const;
+const COMPUTE_CAPABILITIES = [
+  "attention",
+  "ffn",
+  "collective",
+  "copy",
+  "sampling",
+  "draft",
+  "lookup",
+] as const;
+const LINK_KINDS = [
+  "on-chip",
+  "pcie",
+  "nvlink",
+  "ethernet",
+  "infiniband",
+  "thunderbolt",
+  "storage",
+] as const;
+const ALLOCATION_PURPOSES = [
+  "weights",
+  "kv",
+  "workspace",
+  "staging",
+  "cache",
+  "backing",
+  "checkpoint",
+  "sidecar",
+] as const;
+const SPECULATIVE_FAMILIES = [
+  "prompt_lookup",
+  "draft_model",
+  "mtp",
+  "eagle3",
+  "shared_kv",
+  "self_speculative",
+] as const;
+const CONFIDENCE_CLASSES = [
+  "exact",
+  "bounded",
+  "calibrated",
+  "heuristic",
+] as const;
+
 export class ScenarioValidationError extends Error {
   readonly issues: readonly ScenarioValidationIssue[];
 
@@ -51,6 +112,7 @@ export function validateScenario(
   if (scenario.id.length === 0) {
     add("empty_id", "id", "scenario id must not be empty");
   }
+  validateEnum(scenario.family, SCENARIO_FAMILIES, "family", add);
 
   validatePositiveInteger(
     scenario.workload.batchSize,
@@ -68,6 +130,12 @@ export function validateScenario(
     add,
   );
   if (scenario.workload.speculative) {
+    validateEnum(
+      scenario.workload.speculative.family,
+      SPECULATIVE_FAMILIES,
+      "workload.speculative.family",
+      add,
+    );
     validateNonNegativeInteger(
       scenario.workload.speculative.maxAdditionalTokens,
       "workload.speculative.maxAdditionalTokens",
@@ -103,6 +171,8 @@ export function validateScenario(
 
   for (const [index, domain] of scenario.memoryDomains.entries()) {
     const path = `memoryDomains[${index}]`;
+    validateEnum(domain.kind, MEMORY_DOMAIN_KINDS, `${path}.kind`, add);
+    validateProvenance(domain.provenance, `${path}.provenance`, add);
     validatePositiveInteger(domain.capacityBytes, `${path}.capacityBytes`, add);
     validatePositiveInteger(
       domain.bandwidthBytesPerSec,
@@ -115,6 +185,15 @@ export function validateScenario(
       `${path}.allocationClasses`,
       add,
     );
+    for (const [classIndex, allocationClass] of
+      domain.allocationClasses.entries()) {
+      validateEnum(
+        allocationClass,
+        ALLOCATION_CLASSES,
+        `${path}.allocationClasses[${classIndex}]`,
+        add,
+      );
+    }
     validateUniqueStrings(domain.accessibleBy, `${path}.accessibleBy`, add);
     if (domain.allocationClasses.length === 0) {
       add("empty_classes", `${path}.allocationClasses`, "must not be empty");
@@ -188,6 +267,8 @@ export function validateScenario(
 
   for (const [index, device] of scenario.devices.entries()) {
     const path = `devices[${index}]`;
+    validateEnum(device.kind, DEVICE_KINDS, `${path}.kind`, add);
+    validateProvenance(device.provenance, `${path}.provenance`, add);
     if (device.id.length === 0 || device.nodeId.length === 0) {
       add("empty_id", path, "device id and nodeId must not be empty");
     }
@@ -205,6 +286,15 @@ export function validateScenario(
       add,
     );
     validateUniqueStrings(device.capabilities, `${path}.capabilities`, add);
+    for (const [capabilityIndex, capability] of
+      device.capabilities.entries()) {
+      validateEnum(
+        capability,
+        COMPUTE_CAPABILITIES,
+        `${path}.capabilities[${capabilityIndex}]`,
+        add,
+      );
+    }
     validateUniqueStrings(
       device.supportedDtypes,
       `${path}.supportedDtypes`,
@@ -233,6 +323,8 @@ export function validateScenario(
 
   for (const [index, link] of scenario.links.entries()) {
     const path = `links[${index}]`;
+    validateEnum(link.kind, LINK_KINDS, `${path}.kind`, add);
+    validateProvenance(link.provenance, `${path}.provenance`, add);
     if (!domains.has(link.sourceDomainId)) {
       add(
         "unknown_domain",
@@ -295,9 +387,30 @@ export function validateScenario(
       `${path}.requiredCapabilities`,
       add,
     );
+    for (const [capabilityIndex, capability] of
+      placement.requiredCapabilities.entries()) {
+      validateEnum(
+        capability,
+        COMPUTE_CAPABILITIES,
+        `${path}.requiredCapabilities[${capabilityIndex}]`,
+        add,
+      );
+    }
 
     for (const [allocationIndex, allocation] of placement.allocations.entries()) {
       const allocationPath = `${path}.allocations[${allocationIndex}]`;
+      validateEnum(
+        allocation.allocationClass,
+        ALLOCATION_CLASSES,
+        `${allocationPath}.allocationClass`,
+        add,
+      );
+      validateEnum(
+        allocation.purpose,
+        ALLOCATION_PURPOSES,
+        `${allocationPath}.purpose`,
+        add,
+      );
       validatePositiveInteger(allocation.bytes, `${allocationPath}.bytes`, add);
       const previousOwner = allocationOwners.get(allocation.physicalAllocationId);
       if (allocation.physicalAllocationId.length === 0 || previousOwner) {
@@ -522,6 +635,11 @@ export function validateScenario(
   }
 
   for (const [index, coefficient] of scenario.calibration.coefficients.entries()) {
+    validateProvenance(
+      coefficient.provenance,
+      `calibration.coefficients[${index}].provenance`,
+      add,
+    );
     if (
       coefficient.id.length === 0
       || coefficient.unit.length === 0
@@ -880,23 +998,32 @@ function validateGovernor(
   path: string,
   add: (code: string, path: string, message: string) => void,
 ): void {
-  if (domain.governor.kind === "host") {
-    if (domain.governor.nodeId !== domain.nodeId) {
+  const governor = domain.governor as unknown as Record<string, unknown>;
+  if (governor.kind === "host") {
+    if (governor.nodeId !== domain.nodeId) {
       add(
         "governor_node",
         `${path}.governor`,
-        `host governor ${domain.governor.nodeId} does not own node ${domain.nodeId}`,
+        `host governor ${String(governor.nodeId)} does not own node ${domain.nodeId}`,
       );
     }
-  } else if (domain.governor.kind === "device") {
-    const device = devices.get(domain.governor.deviceId);
+  } else if (governor.kind === "device") {
+    const device = typeof governor.deviceId === "string"
+      ? devices.get(governor.deviceId)
+      : undefined;
     if (!device || device.nodeId !== domain.nodeId) {
       add(
         "governor_device",
         `${path}.governor`,
-        `unknown or cross-node owner ${domain.governor.deviceId}`,
+        `unknown or cross-node owner ${String(governor.deviceId)}`,
       );
     }
+  } else if (governor.kind !== "none") {
+    add(
+      "enum_value",
+      `${path}.governor.kind`,
+      `must be one of host, device, none; got ${String(governor.kind)}`,
+    );
   }
 }
 
@@ -929,6 +1056,37 @@ function validateUniqueStrings(
 ): void {
   if (new Set(values).size !== values.length || values.some((value) => value.length === 0)) {
     add("duplicate_value", path, "values must be non-empty and unique");
+  }
+}
+
+function validateEnum(
+  value: string,
+  allowed: readonly string[],
+  path: string,
+  add: (code: string, path: string, message: string) => void,
+): void {
+  if (!allowed.includes(value)) {
+    add(
+      "enum_value",
+      path,
+      `must be one of ${allowed.join(", ")}; got ${String(value)}`,
+    );
+  }
+}
+
+function validateProvenance(
+  provenance: { readonly confidence: string; readonly source: string },
+  path: string,
+  add: (code: string, path: string, message: string) => void,
+): void {
+  validateEnum(
+    provenance.confidence,
+    CONFIDENCE_CLASSES,
+    `${path}.confidence`,
+    add,
+  );
+  if (provenance.source.length === 0) {
+    add("empty_provenance", `${path}.source`, "must not be empty");
   }
 }
 

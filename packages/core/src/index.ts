@@ -56,6 +56,7 @@ export {
   FrozenPlanArtifactError,
   createFrozenPlanArtifact,
   parseFrozenPlanArtifact,
+  parseSimulationScenario,
   serializeFrozenPlanArtifact,
   type FrozenPlanArtifact,
 } from "./frozen-plan-artifact.js";

@@ -14,6 +14,7 @@ import {
   canonicalJsonFingerprint,
   canonicalJsonStringify,
 } from "./result-artifact.js";
+import { assertValidScenario } from "./scenario.js";
 
 export const FROZEN_PLAN_ARTIFACT_KIND = "inference-sim/frozen-plan";
 export const FROZEN_PLAN_ARTIFACT_REVISION = 1;
@@ -106,7 +107,11 @@ export function parseFrozenPlanArtifact(input: unknown): FrozenPlanArtifact {
     artifact.artifactFingerprint,
     "FrozenPlan artifact fingerprint",
   );
-  const scenario = parseScenarioBoundary(artifact.scenario);
+  const scenario = parseScenarioBoundary(
+    artifact.scenario,
+    "FrozenPlan artifact scenario",
+    false,
+  );
   const plan = parsePlan(artifact.plan);
 
   assertFingerprint("scenario", scenarioFingerprint, scenario);
@@ -137,8 +142,16 @@ export function serializeFrozenPlanArtifact(
   return canonicalJsonStringify(parseFrozenPlanArtifact(artifact), pretty);
 }
 
-function parseScenarioBoundary(value: unknown): SimulationScenario {
-  const scenario = requireRecord(value, "FrozenPlan artifact scenario");
+export function parseSimulationScenario(input: unknown): SimulationScenario {
+  return parseScenarioBoundary(input, "scenario", true);
+}
+
+function parseScenarioBoundary(
+  value: unknown,
+  label: string,
+  validateSemantics: boolean,
+): SimulationScenario {
+  const scenario = requireRecord(value, label);
   assertExactKeys(scenario, [
     "schemaVersion",
     "id",
@@ -152,13 +165,13 @@ function parseScenarioBoundary(value: unknown): SimulationScenario {
     "workload",
     "execution",
     "calibration",
-  ], "FrozenPlan artifact scenario");
+  ], label);
   requireExactValue(
     scenario.schemaVersion,
     SCENARIO_SCHEMA_VERSION,
-    "FrozenPlan artifact embedded scenario schema version",
+    `${label} schema version`,
   );
-  requireNonEmptyString(scenario.id, "FrozenPlan artifact scenario id");
+  requireNonEmptyString(scenario.id, `${label} id`);
   for (const field of [
     "memoryDomains",
     "devices",
@@ -167,24 +180,28 @@ function parseScenarioBoundary(value: unknown): SimulationScenario {
     "transfers",
     "groups",
   ]) {
-    requireArray(scenario[field], `FrozenPlan artifact scenario ${field}`);
+    requireArray(scenario[field], `${label} ${field}`);
   }
-  requireRecord(scenario.workload, "FrozenPlan artifact scenario workload");
-  requireRecord(scenario.execution, "FrozenPlan artifact scenario execution");
-  requireRecord(
-    scenario.calibration,
-    "FrozenPlan artifact scenario calibration",
-  );
-  assertScenarioMembers(scenario);
-  return scenario as unknown as SimulationScenario;
+  requireRecord(scenario.workload, `${label} workload`);
+  requireRecord(scenario.execution, `${label} execution`);
+  requireRecord(scenario.calibration, `${label} calibration`);
+  assertScenarioMembers(scenario, label);
+  const parsed = scenario as unknown as SimulationScenario;
+  if (validateSemantics) {
+    assertValidScenario(parsed);
+  }
+  return parsed;
 }
 
-function assertScenarioMembers(scenario: Record<string, unknown>): void {
+function assertScenarioMembers(
+  scenario: Record<string, unknown>,
+  scenarioLabel: string,
+): void {
   requireRecordArray(
     scenario.memoryDomains,
-    "FrozenPlan artifact scenario memoryDomains",
+    `${scenarioLabel} memoryDomains`,
   ).forEach((domain, index) => {
-    const label = `FrozenPlan artifact scenario memoryDomains[${index}]`;
+    const label = `${scenarioLabel} memoryDomains[${index}]`;
     assertExactKeys(domain, [
       "id",
       "nodeId",
@@ -213,9 +230,9 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   requireRecordArray(
     scenario.devices,
-    "FrozenPlan artifact scenario devices",
+    `${scenarioLabel} devices`,
   ).forEach((device, index) => {
-    const label = `FrozenPlan artifact scenario devices[${index}]`;
+    const label = `${scenarioLabel} devices[${index}]`;
     assertExactKeys(device, [
       "id",
       "nodeId",
@@ -244,9 +261,9 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   requireRecordArray(
     scenario.links,
-    "FrozenPlan artifact scenario links",
+    `${scenarioLabel} links`,
   ).forEach((link, index) => {
-    const label = `FrozenPlan artifact scenario links[${index}]`;
+    const label = `${scenarioLabel} links[${index}]`;
     assertExactKeys(link, [
       "id",
       "sourceDomainId",
@@ -272,9 +289,9 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   requireRecordArray(
     scenario.placements,
-    "FrozenPlan artifact scenario placements",
+    `${scenarioLabel} placements`,
   ).forEach((placement, index) => {
-    const label = `FrozenPlan artifact scenario placements[${index}]`;
+    const label = `${scenarioLabel} placements[${index}]`;
     assertKeys(
       placement,
       ["partitionId", "deviceId", "requiredCapabilities", "allocations"],
@@ -315,9 +332,9 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   requireRecordArray(
     scenario.transfers,
-    "FrozenPlan artifact scenario transfers",
+    `${scenarioLabel} transfers`,
   ).forEach((transfer, index) => {
-    const label = `FrozenPlan artifact scenario transfers[${index}]`;
+    const label = `${scenarioLabel} transfers[${index}]`;
     assertExactKeys(transfer, [
       "id",
       "sourceDomainId",
@@ -344,9 +361,9 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   requireRecordArray(
     scenario.groups,
-    "FrozenPlan artifact scenario groups",
+    `${scenarioLabel} groups`,
   ).forEach((group, index) => {
-    const label = `FrozenPlan artifact scenario groups[${index}]`;
+    const label = `${scenarioLabel} groups[${index}]`;
     assertExactKeys(group, ["id", "orderedRanks"], label);
     requireNonEmptyString(group.id, `${label} id`);
     requireRecordArray(group.orderedRanks, `${label} orderedRanks`)
@@ -359,57 +376,57 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
 
   const workload = requireRecord(
     scenario.workload,
-    "FrozenPlan artifact scenario workload",
+    `${scenarioLabel} workload`,
   );
   assertKeys(
     workload,
     ["batchSize", "inputSequenceLength", "outputSequenceLength"],
     ["speculative"],
-    "FrozenPlan artifact scenario workload",
+    `${scenarioLabel} workload`,
   );
   requireNumbers(
     workload,
     ["batchSize", "inputSequenceLength", "outputSequenceLength"],
-    "FrozenPlan artifact scenario workload",
+    `${scenarioLabel} workload`,
   );
   if (workload.speculative !== undefined) {
     const speculative = requireRecord(
       workload.speculative,
-      "FrozenPlan artifact scenario workload speculative",
+      `${scenarioLabel} workload speculative`,
     );
     assertExactKeys(
       speculative,
       ["family", "maxAdditionalTokens"],
-      "FrozenPlan artifact scenario workload speculative",
+      `${scenarioLabel} workload speculative`,
     );
     requireNonEmptyString(
       speculative.family,
-      "FrozenPlan artifact scenario workload speculative family",
+      `${scenarioLabel} workload speculative family`,
     );
     requireFiniteNumber(
       speculative.maxAdditionalTokens,
-      "FrozenPlan artifact scenario workload speculative maxAdditionalTokens",
+      `${scenarioLabel} workload speculative maxAdditionalTokens`,
     );
   }
 
   const execution = requireRecord(
     scenario.execution,
-    "FrozenPlan artifact scenario execution",
+    `${scenarioLabel} execution`,
   );
   assertExactKeys(execution, [
     "topologyEpoch",
     "seed",
     "maxEvents",
     "parallelism",
-  ], "FrozenPlan artifact scenario execution");
+  ], `${scenarioLabel} execution`);
   requireNumbers(
     execution,
     ["topologyEpoch", "seed", "maxEvents"],
-    "FrozenPlan artifact scenario execution",
+    `${scenarioLabel} execution`,
   );
   const parallelism = requireRecord(
     execution.parallelism,
-    "FrozenPlan artifact scenario execution parallelism",
+    `${scenarioLabel} execution parallelism`,
   );
   assertExactKeys(parallelism, [
     "composition",
@@ -417,32 +434,31 @@ function assertScenarioMembers(scenario: Record<string, unknown>): void {
     "pipeline",
     "expert",
     "data",
-  ], "FrozenPlan artifact scenario execution parallelism");
+  ], `${scenarioLabel} execution parallelism`);
   requireNonEmptyString(
     parallelism.composition,
-    "FrozenPlan artifact scenario execution parallelism composition",
+    `${scenarioLabel} execution parallelism composition`,
   );
   requireNumbers(
     parallelism,
     ["tensor", "pipeline", "expert", "data"],
-    "FrozenPlan artifact scenario execution parallelism",
+    `${scenarioLabel} execution parallelism`,
   );
 
   const calibration = requireRecord(
     scenario.calibration,
-    "FrozenPlan artifact scenario calibration",
+    `${scenarioLabel} calibration`,
   );
   assertExactKeys(
     calibration,
     ["coefficients"],
-    "FrozenPlan artifact scenario calibration",
+    `${scenarioLabel} calibration`,
   );
   requireRecordArray(
     calibration.coefficients,
-    "FrozenPlan artifact scenario calibration coefficients",
+    `${scenarioLabel} calibration coefficients`,
   ).forEach((coefficient, index) => {
-    const label =
-      `FrozenPlan artifact scenario calibration coefficients[${index}]`;
+    const label = `${scenarioLabel} calibration coefficients[${index}]`;
     assertExactKeys(
       coefficient,
       ["id", "value", "unit", "provenance"],

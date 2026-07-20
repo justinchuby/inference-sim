@@ -193,6 +193,7 @@ pnpm test
 pnpm sim presets
 pnpm sim scenario gpu-npu
 pnpm sim scenario multi-gpu-ring-4
+pnpm sim scenario /path/to/custom-scenario.yaml
 pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim speculative-trace examples/speculative-token-trace-mtp.yaml single-gpu-cpu
@@ -207,6 +208,7 @@ pnpm sim calibrate examples/calibration-synthetic.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-synthetic.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim run multi-gpu-ring-8 examples/target-only.yaml
+pnpm sim run /path/to/custom-scenario.yaml examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
@@ -233,10 +235,13 @@ even when an exact-path curve supplies the selected path's duration.
 AllToAllV signatures use the GCD-reduced source-rank to expert-owner matrix, so
 proportional message sizes share a curve while different skew shapes do not.
 
-CLI commands that take one scenario accept either a listed preset or
-`multi-gpu-ring-N` for `N=2..64`. `compare` and `serving-compare` intentionally
-retain the six fixed topology families so a parameterized target does not
-silently change the comparison population.
+CLI commands that take one scenario accept a listed preset,
+`multi-gpu-ring-N` for `N=2..64`, or a revision-4 scenario YAML/JSON file.
+Custom files pass the same strict unknown-field, enum, safe-integer, topology,
+placement, route, memory-ledger, and parallelism validation used by embedded
+FrozenPlan scenarios before any workload executes. `compare` and
+`serving-compare` intentionally retain the six fixed topology families so a
+custom target does not silently change the comparison population.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

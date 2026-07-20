@@ -2,6 +2,7 @@
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
+  SCENARIO_SCHEMA_VERSION,
   SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   analyzeStatic,
   bindParsedRuntimeCaptures,
@@ -21,6 +22,7 @@ import {
   fitTopologyCostModel,
   parseCalibrationDataset,
   parseFrozenPlanArtifact,
+  parseSimulationScenario,
   parseSpeculativeTokenTrace,
   resolveOnnxModelProfile,
   listModelPresets,
@@ -112,12 +114,13 @@ export async function runCli(
         printJson(io, {
           scenarios: SCENARIO_PRESET_NAMES,
           parameterizedScenario: "multi-gpu-ring-<2..64>",
+          customScenario: "<scenario.yaml|json>",
           hardware: listPresets(),
           models: listModelPresets(),
         });
         return 0;
       case "scenario": {
-        const scenario = resolveScenarioTarget(argument, "scenario");
+        const scenario = await resolveScenarioTarget(argument, "scenario");
         printJson(io, {
           scenario,
           memoryLedger: calculateScenarioMemoryLedger(scenario),
@@ -125,11 +128,27 @@ export async function runCli(
         return 0;
       }
       case "validate": {
-        const config = await loadRequiredConfig(argument, "validate");
-        const scenario = config as unknown as SimulationScenario;
-        const validation = validateScenario(scenario);
-        printJson(io, validation);
-        return validation.valid ? 0 : 2;
+        if (argument === undefined) {
+          throw new Error("validate requires a YAML or JSON config path");
+        }
+        const input = await readConfigFile(argument);
+        try {
+          const scenario = parseSimulationScenario(input);
+          printJson(io, validateScenario(scenario));
+          return 0;
+        } catch (error) {
+          printJson(io, {
+            valid: false,
+            issues: [{
+              code: "scenario_boundary",
+              path: "scenario",
+              message: error instanceof Error
+                ? error.message
+                : String(error),
+            }],
+          });
+          return 2;
+        }
       }
       case "static": {
         const config = await loadRequiredConfig(argument, "static");
@@ -154,7 +173,7 @@ export async function runCli(
           parseSpeculativeTokenTrace(config),
         );
         if (secondArgument) {
-          const scenario = resolveScenarioTarget(
+          const scenario = await resolveScenarioTarget(
             secondArgument,
             "speculative-trace",
           );
@@ -191,7 +210,7 @@ export async function runCli(
           trace: bound.result,
         };
         if (thirdArgument) {
-          const scenario = resolveScenarioTarget(
+          const scenario = await resolveScenarioTarget(
             thirdArgument,
             "speculative-capture",
           );
@@ -310,7 +329,7 @@ export async function runCli(
         return 0;
       }
       case "serving": {
-        const scenario = resolveScenarioTarget(argument, "serving");
+        const scenario = await resolveScenarioTarget(argument, "serving");
         const config = await loadRequiredConfig(secondArgument, "serving");
         const costModel = await loadCostModel(thirdArgument);
         const expertCache = parseServingExpertCacheConfig(config);
@@ -341,7 +360,7 @@ export async function runCli(
         return 0;
       }
       case "run": {
-        const scenario = resolveScenarioTarget(argument, "run");
+        const scenario = await resolveScenarioTarget(argument, "run");
         const config = await loadRequiredConfig(secondArgument, "run");
         const costModel = await loadCostModel(thirdArgument);
         printJson(
@@ -357,7 +376,7 @@ export async function runCli(
         return 0;
       }
       case "plan-export": {
-        const scenario = resolveScenarioTarget(argument, "plan-export");
+        const scenario = await resolveScenarioTarget(argument, "plan-export");
         const config = await loadRequiredConfig(
           secondArgument,
           "plan-export",
@@ -418,7 +437,10 @@ export async function runCli(
         return 0;
       }
       case "fault-campaign": {
-        const scenario = resolveScenarioTarget(argument, "fault-campaign");
+        const scenario = await resolveScenarioTarget(
+          argument,
+          "fault-campaign",
+        );
         const config = await loadRequiredConfig(
           secondArgument,
           "fault-campaign",
@@ -436,7 +458,7 @@ export async function runCli(
         return 0;
       }
       case "concurrent-campaign": {
-        const scenario = resolveScenarioTarget(
+        const scenario = await resolveScenarioTarget(
           argument,
           "concurrent-campaign",
         );
@@ -461,11 +483,11 @@ export async function runCli(
         return 0;
       }
       case "node-failover": {
-        const failedScenario = resolveScenarioTarget(
+        const failedScenario = await resolveScenarioTarget(
           argument,
           "node-failover failed scenario",
         );
-        const recoveryBase = resolveScenarioTarget(
+        const recoveryBase = await resolveScenarioTarget(
           secondArgument,
           "node-failover recovery scenario",
         );
@@ -524,7 +546,7 @@ export async function runCli(
         return 0;
       }
       case "concurrent-node-failure": {
-        const scenario = resolveScenarioTarget(
+        const scenario = await resolveScenarioTarget(
           argument,
           "concurrent-node-failure",
         );
@@ -580,10 +602,10 @@ export async function runCli(
   }
 }
 
-function resolveScenarioTarget(
+async function resolveScenarioTarget(
   value: string | undefined,
   command: string,
-): SimulationScenario {
+): Promise<SimulationScenario> {
   if (value === undefined) {
     throw new Error(`${command} requires a scenario target`);
   }
@@ -594,7 +616,12 @@ function resolveScenarioTarget(
   if (ringMatch !== null) {
     return buildMultiGpuRingScenario(Number(ringMatch[1]));
   }
-  throw new Error(`unknown scenario preset or ring target ${value}`);
+  if (/\.(?:json|ya?ml)$/i.test(value)) {
+    return parseSimulationScenario(await readConfigFile(value));
+  }
+  throw new Error(
+    `unknown scenario preset, ring target, or scenario file ${value}`,
+  );
 }
 
 async function loadRequiredConfig(
@@ -1859,7 +1886,8 @@ Usage:
   inference-sim concurrent-node-failure <scenario-target> <workload.yaml|json> [calibration.yaml|json]
 
 Scenario target:
-  one of the listed presets, or multi-gpu-ring-N for N=2..64
+  one of the listed presets, multi-gpu-ring-N for N=2..64,
+  or a revision-${SCENARIO_SCHEMA_VERSION} scenario YAML/JSON file
 `;
 }
 

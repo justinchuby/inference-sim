@@ -1495,9 +1495,13 @@ rejected counts. The ranking inherits the model profile's evidence and the
 static analyzer's roofline assumptions; it describes the declared search space
 and is not a global optimum claim.
 All CLI commands that consume one scenario resolve a shared scenario-target
-grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
-materialization, workload execution, serving, runtime-capture verification,
-fault campaigns, concurrent campaigns, and node operations use that resolver.
+grammar: a fixed preset name, `multi-gpu-ring-N` for `N=2..64`, or a
+revision-4 scenario YAML/JSON file. Custom files use the same strict structural
+boundary as embedded FrozenPlan scenarios, reject unknown fields and enum
+values, and complete semantic topology, placement, route, memory-ledger, and
+parallelism validation before execution. Scenario materialization, workload
+execution, serving, runtime-capture verification, fault campaigns, concurrent
+campaigns, and node operations use that resolver.
 The two comparison commands deliberately retain the six fixed topology
 families, keeping their ranking population stable.
 The `speculative-trace` command verifies a revisioned YAML/JSON token trace and
