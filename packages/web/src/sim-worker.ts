@@ -22,9 +22,11 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
       type: "progress",
       runId,
       progress: config.calibration === undefined ? 34 : 22,
-      phase: config.calibration === undefined
-        ? "Running workload"
-        : "Fitting calibration and running workload",
+      phase: config.mode === "speculative" && config.speculative.trace
+        ? "Verifying token trace"
+        : config.calibration === undefined
+          ? "Running workload"
+          : "Fitting calibration and running workload",
     });
 
     const base = simulateDashboard(config);
@@ -32,7 +34,9 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
       type: "progress",
       runId,
       progress: 92,
-      phase: "Checking replay",
+      phase: config.mode === "speculative" && config.speculative.trace
+        ? "Checking token and state parity"
+        : "Checking replay",
     });
     post({
       type: "result",

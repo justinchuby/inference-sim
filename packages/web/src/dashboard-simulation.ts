@@ -9,6 +9,7 @@ import {
   fitTopologyCostModel,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateSpeculativeTokenTrace,
   simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   speculativeFamilyContract,
@@ -234,6 +235,36 @@ function summarizeScenario(
 function runSpeculative(
   config: DashboardRunConfig,
 ) {
+  if (config.speculative.trace) {
+    const tokenTrace = simulateSpeculativeTokenTrace(config.speculative.trace);
+    const result = tokenTrace.workload;
+    return {
+      result,
+      dashboard: {
+        family: result.family,
+        support: result.familyContract.support,
+        metrics: result.metrics,
+        iterations: result.iterations,
+        finalTokenLength: result.finalTokenLength,
+        tokenTrace: {
+          traceId: tokenTrace.traceId,
+          source: tokenTrace.provenance.source,
+          runtimeRevision: tokenTrace.provenance.runtimeRevision,
+          modelFingerprint: tokenTrace.provenance.modelFingerprint,
+          targetOnlyRunId: tokenTrace.provenance.targetOnlyRunId,
+          speculativeRunId: tokenTrace.provenance.speculativeRunId,
+          promptTokenCount: tokenTrace.promptTokenCount,
+          comparedTokenCount: tokenTrace.differential.comparedTokenCount,
+          matchesTargetOnly: tokenTrace.differential.matchesTargetOnly,
+          ...(tokenTrace.differential.firstMismatch
+            ? { firstMismatch: tokenTrace.differential.firstMismatch }
+            : {}),
+          expectedOutputTokenIds: tokenTrace.expectedOutputTokenIds,
+          committedOutputTokenIds: tokenTrace.committedOutputTokenIds,
+        },
+      },
+    };
+  }
   const initialTokenLength = 2048;
   const outputTokens = clampInteger(
     config.speculative.outputTokens,

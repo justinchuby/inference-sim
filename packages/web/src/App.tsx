@@ -12,6 +12,7 @@ import {
   Clock3,
   Cpu,
   Database,
+  FileDiff,
   FileCheck2,
   Gauge,
   MemoryStick,
@@ -28,6 +29,11 @@ import {
   parseCalibrationFileText,
   type ParsedCalibrationFile,
 } from "./calibration-import.js";
+import {
+  MAX_TOKEN_TRACE_FILE_BYTES,
+  parseTokenTraceFileText,
+  type ParsedTokenTraceFile,
+} from "./token-trace-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import { Progress } from "./components/ui/progress.js";
@@ -116,7 +122,13 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
 
 const ResultCharts = lazy(() => import("./ResultCharts.js"));
 
-type RunStatus = "idle" | "running" | "complete" | "cancelled" | "error";
+type RunStatus =
+  | "idle"
+  | "running"
+  | "complete"
+  | "mismatch"
+  | "cancelled"
+  | "error";
 
 interface RunState {
   readonly status: RunStatus;
@@ -132,6 +144,12 @@ interface CalibrationSelection {
   readonly error?: string;
 }
 
+interface TokenTraceSelection {
+  readonly fileName?: string;
+  readonly parsed?: ParsedTokenTraceFile;
+  readonly error?: string;
+}
+
 export function App(): React.JSX.Element {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [runState, setRunState] = useState<RunState>({
@@ -140,6 +158,7 @@ export function App(): React.JSX.Element {
     phase: "Ready",
   });
   const [calibration, setCalibration] = useState<CalibrationSelection>({});
+  const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
   const workerRef = useRef<Worker | undefined>(undefined);
   const runIdRef = useRef(0);
   const initializedRef = useRef(false);
@@ -190,9 +209,46 @@ export function App(): React.JSX.Element {
     setCalibration({});
   }, [changeConfig, config]);
 
+  const importTokenTrace = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_TOKEN_TRACE_FILE_BYTES) {
+        throw new Error("token trace file exceeds the 1 MiB limit");
+      }
+      const parsed = await parseTokenTraceFileText(
+        await file.text(),
+        file.name,
+      );
+      changeConfig({
+        ...config,
+        mode: "speculative",
+        speculative: {
+          ...config.speculative,
+          family: parsed.trace.family,
+          outputTokens: parsed.trace.expectedOutputTokenIds.length,
+          draftWidth: parsed.trace.maxAdditionalTokens,
+          trace: parsed.trace,
+        },
+      });
+      setTokenTrace({ fileName: file.name, parsed });
+    } catch (error) {
+      setTokenTrace((current) => ({
+        ...current,
+        ...(current.parsed ? {} : { fileName: file.name }),
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [changeConfig, config]);
+
+  const clearTokenTrace = useCallback(() => {
+    const { trace: _trace, ...withoutTrace } = config.speculative;
+    changeConfig({ ...config, speculative: withoutTrace });
+    setTokenTrace({});
+  }, [changeConfig, config]);
+
   const reset = useCallback(() => {
     changeConfig(DEFAULT_CONFIG);
     setCalibration({});
+    setTokenTrace({});
   }, [changeConfig]);
 
   const run = useCallback((nextConfig: DashboardRunConfig) => {
@@ -232,10 +288,12 @@ export function App(): React.JSX.Element {
         workerRef.current = undefined;
         return;
       }
+      const tokenMismatch =
+        message.result.speculative?.tokenTrace?.matchesTargetOnly === false;
       setRunState({
-        status: "complete",
+        status: tokenMismatch ? "mismatch" : "complete",
         progress: 100,
-        phase: "Replay verified",
+        phase: tokenMismatch ? "Token mismatch" : "Replay verified",
         result: message.result,
       });
       worker.terminate();
@@ -306,6 +364,9 @@ export function App(): React.JSX.Element {
               calibration={calibration}
               onCalibrationFile={importCalibration}
               onClearCalibration={clearCalibration}
+              tokenTrace={tokenTrace}
+              onTokenTraceFile={importTokenTrace}
+              onClearTokenTrace={clearTokenTrace}
               onRun={() => run(config)}
               onCancel={cancel}
               running={runState.status === "running"}
@@ -335,6 +396,9 @@ function ConfigurationPanel({
   calibration,
   onCalibrationFile,
   onClearCalibration,
+  tokenTrace,
+  onTokenTraceFile,
+  onClearTokenTrace,
   onRun,
   onCancel,
   running,
@@ -345,11 +409,15 @@ function ConfigurationPanel({
   readonly calibration: CalibrationSelection;
   readonly onCalibrationFile: (file: File) => void;
   readonly onClearCalibration: () => void;
+  readonly tokenTrace: TokenTraceSelection;
+  readonly onTokenTraceFile: (file: File) => void;
+  readonly onClearTokenTrace: () => void;
   readonly onRun: () => void;
   readonly onCancel: () => void;
   readonly running: boolean;
 }): React.JSX.Element {
   const calibrationInput = useRef<HTMLInputElement | null>(null);
+  const tokenTraceInput = useRef<HTMLInputElement | null>(null);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
@@ -664,72 +732,193 @@ function ConfigurationPanel({
           />
         </TabsContent>
         <TabsContent value="speculative" className="space-y-5">
-          <Field label="Proposer family">
-            <Select
-              value={config.speculative.family}
+          <div className="border-y border-zinc-200 py-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-zinc-600">
+                Token evidence
+              </span>
+              <Badge variant={tokenTrace.parsed
+                ? tokenTrace.parsed.preview.differential.matchesTargetOnly
+                  ? "success"
+                  : "danger"
+                : "neutral"}
+              >
+                {tokenTrace.parsed
+                  ? tokenTrace.parsed.preview.differential.matchesTargetOnly
+                    ? "parity"
+                    : "mismatch"
+                  : "seeded heuristic"}
+              </Badge>
+            </div>
+            <input
+              ref={tokenTraceInput}
+              type="file"
+              accept=".yaml,.yml,.json,application/json,text/yaml"
+              className="sr-only"
               disabled={disabled}
-              onValueChange={(family) => onChange({
-                ...config,
-                speculative: {
-                  ...config.speculative,
-                  family: family as DashboardRunConfig["speculative"]["family"],
-                },
-              })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SPECULATIVE_FAMILIES.map((family) => (
-                  <SelectItem key={family.value} value={family.value}>
-                    {family.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <SliderField
-            label="Output tokens"
-            value={config.speculative.outputTokens}
-            minimum={32}
-            maximum={512}
-            step={16}
-            disabled={disabled}
-            onChange={(outputTokens) => onChange({
-              ...config,
-              speculative: { ...config.speculative, outputTokens },
-            })}
-          />
-          <SliderField
-            label="Draft width"
-            value={config.speculative.draftWidth}
-            minimum={1}
-            maximum={8}
-            step={1}
-            disabled={disabled}
-            onChange={(draftWidth) => onChange({
-              ...config,
-              speculative: { ...config.speculative, draftWidth },
-            })}
-          />
-          <SliderField
-            label="Position 1 acceptance"
-            value={Math.round(
-              config.speculative.firstPositionAcceptance * 100,
-            )}
-            suffix="%"
-            minimum={20}
-            maximum={98}
-            step={1}
-            disabled={disabled}
-            onChange={(acceptance) => onChange({
-              ...config,
-              speculative: {
-                ...config.speculative,
-                firstPositionAcceptance: acceptance / 100,
-              },
-            })}
-          />
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) {
+                  onTokenTraceFile(file);
+                }
+              }}
+            />
+            {tokenTrace.parsed
+              ? (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <FileDiff className="size-4 shrink-0 text-sky-700" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-semibold text-zinc-800">
+                        {tokenTrace.fileName}
+                      </div>
+                      <div className="truncate text-[11px] text-zinc-500">
+                        {tokenTrace.parsed.trace.id} ·{" "}
+                        {tokenTrace.parsed.trace.provenance.source}
+                      </div>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8"
+                          aria-label="Replace token trace"
+                          disabled={disabled}
+                          onClick={() => tokenTraceInput.current?.click()}
+                        >
+                          <Upload className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Replace token trace</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8"
+                          aria-label="Remove token trace"
+                          disabled={disabled}
+                          onClick={onClearTokenTrace}
+                        >
+                          <X className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Remove token trace</TooltipContent>
+                    </Tooltip>
+                  </div>
+                )
+              : (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full"
+                    disabled={disabled}
+                    onClick={() => tokenTraceInput.current?.click()}
+                  >
+                    <Upload className="size-4" />
+                    Import token trace
+                  </Button>
+                )}
+            {tokenTrace.error
+              ? (
+                  <div className="mt-2 text-xs leading-4 text-rose-700">
+                    {tokenTrace.error}
+                  </div>
+                )
+              : null}
+          </div>
+          {tokenTrace.parsed
+            ? (
+                <div className="grid grid-cols-3 gap-3 border-b border-zinc-200 pb-4">
+                  <DiagnosticValue
+                    label="Family"
+                    value={tokenTrace.parsed.trace.family.replaceAll("_", " ")}
+                  />
+                  <DiagnosticValue
+                    label="Output"
+                    value={`${tokenTrace.parsed.trace.expectedOutputTokenIds.length} tok`}
+                  />
+                  <DiagnosticValue
+                    label="Iterations"
+                    value={String(tokenTrace.parsed.trace.iterations.length)}
+                  />
+                </div>
+              )
+            : (
+                <>
+                  <Field label="Proposer family">
+                    <Select
+                      value={config.speculative.family}
+                      disabled={disabled}
+                      onValueChange={(family) => onChange({
+                        ...config,
+                        speculative: {
+                          ...config.speculative,
+                          family:
+                            family as DashboardRunConfig["speculative"]["family"],
+                        },
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SPECULATIVE_FAMILIES.map((family) => (
+                          <SelectItem key={family.value} value={family.value}>
+                            {family.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <SliderField
+                    label="Output tokens"
+                    value={config.speculative.outputTokens}
+                    minimum={32}
+                    maximum={512}
+                    step={16}
+                    disabled={disabled}
+                    onChange={(outputTokens) => onChange({
+                      ...config,
+                      speculative: { ...config.speculative, outputTokens },
+                    })}
+                  />
+                  <SliderField
+                    label="Draft width"
+                    value={config.speculative.draftWidth}
+                    minimum={1}
+                    maximum={8}
+                    step={1}
+                    disabled={disabled}
+                    onChange={(draftWidth) => onChange({
+                      ...config,
+                      speculative: { ...config.speculative, draftWidth },
+                    })}
+                  />
+                  <SliderField
+                    label="Position 1 acceptance"
+                    value={Math.round(
+                      config.speculative.firstPositionAcceptance * 100,
+                    )}
+                    suffix="%"
+                    minimum={20}
+                    maximum={98}
+                    step={1}
+                    disabled={disabled}
+                    onChange={(acceptance) => onChange({
+                      ...config,
+                      speculative: {
+                        ...config.speculative,
+                        firstPositionAcceptance: acceptance / 100,
+                      },
+                    })}
+                  />
+                </>
+              )}
         </TabsContent>
         <TabsContent value="expert-cache" className="space-y-5">
           <SliderField
@@ -848,6 +1037,18 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
                 </Badge>
               )
             : null}
+          {result.speculative?.tokenTrace
+            ? (
+                <Badge variant={result.speculative.tokenTrace.matchesTargetOnly
+                  ? "success"
+                  : "danger"}
+                >
+                  {result.speculative.tokenTrace.matchesTargetOnly
+                    ? "token parity"
+                    : "token mismatch"}
+                </Badge>
+              )
+            : null}
           {result.serving
             ? <Badge variant="neutral">continuous batch</Badge>
             : null}
@@ -879,6 +1080,9 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
           </Tooltip>
         </div>
       </div>
+      {result.speculative?.tokenTrace
+        ? <TokenTraceSummary result={result} />
+        : null}
       {result.calibration ? <CalibrationSummary result={result} /> : null}
       <section className="metric-grid" aria-label="Run metrics">
         {metrics.map((metric) => (
@@ -901,6 +1105,43 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
         <ResultCharts result={result} />
       </Suspense>
     </div>
+  );
+}
+
+function TokenTraceSummary({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const trace = result.speculative!.tokenTrace!;
+  return (
+    <section className="grid gap-3 border-y border-zinc-200 bg-white px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+      <div className="flex min-w-0 items-center gap-3">
+        {trace.matchesTargetOnly
+          ? <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+          : <TriangleAlert className="size-4 shrink-0 text-rose-700" />}
+        <div className="min-w-0">
+          <div className="truncate text-xs font-bold text-zinc-800">
+            {trace.traceId}
+          </div>
+          <div className="truncate text-[11px] text-zinc-500">
+            {trace.source} · {trace.runtimeRevision} · {trace.modelFingerprint}
+          </div>
+        </div>
+      </div>
+      <DiagnosticValue
+        label="Differential"
+        value={trace.matchesTargetOnly
+          ? `${trace.comparedTokenCount} matched`
+          : `Token ${(trace.firstMismatch?.outputIndex ?? 0) + 1}`}
+      />
+      <DiagnosticValue
+        label="Run binding"
+        value={trace.matchesTargetOnly
+          ? "distinct IDs"
+          : `${trace.firstMismatch?.expectedTokenId} -> ${trace.firstMismatch?.actualTokenId}`}
+      />
+    </section>
   );
 }
 
@@ -1141,11 +1382,19 @@ function RunBadge({ status }: { readonly status: RunStatus }): React.JSX.Element
       </Badge>
     );
   }
+  if (status === "mismatch") {
+    return (
+      <Badge variant="danger">
+        <TriangleAlert className="mr-1 size-3.5" />
+        Mismatch
+      </Badge>
+    );
+  }
   if (status === "running") {
     return <Badge>Running</Badge>;
   }
   if (status === "error") {
-    return <Badge variant="warning">Failed</Badge>;
+    return <Badge variant="danger">Failed</Badge>;
   }
   return <Badge variant="neutral">{status === "cancelled" ? "Cancelled" : "Ready"}</Badge>;
 }

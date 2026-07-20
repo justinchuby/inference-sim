@@ -970,6 +970,13 @@ optionally executes its derived workload on a topology preset. It exits zero on
 parity, two on a well-formed token mismatch, and one on malformed evidence or
 execution failure.
 
+The React workbench imports the same token-trace contract in the Spec view.
+Parsing and an immediate preview provide file-level feedback; the authoritative
+run repeats token-value verification, composite state replay, and topology
+execution in the Worker. Controls derived from imported evidence replace the
+heuristic sliders for that run. Parity and first-mismatch results remain visible
+alongside provenance rather than being collapsed into a generic error state.
+
 The `serving` command executes arrival-driven target-only or speculative
 continuous batching on a selected topology and reports request timing,
 scheduler trace/replay, accepted/rejected draft work, batch work, and topology

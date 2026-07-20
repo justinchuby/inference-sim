@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { parseCalibrationFileText } from "./calibration-import.js";
+import { parseTokenTraceFileText } from "./token-trace-import.js";
 import { simulateDashboard } from "./dashboard-simulation.js";
 import type { DashboardRunConfig } from "./types.js";
 
@@ -66,6 +67,62 @@ describe("simulateDashboard", () => {
       expect(result.speculative?.family).toBe(family);
       expect(result.speculative?.finalTokenLength).toBe(2112);
     }
+  });
+
+  it("runs imported token evidence through value and state parity", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/speculative-token-trace-mtp.yaml",
+      import.meta.url,
+    ), "utf8");
+    const imported = await parseTokenTraceFileText(text, "trace.yaml");
+    const result = simulateDashboard({
+      ...base,
+      speculative: {
+        ...base.speculative,
+        trace: imported.trace,
+      },
+    });
+
+    expect(result.speculative?.tokenTrace).toMatchObject({
+      traceId: "mtp-correction-bonus-tail",
+      source: "synthetic-example",
+      runtimeRevision: "onnx-genai-synthetic",
+      matchesTargetOnly: true,
+      comparedTokenCount: 8,
+    });
+    expect(result.speculative?.iterations.map((iteration) => iteration.outcome))
+      .toEqual(["correction", "bonus", "accepted_tail"]);
+    expect(result.topology.metrics.committedTokens).toBe(8);
+  });
+
+  it("preserves a well-formed token mismatch as diagnostic output", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/speculative-token-trace-mtp.yaml",
+      import.meta.url,
+    ), "utf8");
+    const imported = await parseTokenTraceFileText(text, "trace.yaml");
+    const result = simulateDashboard({
+      ...base,
+      speculative: {
+        ...base.speculative,
+        trace: {
+          ...imported.trace,
+          expectedOutputTokenIds: [
+            10, 999, 21, 30, 31, 32, 40, 41,
+          ],
+        },
+      },
+    });
+
+    expect(result.speculative?.tokenTrace).toMatchObject({
+      matchesTargetOnly: false,
+      firstMismatch: {
+        outputIndex: 1,
+        expectedTokenId: 999,
+        actualTokenId: 20,
+      },
+    });
+    expect(result.topology.metrics.committedTokens).toBe(8);
   });
 
   it("runs deterministic expert cache simulation", () => {

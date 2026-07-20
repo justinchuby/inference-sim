@@ -9,6 +9,8 @@ import type {
   SpeculativeWorkloadIteration,
   SpeculativeWorkloadMetrics,
   SpeculativeProposerFamily,
+  SpeculativeTokenMismatch,
+  SpeculativeTokenTrace,
   ServingMetrics,
   ServingRequestResult,
   TopologyResourceUtilization,
@@ -33,6 +35,7 @@ export interface DashboardRunConfig {
     readonly outputTokens: number;
     readonly draftWidth: number;
     readonly firstPositionAcceptance: number;
+    readonly trace?: SpeculativeTokenTrace;
   };
   readonly serving: {
     readonly compareTopologies: boolean;
@@ -91,6 +94,20 @@ export interface DashboardResult {
     readonly metrics: SpeculativeWorkloadMetrics;
     readonly iterations: readonly SpeculativeWorkloadIteration[];
     readonly finalTokenLength: number;
+    readonly tokenTrace?: {
+      readonly traceId: string;
+      readonly source: string;
+      readonly runtimeRevision: string;
+      readonly modelFingerprint: string;
+      readonly targetOnlyRunId: string;
+      readonly speculativeRunId: string;
+      readonly promptTokenCount: number;
+      readonly comparedTokenCount: number;
+      readonly matchesTargetOnly: boolean;
+      readonly firstMismatch?: SpeculativeTokenMismatch;
+      readonly expectedOutputTokenIds: readonly number[];
+      readonly committedOutputTokenIds: readonly number[];
+    };
   };
   readonly expertCache?: {
     readonly metrics: ExpertCacheMetrics;
