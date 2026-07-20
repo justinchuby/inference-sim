@@ -328,7 +328,7 @@ describe("topology-aware serving", () => {
       workload,
       undefined,
       {
-        contractRevision: 2 as 1,
+        contractRevision: 99 as 2,
         cache,
         topK: 1,
       },
@@ -339,8 +339,39 @@ describe("topology-aware serving", () => {
       undefined,
       {
         contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+        cache,
+        topK: 2,
+      },
+    )).toThrow("topK 2 exceeds 1 experts");
+  });
+
+  it("retimes adaptive prefetch from the shared physical storage trace", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    const result = simulateTopologyServingWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        requests: [
+          { id: "adaptive", arrivalNs: 0, promptTokens: 4, outputTokens: 3 },
+        ],
+        maxBatchSize: 1,
+        maxBatchTokens: 2,
+        prefillChunkTokens: 2,
+        maxKvTokens: 10,
+      },
+      undefined,
+      {
+        contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
         cache: {
-          ...cache,
+          experts: Array.from({ length: 4 }, (_, index) => ({
+            id: `e${index}`,
+            bytes: expertBytes,
+          })),
+          hotCapacityBytes: 2 * expertBytes,
+          warmCapacityBytes: 2 * expertBytes,
+          warmToHotLatencyNs: 400_000,
+          coldToHotLatencyNs: 2_200_000,
+          coldToWarmLatencyNs: 1_500_000,
+          routingSeed: 7,
           adaptivePrefetch: {
             targetTier: "warm",
             minObservations: 1,
@@ -350,7 +381,124 @@ describe("topology-aware serving", () => {
         },
         topK: 1,
       },
-    )).toThrow("does not yet support adaptive background prefetch");
+    );
+    const trace = result.expertCache?.trace ?? [];
+    const prefetchLoads = trace.filter((event) => (
+      event.kind === "load_start" && event.load.kind === "prefetch"
+    ));
+    const retimes = trace.filter((event) => event.kind === "load_retime");
+    const physicalRetimes = retimes.filter(
+      (event) => event.physicalCompletesAtNs !== undefined,
+    );
+    const storageTransfers = result.physical?.execution.trace.operations.filter(
+      ({ event }) => (
+        event.kind === "transfer"
+        && event.resources.some((resource) => (
+          resource.resourceId.endsWith(":storage-read")
+        ))
+      ),
+    ) ?? [];
+
+    expect(prefetchLoads.length).toBeGreaterThan(0);
+    expect(retimes.length).toBe(prefetchLoads.length * 2);
+    expect(physicalRetimes).toHaveLength(prefetchLoads.length);
+    expect(storageTransfers.length).toBeGreaterThan(0);
+    for (const retime of physicalRetimes) {
+      const physicalTerminals = result.batches.flatMap((batch) => (
+        batch.topology.backgroundPrefetchTerminals
+          .filter((terminal) => terminal.prefetchId === retime.loadId)
+          .map((terminal) => result.physical?.execution.trace.operations.find(
+            ({ event }) => (
+              event.executionId === batch.topology.plan.executionId
+              && event.stepId === terminal.stepId
+            ),
+          )?.event)
+      ));
+      expect(physicalTerminals.length, retime.loadId).toBeGreaterThan(0);
+      expect(
+        physicalTerminals.every((event) => event?.kind === "transfer"),
+        retime.loadId,
+      ).toBe(true);
+      expect(
+        retime.physicalCompletesAtNs,
+        retime.loadId,
+      ).toBe(Math.max(...physicalTerminals.map((event) => event?.finishNs ?? 0)));
+      expect(
+        retime.completesAtNs,
+        retime.loadId,
+      ).toBeGreaterThanOrEqual(retime.physicalCompletesAtNs ?? 0);
+    }
+    expect(result.expertCache?.replay.snapshot)
+      .toEqual(result.expertCache?.snapshot);
+    expect(result.physical?.replay.completedAtNs)
+      .toBe(result.physical?.execution.completedAtNs);
+  });
+
+  it("closes adaptive prefetch reservations on every required topology", () => {
+    const expertBytes = 64 * 1024 ** 2;
+    for (const scenarioName of SCENARIO_PRESET_NAMES) {
+      const result = simulateTopologyServingWorkload(
+        buildScenarioPreset(scenarioName),
+        {
+          requests: [
+            {
+              id: "adaptive-matrix",
+              arrivalNs: 0,
+              promptTokens: 4,
+              outputTokens: 2,
+            },
+          ],
+          maxBatchSize: 1,
+          maxBatchTokens: 2,
+          prefillChunkTokens: 2,
+          maxKvTokens: 9,
+        },
+        undefined,
+        {
+          contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
+          cache: {
+            experts: Array.from({ length: 4 }, (_, index) => ({
+              id: `e${index}`,
+              bytes: expertBytes,
+            })),
+            hotCapacityBytes: 2 * expertBytes,
+            warmCapacityBytes: 2 * expertBytes,
+            warmToHotLatencyNs: 400_000,
+            coldToHotLatencyNs: 2_200_000,
+            coldToWarmLatencyNs: 1_500_000,
+            routingSeed: 7,
+            adaptivePrefetch: {
+              targetTier: "warm",
+              minObservations: 1,
+              intervalTokens: 1,
+              maxExpertsPerDecision: 1,
+            },
+          },
+          topK: 1,
+        },
+      );
+      const trace = result.expertCache?.trace ?? [];
+      const prefetchLoads = trace.filter((event) => (
+        event.kind === "load_start" && event.load.kind === "prefetch"
+      ));
+      const physicalRetimes = trace.filter((event) => (
+        event.kind === "load_retime"
+        && event.physicalCompletesAtNs !== undefined
+      ));
+
+      expect(prefetchLoads.length, scenarioName).toBeGreaterThan(0);
+      expect(physicalRetimes, scenarioName).toHaveLength(
+        prefetchLoads.length,
+      );
+      expect(result.expertCache?.snapshot.pendingLoads, scenarioName)
+        .toHaveLength(0);
+      expect(result.expertCache?.snapshot.warmReservedBytes, scenarioName)
+        .toBe(0);
+      expect(result.expertCache?.replay.snapshot, scenarioName)
+        .toEqual(result.expertCache?.snapshot);
+      expect(result.physical?.replay.completedAtNs, scenarioName)
+        .toBe(result.physical?.execution.completedAtNs);
+    }
   });
 
   it("ranks the same serving workload across every topology", () => {

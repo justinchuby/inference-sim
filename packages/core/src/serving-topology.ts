@@ -14,6 +14,7 @@ import {
   type ExpertCacheReplayResult,
   type ExpertCacheSnapshot,
   type ExpertCacheTraceEvent,
+  type ExpertPendingLoadSnapshot,
   type ExpertRouteResult,
 } from "./expert-cache.js";
 import type {
@@ -37,9 +38,11 @@ import {
 } from "./concurrent-plan.js";
 import type {
   FrozenPlanExecutionResult,
+  PlanTraceEvent,
 } from "./plan-types.js";
 
-export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 1;
+export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 2;
+const DEFERRED_PREFETCH_COMPLETION_NS = Number.MAX_SAFE_INTEGER;
 
 export interface TopologyServingExpertCacheConfig {
   readonly contractRevision:
@@ -111,6 +114,13 @@ export interface TopologyServingComparisonResult {
   readonly runs: readonly TopologyServingComparisonRun[];
 }
 
+interface PhysicalPrefetchBinding {
+  readonly load: ExpertPendingLoadSnapshot;
+  readonly expectedStepKeys: ReadonlySet<string>;
+  readonly submittedFinishes: Map<string, number>;
+  retimed: boolean;
+}
+
 export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
   config?: ServingSchedulerConfig["speculative"],
@@ -158,6 +168,15 @@ export function simulateTopologyServingWorkload(
     ? undefined
     : new StreamingConcurrentPlanRuntime(scenario);
   const physicalRequests: ConcurrentPlanRequest[] = [];
+  const physicalPrefetchByStep = new Map<string, PhysicalPrefetchBinding>();
+  const physicalPrefetchBindings: PhysicalPrefetchBinding[] = [];
+  physicalRuntime?.onOperationSubmitted((event) => {
+    applyPhysicalPrefetchSubmission(
+      expertCache,
+      physicalPrefetchByStep,
+      event,
+    );
+  });
   const expertRoutes: ExpertRouteResult[] = [];
   let nextExpertTokenIndex = 0;
   const estimateDuration = (
@@ -177,6 +196,8 @@ export function simulateTopologyServingWorkload(
       return existing.durationNs;
     }
     const batchExpertRoutes: ExpertRouteResult[] = [];
+    const batchPrefetchLoads: ExpertPendingLoadSnapshot[] = [];
+    physicalRuntime?.advanceTo(startedAtNs);
     const cacheStartedAtNs = expertCache?.snapshot().currentTimeNs
       ?? startedAtNs;
     if (cacheStartedAtNs > startedAtNs) {
@@ -190,6 +211,7 @@ export function simulateTopologyServingWorkload(
           startedAtNs,
           expertCache.snapshot().currentTimeNs,
         );
+        const traceStart = expertCache.traceLength();
         const route = expertCache.processToken({
           tokenIndex: nextExpertTokenIndex++,
           topK: expertCacheConfig.topK,
@@ -197,6 +219,19 @@ export function simulateTopologyServingWorkload(
         });
         batchExpertRoutes.push(route);
         expertRoutes.push(route);
+        for (const event of expertCache.traceFrom(traceStart)) {
+          if (
+            event.kind === "load_start"
+            && event.load.kind === "prefetch"
+            && event.load.targetTier === "warm"
+          ) {
+            batchPrefetchLoads.push(event.load);
+            expertCache.retimePendingPrefetch(
+              event.load.loadId,
+              DEFERRED_PREFETCH_COMPLETION_NS,
+            );
+          }
+        }
       }
     }
     const cacheConstraintNs = expertCache === undefined
@@ -211,17 +246,31 @@ export function simulateTopologyServingWorkload(
             config.speculative,
             batchExpertRoutes,
             expertCacheConfig?.cache.experts ?? [],
+            batchPrefetchLoads,
           ),
       costModel,
     );
     let foregroundCompletedAtNs = startedAtNs
       + topology.metrics.foregroundDurationNs;
     if (physicalRuntime !== undefined) {
-      physicalRuntime.admit(topology.plan, startedAtNs);
+      const stepNotBeforeNs = registerPhysicalPrefetches(
+        topology,
+        batchPrefetchLoads,
+        physicalPrefetchByStep,
+        physicalPrefetchBindings,
+      );
+      physicalRuntime.admit(
+        topology.plan,
+        startedAtNs,
+        stepNotBeforeNs,
+      );
       physicalRequests.push({
         plan: topology.plan,
         arrivalNs: startedAtNs,
         admissionOrder: physicalRequests.length,
+        ...(Object.keys(stepNotBeforeNs).length === 0
+          ? {}
+          : { stepNotBeforeNs }),
       });
       foregroundCompletedAtNs = physicalRuntime.runUntilStep(
         topology.plan.executionId,
@@ -253,6 +302,29 @@ export function simulateTopologyServingWorkload(
         physicalRuntime,
         physicalRequests,
       );
+  if (physical !== undefined && expertCache !== undefined) {
+    const unresolved = physicalPrefetchBindings.filter(
+      (binding) => !binding.retimed,
+    );
+    if (unresolved.length > 0) {
+      throw new Error(
+        `physical execution drained with unresolved adaptive prefetches: ${
+          unresolved.map((binding) => binding.load.loadId).join(", ")
+        }`,
+      );
+    }
+    if (physicalPrefetchBindings.length > 0) {
+      const finalPrefetchCompletionNs = Math.max(
+        ...physicalPrefetchBindings.flatMap((binding) => (
+          [...binding.submittedFinishes.values()]
+        )),
+      );
+      expertCache.advanceTo(Math.max(
+        expertCache.snapshot().currentTimeNs,
+        finalPrefetchCompletionNs,
+      ));
+    }
+  }
   const physicalByExecution = new Map(
     physical?.execution.executions.map((execution) => [
       execution.executionId,
@@ -344,7 +416,9 @@ export function simulateTopologyServingWorkload(
       expertCache === undefined
         ? "batch plans use isolated relative-time execution"
         : "composed batch plans share one absolute-time resource, lease, and collective timeline through final drain",
-      "batch plans execute serially while resources inside each plan retain declared concurrency",
+      expertCache === undefined
+        ? "batch plans execute serially while resources inside each plan retain declared concurrency"
+        : "batch foregrounds are non-preemptive; background transfers from older plans may overlap later foreground plans",
     ],
     serving,
     batches: orderedBatches,
@@ -441,6 +515,7 @@ function topologyProfileFromExpertServingBatch(
   speculative: ServingSchedulerConfig["speculative"],
   routes: readonly ExpertRouteResult[],
   experts: ExpertCacheConfig["experts"],
+  prefetchLoads: readonly ExpertPendingLoadSnapshot[],
 ): TopologyWorkloadProfile {
   if (routes.length !== batch.tokenWork || routes.length === 0) {
     throw new Error(
@@ -493,7 +568,101 @@ function topologyProfileFromExpertServingBatch(
       warmLoadBytes,
       coldLoadBytes,
     })),
+    backgroundPrefetches: prefetchLoads.map((load) => ({
+      id: load.loadId,
+      afterUnitIndex: 0,
+      bytes: load.bytes,
+    })),
   };
+}
+
+function registerPhysicalPrefetches(
+  topology: TopologyWorkloadResult,
+  loads: readonly ExpertPendingLoadSnapshot[],
+  byStep: Map<string, PhysicalPrefetchBinding>,
+  bindings: PhysicalPrefetchBinding[],
+): Readonly<Record<number, number>> {
+  const stepNotBeforeNs: Record<number, number> = {};
+  for (const load of loads) {
+    const terminals = topology.backgroundPrefetchTerminals.filter(
+      (terminal) => terminal.prefetchId === load.loadId,
+    );
+    if (terminals.length === 0) {
+      throw new Error(
+        `adaptive prefetch ${load.loadId} has no physical terminal`,
+      );
+    }
+    const expectedStepKeys = new Set(terminals.map((terminal) => (
+      physicalStepKey(topology.plan.executionId, terminal.stepId)
+    )));
+    const binding: PhysicalPrefetchBinding = {
+      load,
+      expectedStepKeys,
+      submittedFinishes: new Map(),
+      retimed: false,
+    };
+    bindings.push(binding);
+    for (const stepKey of expectedStepKeys) {
+      if (byStep.has(stepKey)) {
+        throw new Error(
+          `duplicate physical prefetch terminal ${stepKey}`,
+        );
+      }
+      byStep.set(stepKey, binding);
+    }
+    for (const terminal of terminals) {
+      for (const stepId of terminal.stepIds) {
+        const prior = stepNotBeforeNs[stepId];
+        if (prior !== undefined && prior !== load.startedAtNs) {
+          throw new Error(
+            `physical prefetch step ${stepId} has conflicting policy times`,
+          );
+        }
+        stepNotBeforeNs[stepId] = load.startedAtNs;
+      }
+    }
+  }
+  return stepNotBeforeNs;
+}
+
+function applyPhysicalPrefetchSubmission(
+  cache: ExpertCacheSimulator | undefined,
+  byStep: ReadonlyMap<string, PhysicalPrefetchBinding>,
+  event: PlanTraceEvent,
+): void {
+  const stepKey = physicalStepKey(event.executionId, event.stepId);
+  const binding = byStep.get(stepKey);
+  if (binding === undefined) {
+    return;
+  }
+  if (
+    cache === undefined
+    || event.kind !== "transfer"
+    || event.startNs < binding.load.startedAtNs
+    || binding.submittedFinishes.has(stepKey)
+  ) {
+    throw new Error(
+      `adaptive prefetch ${binding.load.loadId} physical submission violates cache causality`,
+    );
+  }
+  binding.submittedFinishes.set(stepKey, event.finishNs);
+  if (
+    binding.submittedFinishes.size === binding.expectedStepKeys.size
+  ) {
+    const completesAtNs = Math.max(
+      ...binding.submittedFinishes.values(),
+    );
+    cache.retimePendingPrefetch(
+      binding.load.loadId,
+      Math.max(completesAtNs, cache.snapshot().currentTimeNs),
+      completesAtNs,
+    );
+    binding.retimed = true;
+  }
+}
+
+function physicalStepKey(executionId: string, stepId: number): string {
+  return `${executionId}\u0000${stepId}`;
 }
 
 function checkedByteAdd(left: number, right: number, label: string): number {
@@ -523,11 +692,6 @@ function validateExpertCacheComposition(
   if (config.topK > config.cache.experts.length) {
     throw new Error(
       `serving expert-cache topK ${config.topK} exceeds ${config.cache.experts.length} experts`,
-    );
-  }
-  if (config.cache.adaptivePrefetch !== undefined) {
-    throw new Error(
-      "serving expert-cache composition does not yet support adaptive background prefetch",
     );
   }
 }

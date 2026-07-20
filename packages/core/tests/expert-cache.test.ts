@@ -57,6 +57,52 @@ describe("ExpertCacheSimulator", () => {
     expect(cache.snapshot().hotReservedBytes).toBe(0);
   });
 
+  it("retimes pending prefetch completion with replayable reservation state", () => {
+    const cache = new ExpertCacheSimulator(config);
+    const [loadId] = cache.prefetch(["e3"], "warm", 0);
+    const updated = cache.retimePendingPrefetch(loadId, 30);
+
+    expect(updated.completesAtNs).toBe(30);
+    cache.advanceTo(12);
+    expect(cache.snapshot().pendingLoads[0].completesAtNs).toBe(30);
+    expect(cache.snapshot().warmExpertIds).not.toContain("e3");
+    cache.advanceTo(30);
+    expect(cache.snapshot().warmExpertIds).toContain("e3");
+    expect(replayExpertCacheTrace(cache.trace()).snapshot)
+      .toEqual(cache.snapshot());
+  });
+
+  it("rejects invalid or mutated prefetch retiming", () => {
+    const cache = new ExpertCacheSimulator(config);
+    const [loadId] = cache.prefetch(["e3"], "warm", 10);
+
+    expect(() => cache.retimePendingPrefetch(loadId, 9))
+      .toThrow("precedes current/load time");
+    cache.retimePendingPrefetch(loadId, 40);
+    const trace: ExpertCacheTraceEvent[] = structuredClone(cache.trace());
+    const retime = trace.find((event) => event.kind === "load_retime");
+    if (retime?.kind !== "load_retime") {
+      throw new Error("missing load retime");
+    }
+    retime.priorCompletesAtNs++;
+    expect(() => replayExpertCacheTrace(trace))
+      .toThrowError(ExpertCacheReplayError);
+
+    const invalidPhysical: ExpertCacheTraceEvent[] = structuredClone(
+      cache.trace(),
+    );
+    const physicalRetime = invalidPhysical.find(
+      (event) => event.kind === "load_retime",
+    );
+    if (physicalRetime?.kind !== "load_retime") {
+      throw new Error("missing load retime");
+    }
+    physicalRetime.physicalCompletesAtNs =
+      physicalRetime.completesAtNs + 1;
+    expect(() => replayExpertCacheTrace(invalidPhysical))
+      .toThrowError(ExpertCacheReplayError);
+  });
+
   it("evicts least-recently-used bytes deterministically", () => {
     const cache = new ExpertCacheSimulator({
       ...config,

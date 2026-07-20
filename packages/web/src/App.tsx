@@ -1254,7 +1254,7 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
             <div className="mt-2 text-xl font-bold tabular-nums">
               {metric.value}
             </div>
-            <div className="mt-1 truncate text-xs text-zinc-500">
+            <div className="mt-1 min-h-8 text-xs leading-4 text-zinc-500">
               {metric.detail}
             </div>
           </div>

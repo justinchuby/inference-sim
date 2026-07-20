@@ -247,7 +247,49 @@ describe("concurrent FrozenPlan execution", () => {
     expect(() => executeConcurrentFrozenPlans(limited, [
       { plan: oneStepPlan("execution-a"), arrivalNs: 0, admissionOrder: 0 },
       { plan: oneStepPlan("execution-b"), arrivalNs: 0, admissionOrder: 1 },
-    ])).toThrowError("require 6 trace events, limit is 5");
+    ])).toThrowError("require 6 runtime events, limit is 5");
+  });
+
+  it("releases constrained steps without reserving resources early", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const constrained = {
+      plan: oneStepPlan("execution-a"),
+      arrivalNs: 0,
+      admissionOrder: 0,
+      stepNotBeforeNs: { 0: 20 },
+    };
+    const unconstrained = {
+      plan: oneStepPlan("execution-b"),
+      arrivalNs: 0,
+      admissionOrder: 1,
+    };
+    const concurrentRequests = [constrained, unconstrained];
+    const result = executeConcurrentFrozenPlans(
+      scenario,
+      concurrentRequests,
+    );
+
+    expect(result.trace.operations.map(({ event }) => [
+      event.executionId,
+      event.submittedAtNs,
+      event.startNs,
+      event.finishNs,
+    ])).toEqual([
+      ["execution-b", 0, 0, 10],
+      ["execution-a", 20, 20, 30],
+    ]);
+    expect(
+      replayConcurrentPlanTrace(scenario, concurrentRequests, result.trace)
+        .completedAtNs,
+    ).toBe(30);
+    expect(() => replayConcurrentPlanTrace(
+      scenario,
+      [{
+        ...constrained,
+        stepNotBeforeNs: { 0: 19 },
+      }, unconstrained],
+      result.trace,
+    )).toThrowError(PlanReplayError);
   });
 
   it("processes completions before admissions at the same timestamp", () => {

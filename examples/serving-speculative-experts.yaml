@@ -22,7 +22,7 @@ serving:
       output_tokens: 64
 
 expert_cache:
-  contract_revision: 1
+  contract_revision: 2
   top_k: 2
   hot_capacity_bytes: 268435456
   warm_capacity_bytes: 268435456
@@ -30,6 +30,11 @@ expert_cache:
   cold_to_hot_latency_ns: 2200000
   cold_to_warm_latency_ns: 1500000
   routing_seed: 17
+  adaptive_prefetch:
+    target_tier: warm
+    min_observations: 2
+    interval_tokens: 2
+    max_experts_per_decision: 2
   initial_hot_expert_ids: [expert-0, expert-1]
   initial_warm_expert_ids: [expert-2, expert-3]
   experts:

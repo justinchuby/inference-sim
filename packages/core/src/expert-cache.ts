@@ -1,6 +1,6 @@
 import { DiscreteEventSimulator } from "./event-loop.js";
 
-export const EXPERT_CACHE_CONTRACT_REVISION = 2;
+export const EXPERT_CACHE_CONTRACT_REVISION = 3;
 
 export type ExpertCacheTier = "hot" | "warm" | "cold";
 export type ExpertLoadTarget = "hot" | "warm";
@@ -143,6 +143,14 @@ export type ExpertCacheTraceEvent = ExpertCacheTraceEnvelope & (
       readonly completedAtNs: number;
     }
   | {
+      readonly kind: "load_retime";
+      readonly loadId: string;
+      readonly atNs: number;
+      readonly priorCompletesAtNs: number;
+      readonly completesAtNs: number;
+      readonly physicalCompletesAtNs?: number;
+    }
+  | {
       readonly kind: "access";
       readonly requestId: string;
       readonly requestedAtNs: number;
@@ -234,6 +242,7 @@ export class ExpertCacheSimulator {
   private readonly routeHistory = new Map<string, ExpertRouteHistory>();
   private readonly events: ExpertCacheTraceEvent[] = [];
   private readonly eventLoop = new DiscreteEventSimulator<CompletionEvent>();
+  private readonly completionEventByLoad = new Map<string, number>();
   private readonly rng: DeterministicRng;
   private readonly metrics: MutableMetrics = emptyMetrics();
   private currentTimeNs = 0;
@@ -512,6 +521,93 @@ export class ExpertCacheSimulator {
     return structuredClone(this.events);
   }
 
+  traceLength(): number {
+    return this.events.length;
+  }
+
+  traceFrom(sourceSequence: number): readonly ExpertCacheTraceEvent[] {
+    assertNonNegativeSafeInteger(sourceSequence, "trace source sequence");
+    if (sourceSequence > this.events.length) {
+      throw new ExpertCacheProtocolError(
+        `trace source sequence ${sourceSequence} exceeds ${this.events.length}`,
+      );
+    }
+    return structuredClone(this.events.slice(sourceSequence));
+  }
+
+  retimePendingPrefetch(
+    loadId: string,
+    completesAtNs: number,
+    physicalCompletesAtNs?: number,
+  ): ExpertPendingLoadSnapshot {
+    assertNonNegativeSafeInteger(
+      completesAtNs,
+      "retimed prefetch completion",
+    );
+    const load = this.pending.get(loadId);
+    if (load === undefined) {
+      throw new ExpertCacheProtocolError(
+        `cannot retime unknown pending load ${loadId}`,
+      );
+    }
+    if (load.kind !== "prefetch") {
+      throw new ExpertCacheProtocolError(
+        `cannot retime demand load ${loadId}`,
+      );
+    }
+    if (
+      completesAtNs < this.currentTimeNs
+      || completesAtNs < load.startedAtNs
+    ) {
+      throw new ExpertCacheProtocolError(
+        `retimed prefetch ${loadId} completion ${completesAtNs}ns precedes current/load time`,
+      );
+    }
+    if (
+      physicalCompletesAtNs !== undefined
+      && (
+        !Number.isSafeInteger(physicalCompletesAtNs)
+        || physicalCompletesAtNs < load.startedAtNs
+        || physicalCompletesAtNs > completesAtNs
+      )
+    ) {
+      throw new ExpertCacheProtocolError(
+        `retimed prefetch ${loadId} has invalid physical completion ${physicalCompletesAtNs}`,
+      );
+    }
+    if (
+      completesAtNs === load.completesAtNs
+      && physicalCompletesAtNs === undefined
+    ) {
+      return structuredClone(load);
+    }
+    const updated = { ...load, completesAtNs };
+    if (completesAtNs !== load.completesAtNs) {
+      const eventId = this.completionEventByLoad.get(loadId);
+      if (eventId === undefined || !this.eventLoop.cancel(eventId)) {
+        throw new ExpertCacheProtocolError(
+          `pending completion event disappeared for ${loadId}`,
+        );
+      }
+      this.pending.set(loadId, updated);
+      this.completionEventByLoad.set(
+        loadId,
+        this.eventLoop.scheduleAt(completesAtNs, { loadId }),
+      );
+    }
+    this.commitEvent({
+      kind: "load_retime",
+      loadId,
+      atNs: this.currentTimeNs,
+      priorCompletesAtNs: load.completesAtNs,
+      completesAtNs,
+      ...(physicalCompletesAtNs === undefined
+        ? {}
+        : { physicalCompletesAtNs }),
+    });
+    return structuredClone(updated);
+  }
+
   private startLoad(
     expertId: string,
     targetTier: ExpertLoadTarget,
@@ -592,7 +688,10 @@ export class ExpertCacheSimulator {
       "expert bytes moved",
     );
     this.updateHighWater();
-    this.eventLoop.scheduleAt(completesAtNs, { loadId: load.loadId });
+    this.completionEventByLoad.set(
+      load.loadId,
+      this.eventLoop.scheduleAt(completesAtNs, { loadId: load.loadId }),
+    );
     this.commitEvent({ kind: "load_start", load });
     return load;
   }
@@ -614,6 +713,7 @@ export class ExpertCacheSimulator {
       this.warmReservedBytes -= load.bytes;
     }
     this.pending.delete(loadId);
+    this.completionEventByLoad.delete(loadId);
     this.pendingByTarget.delete(targetKey(load.expertId, load.targetTier));
     this.touch(resident, load.expertId);
     this.commitEvent({
@@ -982,6 +1082,33 @@ export function replayExpertCacheTrace(
             warmReservedBytes -= load.bytes;
             warm.set(load.expertId, ++accessClock);
           }
+          break;
+        }
+        case "load_retime": {
+          requireMonotonicTime(event.atNs, currentTimeNs);
+          currentTimeNs = event.atNs;
+          const load = pending.get(event.loadId);
+          if (
+            load === undefined
+            || load.kind !== "prefetch"
+            || load.completesAtNs !== event.priorCompletesAtNs
+            || event.completesAtNs < event.atNs
+            || event.completesAtNs < load.startedAtNs
+            || (
+              event.physicalCompletesAtNs !== undefined
+              && (
+                !Number.isSafeInteger(event.physicalCompletesAtNs)
+                || event.physicalCompletesAtNs < load.startedAtNs
+                || event.physicalCompletesAtNs > event.completesAtNs
+              )
+            )
+          ) {
+            replayFail(`invalid prefetch retime for ${event.loadId}`);
+          }
+          pending.set(event.loadId, {
+            ...load,
+            completesAtNs: event.completesAtNs,
+          });
           break;
         }
         case "access": {

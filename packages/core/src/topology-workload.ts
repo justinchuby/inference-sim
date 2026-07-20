@@ -146,6 +146,12 @@ export interface TopologyWorkloadResult {
   readonly confidence: ConfidenceClass;
   readonly assumptions: readonly string[];
   readonly foregroundTerminalStepId: number;
+  readonly backgroundPrefetchTerminals: readonly {
+    readonly prefetchId: string;
+    readonly targetDomainId: string;
+    readonly stepIds: readonly number[];
+    readonly stepId: number;
+  }[];
   readonly plan: FrozenPlan;
   readonly execution: FrozenPlanExecutionResult;
   readonly metrics: TopologyWorkloadMetrics;
@@ -321,6 +327,9 @@ function compileTopologyWorkload(
 ): {
   readonly plan: FrozenPlan;
   readonly foregroundTerminalStepId: number;
+  readonly backgroundPrefetchTerminals: TopologyWorkloadResult[
+    "backgroundPrefetchTerminals"
+  ];
 } {
   validateInputs(scenario, profile, costModel);
   const compiler = new WorkloadPlanCompiler(scenario, profile, costModel);
@@ -328,6 +337,7 @@ function compileTopologyWorkload(
   return {
     plan,
     foregroundTerminalStepId: compiler.foregroundTerminalStepId(),
+    backgroundPrefetchTerminals: compiler.backgroundPrefetchTerminals(),
   };
 }
 
@@ -337,7 +347,11 @@ export function simulateTopologyWorkload(
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
 ): TopologyWorkloadResult {
   const compiled = compileTopologyWorkload(scenario, profile, costModel);
-  const { plan, foregroundTerminalStepId } = compiled;
+  const {
+    plan,
+    foregroundTerminalStepId,
+    backgroundPrefetchTerminals,
+  } = compiled;
   const execution = executeFrozenPlan(scenario, plan);
   replayPlanTrace(scenario, plan, execution.trace);
   const totalDurationNs = execution.completedAtNs;
@@ -379,6 +393,7 @@ export function simulateTopologyWorkload(
       "foreground completion is the final workload-unit terminal; independent background transfers may drain afterward",
     ],
     foregroundTerminalStepId,
+    backgroundPrefetchTerminals,
     plan,
     execution,
     metrics: {
@@ -470,6 +485,12 @@ class WorkloadPlanCompiler {
     string,
     number
   >();
+  private readonly backgroundPrefetchTerminalSteps: Array<{
+    readonly prefetchId: string;
+    readonly targetDomainId: string;
+    readonly stepIds: readonly number[];
+    readonly stepId: number;
+  }> = [];
 
   constructor(
     private readonly scenario: SimulationScenario,
@@ -526,6 +547,15 @@ class WorkloadPlanCompiler {
       );
     }
     return this.previousTerminalStepId;
+  }
+
+  backgroundPrefetchTerminals(): TopologyWorkloadResult[
+    "backgroundPrefetchTerminals"
+  ] {
+    return this.backgroundPrefetchTerminalSteps.map((terminal) => ({
+      ...terminal,
+      stepIds: [...terminal.stepIds],
+    }));
   }
 
   private compileBackgroundPrefetches(
@@ -607,6 +637,12 @@ class WorkloadPlanCompiler {
           prefetchDomainKey(prefetch.id, targetDomainId),
           stepIds[stepIds.length - 1],
         );
+        this.backgroundPrefetchTerminalSteps.push({
+          prefetchId: prefetch.id,
+          targetDomainId,
+          stepIds: [...stepIds],
+          stepId: stepIds[stepIds.length - 1],
+        });
       }
     }
   }

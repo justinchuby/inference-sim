@@ -309,8 +309,17 @@ ownership release, resource-lane choice, lease-constrained start time, rank
 completion, and terminal order. It rejects unexplained submission delay,
 collective overtaking, resource reassignment, lease overlap, and terminal
 mutation.
-Admissions, operations, and terminals all consume the scenario `maxEvents`
-budget; manual admission cannot bypass the event/trace-size guard.
+
+A concurrent request may bind selected steps to absolute not-before
+timestamps. Such a step becomes submit-eligible only after both its release
+time and all DAG dependencies. The release is an event, not an advance
+reservation, so unconstrained work may still use the resource before that
+time. Replay receives the same request constraint and rejects early or
+unexplained-late submission.
+
+Admissions, operations, terminals, and delayed step releases all consume the
+scenario `maxEvents` budget; manual admission cannot bypass the runtime/trace
+size guard.
 
 A concurrent node fault requires every target execution to have been admitted
 and still be active before the fault timestamp. The fault atomically closes
@@ -642,7 +651,7 @@ that fallback with shape-regime measurements. Metrics include TTFT and ITL
 average/p50/p95, request latency, throughput, sequence/token batch utilization,
 idle/service time, and KV high water.
 
-Serving may opt into revision-1 stateful expert-cache composition. One cache
+Serving may opt into revision-2 stateful expert-cache composition. One cache
 instance persists across all batches, and every target token in prefill or
 verification receives one seeded top-K route. Draft-only proposer work does
 not route through the target MoE unless a future proposer profile explicitly
@@ -656,7 +665,7 @@ FFN launch economics. Demand-load bytes are projected into the topology plan,
 so batch duration is:
 
 ```text
-max(topology_plan_duration, serialized_cache_readiness_constraint)
+max(global_foreground_duration, serialized_cache_readiness_constraint)
 ```
 
 The two terms are constraints, not additive costs; adding them would charge the
@@ -677,12 +686,23 @@ background steps. After the final batch, the runtime drains and the existing
 concurrent-plan verifier independently replays every admission, operation, and
 terminal.
 
-Adaptive background prefetch remains deliberately rejected in composed
-serving. The global physical timeline can now retain its transfer across batch
-boundaries, but expert-cache residency still advances on a separate logical
-fixed-latency clock. Enabling the policy before cache completion is driven by
-the physical transfer trace could expose a warm expert before its copy is
-actually complete.
+Revision-3 expert-cache traces permit a pending prefetch completion to be
+retimed without changing its reservation. In composed serving, each adaptive
+warm load is first deferred so later routes in the same aggregate batch cannot
+consume a provisional fixed-latency copy. Every step on its physical storage
+path receives an absolute not-before constraint equal to the recorded policy
+decision time. The streaming runtime releases the step only after both that
+time and its DAG dependencies are satisfied; replay receives the same
+per-request constraints and rejects an early submission. This prevents a fast
+foreground topology from turning an aggregate-batch route into a future
+oracle. Once every per-node transfer terminal is submitted, the load is
+retimed to their latest completion. If that copy finishes while later routes
+in the same aggregate batch are still being evaluated, cache visibility is
+conservatively delayed to the current cache clock while
+`physicalCompletesAtNs` preserves the actual earlier completion. Missing
+terminals and starts before the logical policy decision are protocol errors.
+Independent cache replay verifies the provisional load, physical completion,
+visibility time, and every retime.
 
 ## 10. Device Configuration Coverage
 
@@ -1144,12 +1164,13 @@ execution with independent replay. Batch duration estimation receives the
 authoritative scheduler start time, and replay must reproduce both batch work
 and that time coordinate. This is the contract needed for future stateful
 cache residency, eviction, and prefetch completion across batch boundaries.
-Revision-1 composed serving preserves one expert-cache instance across
+Revision-2 composed serving preserves one expert-cache instance across
 batches, routes every target token through the selected top-K experts, emits
 routed AllToAllV/FFN plans, and independently replays both scheduler and cache
-traces. Its bounded baseline uses the maximum of topology execution and
-serialized cache readiness, and rejects adaptive cross-batch prefetch until a
-global physical event loop owns completion. It composes all six proposer
+traces. Its bounded baseline uses the maximum of global foreground execution
+and serialized cache readiness. Adaptive warm prefetch completion is retimed
+from shared physical storage-transfer terminals and may remain in flight across
+batch boundaries. It composes all six proposer
 contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6

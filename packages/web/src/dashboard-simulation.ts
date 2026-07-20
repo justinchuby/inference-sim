@@ -372,7 +372,7 @@ function buildServingExpertCacheConfig(
   if (!config.serving.useExpertCache) {
     return undefined;
   }
-  const expert = buildDashboardExpertCache(config, false);
+  const expert = buildDashboardExpertCache(config, true);
   return {
     contractRevision: SERVING_EXPERT_CACHE_CONTRACT_REVISION,
     cache: expert.cache,

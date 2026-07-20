@@ -139,6 +139,7 @@ pnpm sim speculative-capture examples/runtime-capture-target-only.yaml examples/
 pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
+pnpm sim serving multi-gpu examples/serving-speculative-experts.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml
 pnpm sim calibrate examples/calibration-synthetic.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-synthetic.yaml
