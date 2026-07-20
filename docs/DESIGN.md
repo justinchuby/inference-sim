@@ -938,7 +938,9 @@ controls select target-only or any proposer family plus width and acceptance.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. General configuration
 search, FrozenPlan file execution/export, ONNX import, trace export, and richer
-progress phases remain.
+progress phases remain. Calibration YAML/JSON import shares the core parser and
+fit contract with the CLI, enforces a 1 MiB input limit, refits in the Worker,
+and reports the dataset fingerprint and fit diagnostics in the result view.
 
 ## 16. Testing and Delivery Gates
 

@@ -1,10 +1,12 @@
 import {
+  DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
   compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
+  fitTopologyCostModel,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyServingWorkload,
@@ -15,16 +17,38 @@ import {
   type ScenarioPresetName,
   type ServingSchedulerConfig,
   type TopologyWorkloadResult,
+  type TopologyCostModel,
 } from "@inference-sim/core";
 import type { DashboardResult, DashboardRunConfig } from "./types.js";
 
 export function simulateDashboard(
   config: DashboardRunConfig,
 ): Omit<DashboardResult, "durationMs"> {
+  const calibration = config.calibration === undefined
+    ? undefined
+    : fitTopologyCostModel(config.calibration);
+  const costModel = calibration?.costModel ?? DEFAULT_TOPOLOGY_COST_MODEL;
+  const attachCalibration = (
+    result: Omit<DashboardResult, "durationMs" | "calibration">,
+  ): Omit<DashboardResult, "durationMs"> => ({
+    ...result,
+    ...(calibration === undefined
+      ? {}
+      : {
+          calibration: {
+            datasetId: calibration.datasetId,
+            datasetFingerprint: calibration.datasetFingerprint,
+            evidenceKind: config.calibration!.provenance.kind,
+            fitConfidence: calibration.confidence,
+            diagnostics: calibration.diagnostics,
+          },
+        }),
+  });
   if (config.mode === "serving" && config.serving.compareTopologies) {
     const comparison = compareTopologyServingWorkloads(
       SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
       buildServingConfig(config),
+      costModel,
     );
     const fastest = comparison.runs[0];
     if (!fastest) {
@@ -33,12 +57,12 @@ export function simulateDashboard(
     const scenario = buildScenarioPreset(
       fastest.result.scenarioId as ScenarioPresetName,
     );
-    return servingDashboardResult(
+    return attachCalibration(servingDashboardResult(
       config,
       scenario,
       fastest.result,
       comparison,
-    );
+    ));
   }
   const scenario = buildScenarioPreset(
     config.scenarioName as ScenarioPresetName,
@@ -46,39 +70,43 @@ export function simulateDashboard(
   const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
     const workload = runSpeculative(config);
-    return {
+    return attachCalibration({
       scenario: scenarioSummary,
       mode: config.mode,
       topology: summarizeTopology(simulateTopologyWorkload(
         scenario,
         topologyProfileFromSpeculative(workload.result),
+        costModel,
       )),
       speculative: workload.dashboard,
-    };
+    });
   }
   if (config.mode === "serving") {
-    const serving = runServing(config, scenario);
-    return servingDashboardResult(config, scenario, serving);
+    const serving = runServing(config, scenario, costModel);
+    return attachCalibration(servingDashboardResult(config, scenario, serving));
   }
   const workload = runExpertCache(config);
-  return {
+  return attachCalibration({
     scenario: scenarioSummary,
     mode: config.mode,
     topology: summarizeTopology(simulateTopologyWorkload(
       scenario,
       topologyProfileFromExpertCache(workload.result, workload.expertBytes),
+      costModel,
     )),
     expertCache: workload.dashboard,
-  };
+  });
 }
 
 function runServing(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
+  costModel: TopologyCostModel,
 ) {
   return simulateTopologyServingWorkload(
     scenario,
     buildServingConfig(config),
+    costModel,
   );
 }
 

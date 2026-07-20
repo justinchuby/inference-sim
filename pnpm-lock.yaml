@@ -80,6 +80,9 @@ importers:
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
+      yaml:
+        specifier: ^2.8.1
+        version: 2.9.0
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.3

@@ -75,7 +75,10 @@ TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
 inspector. Serving can run one selected topology or compare all six in one
 replay-verified view.
 The speculative controls use the shared core family contract; design-only
-self-speculative results are labeled explicitly.
+self-speculative results are labeled explicitly. The workbench can import the
+same revisioned calibration YAML/JSON used by the CLI, validates and fits it
+before execution, reruns the fit inside the Worker, and displays its stable
+fingerprint plus NRMSE/P95 diagnostics.
 
 ## Direction
 

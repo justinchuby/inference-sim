@@ -12,6 +12,7 @@ import {
   Clock3,
   Cpu,
   Database,
+  FileCheck2,
   Gauge,
   MemoryStick,
   Network,
@@ -19,7 +20,14 @@ import {
   RotateCcw,
   Square,
   TriangleAlert,
+  Upload,
+  X,
 } from "lucide-react";
+import {
+  MAX_CALIBRATION_FILE_BYTES,
+  parseCalibrationFileText,
+  type ParsedCalibrationFile,
+} from "./calibration-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import { Progress } from "./components/ui/progress.js";
@@ -118,6 +126,12 @@ interface RunState {
   readonly error?: string;
 }
 
+interface CalibrationSelection {
+  readonly fileName?: string;
+  readonly parsed?: ParsedCalibrationFile;
+  readonly error?: string;
+}
+
 export function App(): React.JSX.Element {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [runState, setRunState] = useState<RunState>({
@@ -125,6 +139,7 @@ export function App(): React.JSX.Element {
     progress: 0,
     phase: "Ready",
   });
+  const [calibration, setCalibration] = useState<CalibrationSelection>({});
   const workerRef = useRef<Worker | undefined>(undefined);
   const runIdRef = useRef(0);
   const initializedRef = useRef(false);
@@ -148,6 +163,37 @@ export function App(): React.JSX.Element {
       phase: "Cancelled",
     }));
   }, []);
+
+  const importCalibration = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_CALIBRATION_FILE_BYTES) {
+        throw new Error("calibration file exceeds the 1 MiB limit");
+      }
+      const parsed = await parseCalibrationFileText(
+        await file.text(),
+        file.name,
+      );
+      changeConfig({ ...config, calibration: parsed.dataset });
+      setCalibration({ fileName: file.name, parsed });
+    } catch (error) {
+      setCalibration((current) => ({
+        ...current,
+        ...(current.parsed ? {} : { fileName: file.name }),
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [changeConfig, config]);
+
+  const clearCalibration = useCallback(() => {
+    const { calibration: _calibration, ...withoutCalibration } = config;
+    changeConfig(withoutCalibration);
+    setCalibration({});
+  }, [changeConfig, config]);
+
+  const reset = useCallback(() => {
+    changeConfig(DEFAULT_CONFIG);
+    setCalibration({});
+  }, [changeConfig]);
 
   const run = useCallback((nextConfig: DashboardRunConfig) => {
     workerRef.current?.terminate();
@@ -240,7 +286,7 @@ export function App(): React.JSX.Element {
                   variant="ghost"
                   size="icon"
                   aria-label="Reset configuration"
-                  onClick={() => changeConfig(DEFAULT_CONFIG)}
+                  onClick={reset}
                   disabled={runState.status === "running"}
                 >
                   <RotateCcw className="size-4" />
@@ -257,6 +303,9 @@ export function App(): React.JSX.Element {
               config={config}
               disabled={runState.status === "running"}
               onChange={changeConfig}
+              calibration={calibration}
+              onCalibrationFile={importCalibration}
+              onClearCalibration={clearCalibration}
               onRun={() => run(config)}
               onCancel={cancel}
               running={runState.status === "running"}
@@ -283,6 +332,9 @@ function ConfigurationPanel({
   config,
   disabled,
   onChange,
+  calibration,
+  onCalibrationFile,
+  onClearCalibration,
   onRun,
   onCancel,
   running,
@@ -290,10 +342,14 @@ function ConfigurationPanel({
   readonly config: DashboardRunConfig;
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
+  readonly calibration: CalibrationSelection;
+  readonly onCalibrationFile: (file: File) => void;
+  readonly onClearCalibration: () => void;
   readonly onRun: () => void;
   readonly onCancel: () => void;
   readonly running: boolean;
 }): React.JSX.Element {
+  const calibrationInput = useRef<HTMLInputElement | null>(null);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
@@ -329,6 +385,102 @@ function ConfigurationPanel({
                 </Select>
               </Field>
             )}
+
+        <div className="mb-4 border-y border-zinc-200 py-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-zinc-600">
+              Timing evidence
+            </span>
+            <Badge
+              variant={calibration.parsed?.fit.confidence === "calibrated"
+                ? "success"
+                : "warning"}
+            >
+              {calibration.parsed
+                ? calibration.parsed.dataset.provenance.kind
+                : "bundled heuristic"}
+            </Badge>
+          </div>
+          <input
+            ref={calibrationInput}
+            type="file"
+            accept=".yaml,.yml,.json,application/json,text/yaml"
+            className="sr-only"
+            disabled={disabled}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) {
+                onCalibrationFile(file);
+              }
+            }}
+          />
+          {calibration.parsed
+            ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-zinc-800">
+                      {calibration.fileName}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {calibration.parsed.fit.datasetFingerprint}
+                    </div>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        aria-label="Replace calibration"
+                        disabled={disabled}
+                        onClick={() => calibrationInput.current?.click()}
+                      >
+                        <Upload className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Replace calibration</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        aria-label="Remove calibration"
+                        disabled={disabled}
+                        onClick={onClearCalibration}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Remove calibration</TooltipContent>
+                  </Tooltip>
+                </div>
+              )
+            : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  disabled={disabled}
+                  onClick={() => calibrationInput.current?.click()}
+                >
+                  <Upload className="size-4" />
+                  Import YAML or JSON
+                </Button>
+              )}
+          {calibration.error
+            ? (
+                <div className="mt-2 text-xs leading-4 text-rose-700">
+                  {calibration.error}
+                </div>
+              )
+            : null}
+        </div>
 
         <Tabs
           value={config.mode}
@@ -714,16 +866,20 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
             : null}
           <Tooltip>
             <TooltipTrigger asChild>
-              <Badge variant="warning">
-                {result.topology.confidence} cost model
+              <Badge variant={result.topology.confidence === "heuristic"
+                ? "warning"
+                : "success"}
+              >
+                {result.topology.confidence} timing evidence
               </Badge>
             </TooltipTrigger>
             <TooltipContent className="max-w-72">
-              {result.topology.assumptions[0]}
+              {result.topology.assumptions[1] ?? result.topology.assumptions[0]}
             </TooltipContent>
           </Tooltip>
         </div>
       </div>
+      {result.calibration ? <CalibrationSummary result={result} /> : null}
       <section className="metric-grid" aria-label="Run metrics">
         {metrics.map((metric) => (
           <div key={metric.label} className="metric-card">
@@ -744,6 +900,59 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
       <Suspense fallback={<ChartSkeleton />}>
         <ResultCharts result={result} />
       </Suspense>
+    </div>
+  );
+}
+
+function CalibrationSummary({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const calibration = result.calibration!;
+  const maxNormalizedRmse = Math.max(
+    ...calibration.diagnostics.map((diagnostic) => diagnostic.normalizedRmse),
+  );
+  const maxP95RelativeError = Math.max(
+    ...calibration.diagnostics.map((diagnostic) => diagnostic.p95RelativeError),
+  );
+  return (
+    <section className="grid gap-3 border-y border-zinc-200 bg-white px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+      <div className="flex min-w-0 items-center gap-3">
+        <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+        <div className="min-w-0">
+          <div className="truncate text-xs font-bold text-zinc-800">
+            {calibration.datasetId}
+          </div>
+          <div className="truncate text-[11px] text-zinc-500">
+            {calibration.datasetFingerprint} · {calibration.evidenceKind} ·{" "}
+            {calibration.fitConfidence} fit
+          </div>
+        </div>
+      </div>
+      <DiagnosticValue
+        label="Max NRMSE"
+        value={`${(maxNormalizedRmse * 100).toFixed(2)}%`}
+      />
+      <DiagnosticValue
+        label="Max P95 error"
+        value={`${(maxP95RelativeError * 100).toFixed(2)}%`}
+      />
+    </section>
+  );
+}
+
+function DiagnosticValue({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.JSX.Element {
+  return (
+    <div className="min-w-24">
+      <div className="text-[11px] text-zinc-500">{label}</div>
+      <div className="text-xs font-bold tabular-nums text-zinc-800">{value}</div>
     </div>
   );
 }
@@ -950,7 +1159,7 @@ function speculativeMetrics(result: DashboardResult) {
     {
       label: "Modeled latency",
       value: formatDuration(topology.totalDurationNs),
-      detail: "heuristic device + link time",
+      detail: `${result.topology.confidence} device + link time`,
       icon: <Clock3 className="size-4 text-amber-700" />,
     },
     {
@@ -981,7 +1190,7 @@ function expertMetrics(result: DashboardResult) {
     {
       label: "Modeled latency",
       value: formatDuration(topology.totalDurationNs),
-      detail: "heuristic device + link time",
+      detail: `${result.topology.confidence} device + link time`,
       icon: <Clock3 className="size-4 text-amber-700" />,
     },
     {

@@ -237,6 +237,7 @@ export {
   CALIBRATION_DATASET_REVISION,
   CalibrationError,
   fitTopologyCostModel,
+  parseCalibrationDataset,
   validateCalibrationDataset,
   type CalibratedCapability,
   type CalibrationApplicability,

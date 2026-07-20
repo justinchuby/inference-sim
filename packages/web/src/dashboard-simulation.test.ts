@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import { parseCalibrationFileText } from "./calibration-import.js";
 import { simulateDashboard } from "./dashboard-simulation.js";
 import type { DashboardRunConfig } from "./types.js";
 
@@ -140,5 +142,55 @@ describe("simulateDashboard", () => {
     expect(cpu.topology.metrics.tokensPerSecond).toBeLessThan(
       multiGpu.topology.metrics.tokensPerSecond,
     );
+  });
+
+  it("runs an imported calibration through the dashboard worker contract", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+    const result = simulateDashboard({
+      ...base,
+      calibration: calibration.dataset,
+    });
+
+    expect(result.calibration).toMatchObject({
+      datasetId: "synthetic-linear-example",
+      datasetFingerprint: calibration.fit.datasetFingerprint,
+      evidenceKind: "synthetic",
+      fitConfidence: "heuristic",
+    });
+    expect(result.calibration?.diagnostics).toHaveLength(15);
+    expect(result.topology.assumptions[0]).toContain(
+      calibration.fit.datasetFingerprint,
+    );
+  });
+
+  it("rejects dashboard work outside imported interpolation ranges", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+
+    expect(() => simulateDashboard({
+      ...base,
+      mode: "serving",
+      calibration: calibration.dataset,
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        promptTokens: 512,
+        maxBatchTokens: 512,
+        prefillChunkTokens: 512,
+      },
+    })).toThrow("outside calibrated range 1..128");
   });
 });

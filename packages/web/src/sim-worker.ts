@@ -21,8 +21,10 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
     post({
       type: "progress",
       runId,
-      progress: 34,
-      phase: "Running workload",
+      progress: config.calibration === undefined ? 34 : 22,
+      phase: config.calibration === undefined
+        ? "Running workload"
+        : "Fitting calibration and running workload",
     });
 
     const base = simulateDashboard(config);

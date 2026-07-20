@@ -99,6 +99,152 @@ const COMPUTE_CAPABILITIES = [
 ] as const;
 const ALL_CAPABILITIES = ["invocation", ...COMPUTE_CAPABILITIES] as const;
 
+export function parseCalibrationDataset(input: unknown): CalibrationDataset {
+  const root = requireRecord(input, "config");
+  const dataset = requireRecord(root.calibration ?? root, "calibration");
+  const provenance = requireRecord(
+    dataset.provenance,
+    "calibration.provenance",
+  );
+  const applicability = requireRecord(
+    dataset.applicability,
+    "calibration.applicability",
+  );
+  const deviceKindLabels = requireRecord(
+    applicability.device_kind_labels,
+    "calibration.applicability.device_kind_labels",
+  );
+  const modelConstants = requireRecord(
+    dataset.model_constants,
+    "calibration.model_constants",
+  );
+  const quality = requireRecord(dataset.quality, "calibration.quality");
+  const kind = requireEvidenceKind(
+    requireString(provenance, "kind", "calibration.provenance"),
+  );
+  const measuredAt = optionalString(
+    provenance,
+    "measured_at",
+    "calibration.provenance",
+  );
+  const notes = optionalString(
+    provenance,
+    "notes",
+    "calibration.provenance",
+  );
+  return {
+    revision: requireNumber(
+      dataset,
+      "revision",
+      "calibration",
+    ) as typeof CALIBRATION_DATASET_REVISION,
+    id: requireString(dataset, "id", "calibration"),
+    provenance: {
+      kind,
+      source: requireString(
+        provenance,
+        "source",
+        "calibration.provenance",
+      ),
+      ...(measuredAt === undefined ? {} : { measuredAt }),
+      softwareStack: requireString(
+        provenance,
+        "software_stack",
+        "calibration.provenance",
+      ),
+      modelArtifact: requireString(
+        provenance,
+        "model_artifact",
+        "calibration.provenance",
+      ),
+      ...(notes === undefined ? {} : { notes }),
+    },
+    applicability: {
+      scenarioIds: requireStringArray(
+        applicability,
+        "scenario_ids",
+        "calibration.applicability",
+      ),
+      deviceKindLabels: {
+        cpu: requireString(
+          deviceKindLabels,
+          "cpu",
+          "calibration.applicability.device_kind_labels",
+        ),
+        gpu: requireString(
+          deviceKindLabels,
+          "gpu",
+          "calibration.applicability.device_kind_labels",
+        ),
+        npu: requireString(
+          deviceKindLabels,
+          "npu",
+          "calibration.applicability.device_kind_labels",
+        ),
+      },
+    },
+    modelConstants: {
+      activationBytesPerToken: requireNumber(
+        modelConstants,
+        "activation_bytes_per_token",
+        "calibration.model_constants",
+      ),
+      collectiveBytesPerToken: requireNumber(
+        modelConstants,
+        "collective_bytes_per_token",
+        "calibration.model_constants",
+      ),
+      coldLoadByteMultiplier: requireNumber(
+        modelConstants,
+        "cold_load_byte_multiplier",
+        "calibration.model_constants",
+      ),
+    },
+    quality: {
+      minSamplesPerPoint: requireNumber(
+        quality,
+        "min_samples_per_point",
+        "calibration.quality",
+      ),
+      maxNormalizedRmse: requireNumber(
+        quality,
+        "max_normalized_rmse",
+        "calibration.quality",
+      ),
+      maxP95RelativeError: requireNumber(
+        quality,
+        "max_p95_relative_error",
+        "calibration.quality",
+      ),
+    },
+    observations: requireRecordArray(
+      dataset,
+      "observations",
+      "calibration",
+    ).map((observation, index) => {
+      const context = `calibration.observations[${index}]`;
+      return {
+        id: requireString(observation, "id", context),
+        deviceKind: requireDeviceKind(
+          requireString(observation, "device_kind", context),
+          context,
+        ),
+        capability: requireCapability(
+          requireString(observation, "capability", context),
+          context,
+        ),
+        workItems: requireNumber(observation, "work_items", context),
+        durationsNs: requireNumberArray(
+          observation,
+          "durations_ns",
+          context,
+        ),
+        regime: requireString(observation, "regime", context),
+      };
+    }),
+  };
+}
+
 export function fitTopologyCostModel(
   dataset: CalibrationDataset,
 ): CalibrationFitResult {
@@ -539,4 +685,133 @@ function assertUnique(values: readonly string[], label: string): void {
 
 function formatRatio(value: number): string {
   return value.toFixed(4);
+}
+
+function requireRecord(
+  value: unknown,
+  path: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new CalibrationError(`${path} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new CalibrationError(`${path}.${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalString(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): string | undefined {
+  return record[key] === undefined
+    ? undefined
+    : requireString(record, key, path);
+}
+
+function requireNumber(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new CalibrationError(`${path}.${key} must be a finite number`);
+  }
+  return value;
+}
+
+function requireStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): string[] {
+  const value = record[key];
+  if (
+    !Array.isArray(value)
+    || value.some((entry) => (
+      typeof entry !== "string" || entry.trim().length === 0
+    ))
+  ) {
+    throw new CalibrationError(
+      `${path}.${key} must be an array of non-empty strings`,
+    );
+  }
+  return value;
+}
+
+function requireNumberArray(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): number[] {
+  const value = record[key];
+  if (
+    !Array.isArray(value)
+    || value.some((entry) => (
+      typeof entry !== "number" || !Number.isFinite(entry)
+    ))
+  ) {
+    throw new CalibrationError(
+      `${path}.${key} must be an array of finite numbers`,
+    );
+  }
+  return value;
+}
+
+function requireRecordArray(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): Record<string, unknown>[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new CalibrationError(`${path}.${key} must be an array`);
+  }
+  return value.map((entry, index) => (
+    requireRecord(entry, `${path}.${key}[${index}]`)
+  ));
+}
+
+function requireEvidenceKind(value: string): CalibrationEvidenceKind {
+  if (value !== "measured" && value !== "synthetic") {
+    throw new CalibrationError(
+      `unsupported calibration evidence kind ${value}`,
+    );
+  }
+  return value;
+}
+
+function requireDeviceKind(
+  value: string,
+  context: string,
+): SimDeviceKind {
+  if (!DEVICE_KINDS.includes(value as SimDeviceKind)) {
+    throw new CalibrationError(
+      `${context}.device_kind must be cpu, gpu, or npu`,
+    );
+  }
+  return value as SimDeviceKind;
+}
+
+function requireCapability(
+  value: string,
+  context: string,
+): CalibratedCapability {
+  if (!ALL_CAPABILITIES.includes(value as CalibratedCapability)) {
+    throw new CalibrationError(
+      `${context}.capability must be invocation, attention, ffn, draft, or lookup`,
+    );
+  }
+  return value as CalibratedCapability;
 }

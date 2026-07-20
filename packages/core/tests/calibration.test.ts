@@ -4,6 +4,7 @@ import {
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
   fitTopologyCostModel,
+  parseCalibrationDataset,
   simulateTopologyWorkload,
   targetOnlyTopologyProfile,
   type CalibratedCapability,
@@ -39,6 +40,16 @@ const EXPECTED = {
 } as const;
 
 describe("topology cost calibration", () => {
+  it("parses the external snake-case contract in core", () => {
+    const expected = calibrationDataset("synthetic");
+    const parsed = parseCalibrationDataset(externalDataset(expected));
+
+    expect(parsed).toEqual(expected);
+    expect(fitTopologyCostModel(parsed).datasetFingerprint).toMatch(
+      /^fnv1a32:/,
+    );
+  });
+
   it("fits complete repeated observations with stable provenance", () => {
     const dataset = calibrationDataset("measured");
     const first = fitTopologyCostModel(dataset);
@@ -298,5 +309,47 @@ function observation(
     workItems,
     durationsNs: [center - noise, center, center + noise],
     regime: "batch=1 dtype=fp16 fixture",
+  };
+}
+
+function externalDataset(dataset: CalibrationDataset): unknown {
+  return {
+    calibration: {
+      revision: dataset.revision,
+      id: dataset.id,
+      provenance: {
+        kind: dataset.provenance.kind,
+        source: dataset.provenance.source,
+        measured_at: dataset.provenance.measuredAt,
+        software_stack: dataset.provenance.softwareStack,
+        model_artifact: dataset.provenance.modelArtifact,
+        notes: dataset.provenance.notes,
+      },
+      applicability: {
+        scenario_ids: dataset.applicability.scenarioIds,
+        device_kind_labels: dataset.applicability.deviceKindLabels,
+      },
+      model_constants: {
+        activation_bytes_per_token:
+          dataset.modelConstants.activationBytesPerToken,
+        collective_bytes_per_token:
+          dataset.modelConstants.collectiveBytesPerToken,
+        cold_load_byte_multiplier:
+          dataset.modelConstants.coldLoadByteMultiplier,
+      },
+      quality: {
+        min_samples_per_point: dataset.quality.minSamplesPerPoint,
+        max_normalized_rmse: dataset.quality.maxNormalizedRmse,
+        max_p95_relative_error: dataset.quality.maxP95RelativeError,
+      },
+      observations: dataset.observations.map((observation) => ({
+        id: observation.id,
+        device_kind: observation.deviceKind,
+        capability: observation.capability,
+        work_items: observation.workItems,
+        durations_ns: observation.durationsNs,
+        regime: observation.regime,
+      })),
+    },
   };
 }

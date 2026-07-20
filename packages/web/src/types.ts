@@ -1,4 +1,7 @@
 import type {
+  CalibrationDataset,
+  CalibrationEvidenceKind,
+  CalibrationFitDiagnostic,
   ConfidenceClass,
   ExpertCacheMetrics,
   ExpertRouteResult,
@@ -24,6 +27,7 @@ export interface DashboardRunConfig {
     | "multi-node";
   readonly mode: WorkloadMode;
   readonly seed: number;
+  readonly calibration?: CalibrationDataset;
   readonly speculative: {
     readonly family: SpeculativeProposerFamily;
     readonly outputTokens: number;
@@ -62,6 +66,13 @@ export interface DashboardResult {
   };
   readonly mode: WorkloadMode;
   readonly durationMs: number;
+  readonly calibration?: {
+    readonly datasetId: string;
+    readonly datasetFingerprint: string;
+    readonly evidenceKind: CalibrationEvidenceKind;
+    readonly fitConfidence: ConfidenceClass;
+    readonly diagnostics: readonly CalibrationFitDiagnostic[];
+  };
   readonly topology: {
     readonly confidence: ConfidenceClass;
     readonly assumptions: readonly string[];
