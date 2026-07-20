@@ -235,6 +235,7 @@ export {
   type SimLinkSpec,
   type SimulationScenario,
   type TransferRequirement,
+  type TransferRoute,
 } from "./scenario-types.js";
 export {
   ScenarioValidationError,
@@ -242,6 +243,7 @@ export {
   calculateScenarioMemoryLedger,
   domainSupportsClass,
   findTransferPath,
+  findTransferRoute,
   validateScenario,
 } from "./scenario.js";
 export {

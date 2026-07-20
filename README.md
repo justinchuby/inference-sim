@@ -69,7 +69,8 @@ Phase 3 has an initial speculative workload slice:
   `all_to_all_v` dispatch/gather, explicit contiguous/round-robin expert
   ownership, owner-only demand/prefetch transfers, and route-skewed owner-local
   FFN work on arbitrary-rank topologies, with phase-aware ring/pairwise
-  collective fallback timing; and
+  collective fallback timing and deterministic message-size-aware physical
+  route selection; and
 - speculative and expert-cache traces compiled onto all six topology families
   with replay-verified resource utilization and relative comparisons; and
 - a six-proposer by six-device-topology execution/replay matrix with
@@ -174,11 +175,15 @@ cost model. The included calibration file is explicitly synthetic and remains
 heuristic. A measured compute dataset does not by itself upgrade results from
 the heuristic built-in topology presets: end-to-end timing uses the weakest
 confidence among the performance inputs actually used. Exact-path
-communication curves replace declared link bandwidth as timing evidence.
+communication curves replace declared link performance only for the selected
+path's duration.
 Calibration revision 2 scopes communication curves to an exact scenario,
 ordered directed-link path, participant count, algorithm, and observed byte
 range. Imported calibration never silently falls back to topology bandwidth or
-extrapolates beyond that range.
+extrapolates beyond that range. Declared link latency and bandwidth still
+select the physical path for each message size, so their provenance remains
+part of end-to-end confidence even when an exact-path curve supplies the
+selected path's duration.
 
 CLI commands that take one scenario accept either a listed preset or
 `multi-gpu-ring-N` for `N=2..64`. `compare` and `serving-compare` intentionally

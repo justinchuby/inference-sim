@@ -98,7 +98,7 @@ describe("topology cost calibration", () => {
   });
 
   it("reports calibrated timing only when every performance input is calibrated", () => {
-    const base = buildScenarioPreset("single-gpu-cpu");
+    const base = buildScenarioPreset("multi-gpu");
     const calibratedProvenance = {
       confidence: "calibrated" as const,
       source: "measured topology fixture",
@@ -127,6 +127,19 @@ describe("topology cost calibration", () => {
     expect(result.confidence).toBe("calibrated");
     expect(result.assumptions[1]).toBe(
       "overall timing confidence is calibrated",
+    );
+
+    const heuristicLinks = simulateTopologyWorkload(
+      {
+        ...scenario,
+        links: base.links,
+      },
+      targetOnlyTopologyProfile(2),
+      fitTopologyCostModel(calibrationDataset("measured")).costModel,
+    );
+    expect(heuristicLinks.confidence).toBe("heuristic");
+    expect(heuristicLinks.assumptions[1]).toContain(
+      "scenario performance evidence is weaker",
     );
   });
 

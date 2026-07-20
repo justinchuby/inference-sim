@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   assertValidScenario,
   buildMultiGpuRingScenario,
@@ -27,6 +28,17 @@ function expertPlacement(
 }
 
 describe("topology-aware workload execution", () => {
+  it("rejects cost models from the previous physical-routing revision", () => {
+    expect(() => simulateTopologyWorkload(
+      buildScenarioPreset("single-gpu-cpu"),
+      targetOnlyTopologyProfile(1),
+      {
+        ...DEFAULT_TOPOLOGY_COST_MODEL,
+        revision: 6 as typeof DEFAULT_TOPOLOGY_COST_MODEL.revision,
+      },
+    )).toThrow("unsupported topology cost revision 6");
+  });
+
   it("rejects an empty target-only profile before plan execution", () => {
     expect(() => targetOnlyTopologyProfile(0)).toThrow(
       "target-only token count must be a positive safe integer",
@@ -203,6 +215,48 @@ describe("topology-aware workload execution", () => {
       (event) => event.kind === "collective",
     )).toBe(true);
     expect(tensor.metrics.collectiveServiceNs).toBeGreaterThan(0);
+  });
+
+  it("preserves the selected parallel link identity in a collective plan", () => {
+    const base = buildScenarioPreset("multi-gpu");
+    const forward = base.links.find(
+      (link) => link.id === "node0:nvlink:forward",
+    )!;
+    const reverse = base.links.find(
+      (link) => link.id === "node0:nvlink:reverse",
+    )!;
+    const scenario = {
+      ...base,
+      id: "parallel-link-selection",
+      links: [
+        ...base.links.map((link) => (
+          link.kind === "nvlink"
+            ? {
+                ...link,
+                bandwidthBytesPerSec: 1_000_000,
+                latencyNs: 1_000_000,
+              }
+            : link
+        )),
+        { ...forward, id: "zz-fast-forward" },
+        { ...reverse, id: "zz-fast-reverse" },
+      ],
+    };
+    assertValidScenario(scenario);
+    const result = simulateTopologyWorkload(
+      scenario,
+      targetOnlyTopologyProfile(1),
+    );
+    const collective = result.plan.steps.find((step) => (
+      step.operation.kind === "collective"
+    ));
+
+    expect(collective?.operation).toMatchObject({
+      kind: "collective",
+      linkIds: ["zz-fast-forward", "zz-fast-reverse"],
+      durationNs: 1_874,
+    });
+    expect(result.execution.status).toBe("succeeded");
   });
 
   it("executes and deterministically replays a four-rank ring", () => {

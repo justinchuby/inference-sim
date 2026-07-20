@@ -1,4 +1,4 @@
-export const SCENARIO_SCHEMA_VERSION = 3;
+export const SCENARIO_SCHEMA_VERSION = 4;
 
 export type ConfidenceClass = "exact" | "bounded" | "calibrated" | "heuristic";
 export type SimDeviceKind = "cpu" | "gpu" | "npu";
@@ -105,6 +105,12 @@ export interface TransferRequirement {
   readonly bytes: number;
   readonly requiresPinnedStaging: boolean;
   readonly stagingAllocationIds: readonly string[];
+}
+
+export interface TransferRoute {
+  readonly domainIds: readonly string[];
+  readonly linkIds: readonly string[];
+  readonly declaredDurationNs: number;
 }
 
 export interface CommunicatorRankSpec {

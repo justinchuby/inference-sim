@@ -10,7 +10,7 @@ import {
   replayPlanTrace,
 } from "./frozen-plan.js";
 import {
-  findTransferPath,
+  findTransferRoute,
 } from "./scenario.js";
 import type {
   ComputeCapability,
@@ -20,6 +20,7 @@ import type {
   SimDeviceSpec,
   SimLinkSpec,
   SimulationScenario,
+  TransferRoute,
 } from "./scenario-types.js";
 import type {
   ExpertCacheWorkloadResult,
@@ -32,7 +33,7 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 6;
+export const TOPOLOGY_COST_MODEL_REVISION = 7;
 export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
 export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
 export const EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM = "all_to_all_v";
@@ -595,6 +596,7 @@ export function simulateTopologyWorkload(
       costModel.transportCurves === undefined
         ? "transport timing uses declared directed-link bandwidth and latency"
         : "transport timing uses exact-path calibration curves without extrapolation",
+      "physical routes minimize declared directed-link latency plus message-size service time, never revisit a memory domain, require pinned staging to be a true intermediate, and break equal-cost ties by the ordered link IDs",
       ...(costModel.transportCurves === undefined
         && collectiveAlgorithms.size > 0
         ? [
@@ -658,9 +660,7 @@ function topologyPerformanceConfidence(
     costModel.confidence,
     ...scenario.devices.map((device) => device.provenance.confidence),
     ...scenario.memoryDomains.map((domain) => domain.provenance.confidence),
-    ...(costModel.transportCurves === undefined
-      ? scenario.links.map((link) => link.provenance.confidence)
-      : []),
+    ...scenario.links.map((link) => link.provenance.confidence),
   ];
   if (evidence.includes("heuristic")) {
     return "heuristic";
@@ -710,6 +710,7 @@ class WorkloadPlanCompiler {
   private nextStepId = 0;
   private readonly collectiveSequenceByGroup = new Map<string, number>();
   private readonly expertOwnerByKey = new Map<string, PartitionPlacement>();
+  private readonly transferRouteByKey = new Map<string, TransferRoute | null>();
   private readonly lastWriterByAllocation = new Map<string, number>();
   private readonly readersSinceWriteByAllocation = new Map<
     string,
@@ -1314,7 +1315,7 @@ class WorkloadPlanCompiler {
         `collective path compilation requires at least two ranks; ${group.id} has ${group.orderedRanks.length}`,
       );
     }
-    const phases = this.collectivePhases(group, algorithm);
+    const phases = this.collectivePhases(group, algorithm, bytes);
     const linkIds = unique(phases.flat(2));
     const durationNs = this.transportDuration(
       "collective",
@@ -1710,19 +1711,13 @@ class WorkloadPlanCompiler {
       readonly targetAllocationId: string;
     },
   ): number[] {
-    const domains = findTransferPath(this.scenario, {
-      id: "compiled-transfer",
-      sourceDomainId,
-      targetDomainId,
-      bytes,
-      requiresPinnedStaging: false,
-      stagingAllocationIds: [],
-    });
-    if (!domains) {
+    const route = this.transferRoute(sourceDomainId, targetDomainId, bytes);
+    if (!route) {
       throw new TopologyWorkloadError(
         `no transfer path from ${sourceDomainId} to ${targetDomainId}`,
       );
     }
+    const domains = route.domainIds;
     if (domains.length <= 1) {
       return [];
     }
@@ -1731,7 +1726,10 @@ class WorkloadPlanCompiler {
     for (let index = 0; index < domains.length - 1; index++) {
       const source = domains[index];
       const target = domains[index + 1];
-      const link = this.link(source, target);
+      const linkId = route.linkIds[index];
+      const link = this.scenario.links.find(
+        (candidate) => candidate.id === linkId,
+      ) ?? fail(`unknown routed link ${String(linkId)}`);
       const stepId = this.addStep({
         participants: unique(participants),
         dependencies: currentDependencies,
@@ -2010,15 +2008,22 @@ class WorkloadPlanCompiler {
   private collectivePhases(
     group: SimulationScenario["groups"][number],
     algorithm: CollectiveAlgorithm,
+    bytes: number,
   ): string[][][] {
     const domains = group.orderedRanks.map((rank) => (
       workspaceDomain(this.placementForDevice(rank.deviceId))
     ));
+    const phaseBytes = this.collectivePhaseBytes(
+      domains.length,
+      algorithm,
+      bytes,
+    );
     if (algorithm === COLLECTIVE_CALIBRATION_ALGORITHM) {
       const ring = domains.map((sourceDomainId, index) => (
         this.collectivePath(
           sourceDomainId,
           domains[(index + 1) % domains.length],
+          phaseBytes,
         )
       ));
       return Array.from(
@@ -2041,6 +2046,7 @@ class WorkloadPlanCompiler {
             domains[
               (rankIndex + phaseIndex + 1) % domains.length
             ],
+            phaseBytes,
           )
         )),
       );
@@ -2051,23 +2057,37 @@ class WorkloadPlanCompiler {
   private collectivePath(
     sourceDomainId: string,
     targetDomainId: string,
+    bytes: number,
   ): string[] {
-    const domains = findTransferPath(this.scenario, {
-      id: "compiled-collective",
-      sourceDomainId,
-      targetDomainId,
-      bytes: 1,
-      requiresPinnedStaging: false,
-      stagingAllocationIds: [],
-    });
-    if (!domains || domains.length < 2) {
+    const route = this.transferRoute(sourceDomainId, targetDomainId, bytes);
+    if (!route || route.domainIds.length < 2) {
       throw new TopologyWorkloadError(
         `no collective path from ${sourceDomainId} to ${targetDomainId}`,
       );
     }
-    return domains.slice(0, -1).map((domain, index) => (
-      this.link(domain, domains[index + 1]).id
-    ));
+    return [...route.linkIds];
+  }
+
+  private transferRoute(
+    sourceDomainId: string,
+    targetDomainId: string,
+    bytes: number,
+  ): TransferRoute | undefined {
+    const key = JSON.stringify([sourceDomainId, targetDomainId, bytes]);
+    const cached = this.transferRouteByKey.get(key);
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+    const route = findTransferRoute(this.scenario, {
+      id: "compiled-route",
+      sourceDomainId,
+      targetDomainId,
+      bytes,
+      requiresPinnedStaging: false,
+      stagingAllocationIds: [],
+    });
+    this.transferRouteByKey.set(key, route ?? null);
+    return route;
   }
 
   private pathDuration(linkIds: readonly string[], bytes: number): number {
@@ -2180,14 +2200,11 @@ class WorkloadPlanCompiler {
         `invalid ${participantCount}-participant ${algorithm} phase set`,
       );
     }
-    const phaseDivisor = algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
-      ? participantCount
-      : checkedMultiply(
-          participantCount,
-          participantCount - 1,
-          "all-to-all pairwise phase divisor",
-        );
-    const phaseBytes = Math.max(1, Math.ceil(bytes / phaseDivisor));
+    const phaseBytes = this.collectivePhaseBytes(
+      participantCount,
+      algorithm,
+      bytes,
+    );
     let totalDurationNs = 0;
     for (const paths of phases) {
       const longestPathNs = Math.max(...paths.map((path) => (
@@ -2220,6 +2237,23 @@ class WorkloadPlanCompiler {
       );
     }
     return totalDurationNs;
+  }
+
+  private collectivePhaseBytes(
+    participantCount: number,
+    algorithm: string,
+    bytes: number,
+  ): number {
+    const phaseDivisor = algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
+      ? participantCount
+      : algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+        ? checkedMultiply(
+            participantCount,
+            participantCount - 1,
+            "all-to-all pairwise phase divisor",
+          )
+        : fail(`unsupported collective algorithm ${algorithm}`);
+    return Math.max(1, Math.ceil(bytes / phaseDivisor));
   }
 
   private domainDuration(domainId: string, bytes: number): number {
@@ -2267,21 +2301,6 @@ class WorkloadPlanCompiler {
       );
     }
     return preferred.physicalAllocationId;
-  }
-
-  private link(sourceDomainId: string, targetDomainId: string): SimLinkSpec {
-    const link = this.scenario.links
-      .filter((candidate) => (
-        candidate.sourceDomainId === sourceDomainId
-        && candidate.targetDomainId === targetDomainId
-      ))
-      .sort((left, right) => left.id.localeCompare(right.id))[0];
-    if (!link) {
-      throw new TopologyWorkloadError(
-        `missing directed link ${sourceDomainId}->${targetDomainId}`,
-      );
-    }
-    return link;
   }
 
   private rank(deviceId: string): string {

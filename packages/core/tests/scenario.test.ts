@@ -7,9 +7,70 @@ import {
   buildScenarioPreset,
   calculateScenarioMemoryLedger,
   findTransferPath,
+  findTransferRoute,
   validateScenario,
+  type MemoryDomainSpec,
+  type SimLinkSpec,
   type SimulationScenario,
+  type TransferRequirement,
 } from "../src/index.js";
+
+const ROUTE_PROVENANCE = {
+  confidence: "heuristic" as const,
+  source: "route-selection test fixture",
+};
+
+function routeDomain(
+  id: string,
+  allocationClasses: MemoryDomainSpec["allocationClasses"],
+): MemoryDomainSpec {
+  return {
+    id,
+    nodeId: "node0",
+    kind: allocationClasses.includes("device") ? "device" : "host",
+    capacityBytes: 1024 ** 3,
+    bandwidthBytesPerSec: 100_000_000_000,
+    latencyNs: 0,
+    coherent: false,
+    allocationClasses,
+    accessibleBy: [],
+    governor: { kind: "none" },
+    provenance: ROUTE_PROVENANCE,
+  };
+}
+
+function routeLink(
+  id: string,
+  sourceDomainId: string,
+  targetDomainId: string,
+  bandwidthBytesPerSec: number,
+  latencyNs: number,
+): SimLinkSpec {
+  return {
+    id,
+    sourceDomainId,
+    targetDomainId,
+    kind: "pcie",
+    bandwidthBytesPerSec,
+    latencyNs,
+    concurrencyLanes: 1,
+    provenance: ROUTE_PROVENANCE,
+  };
+}
+
+function routeRequirement(
+  bytes: number,
+  requiresPinnedStaging = false,
+): TransferRequirement {
+  return {
+    id: "route",
+    sourceDomainId: "source",
+    targetDomainId: "target",
+    bytes,
+    requiresPinnedStaging,
+    stagingAllocationIds: [],
+  };
+}
 
 describe("scenario presets", () => {
   it("validates all six required topology families", () => {
@@ -40,6 +101,21 @@ describe("scenario presets", () => {
       "unified",
       "multi_node",
     ]);
+  });
+
+  it("rejects scenarios from the previous routing contract revision", () => {
+    const scenario = buildScenarioPreset("single-gpu-cpu");
+    const result = validateScenario({
+      ...scenario,
+      schemaVersion: 3 as typeof scenario.schemaVersion,
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.issues).toContainEqual({
+      code: "schema_version",
+      path: "schemaVersion",
+      message: "expected 4, got 3",
+    });
   });
 
   it("keeps unified compute memory distinct from cold storage", () => {
@@ -98,6 +174,164 @@ describe("scenario presets", () => {
       "node1:host",
       "node1:gpu0:vram",
     ]);
+  });
+
+  it("selects a deterministic message-size-aware transfer route", () => {
+    const memoryDomains = [
+      routeDomain("source", ["pageable"]),
+      routeDomain("relay", ["pageable"]),
+      routeDomain("target", ["device"]),
+    ];
+    const links = [
+      routeLink("direct", "source", "target", 100_000_000_000, 10_000),
+      routeLink("relay-in", "source", "relay", 1_000_000_000, 0),
+      routeLink("relay-out", "relay", "target", 1_000_000_000, 0),
+    ];
+    const small = findTransferRoute(
+      { memoryDomains, links },
+      routeRequirement(1),
+    );
+    const large = findTransferRoute(
+      { memoryDomains, links },
+      routeRequirement(1_000_000_000),
+    );
+
+    expect(small).toEqual({
+      domainIds: ["source", "relay", "target"],
+      linkIds: ["relay-in", "relay-out"],
+      declaredDurationNs: 2,
+    });
+    expect(large).toEqual({
+      domainIds: ["source", "target"],
+      linkIds: ["direct"],
+      declaredDurationNs: 10_010_000,
+    });
+  });
+
+  it("chooses the stable fastest parallel link independent of input order", () => {
+    const memoryDomains = [
+      routeDomain("source", ["pageable"]),
+      routeDomain("target", ["device"]),
+    ];
+    const links = [
+      routeLink("z-slow", "source", "target", 1_000_000, 50),
+      routeLink("z-fast", "source", "target", 1_000_000_000, 50),
+      routeLink("a-fast", "source", "target", 1_000_000_000, 50),
+    ];
+    const forward = findTransferRoute(
+      { memoryDomains, links },
+      routeRequirement(1_000),
+    );
+    const reversed = findTransferRoute(
+      { memoryDomains, links: [...links].reverse() },
+      routeRequirement(1_000),
+    );
+
+    expect(forward?.linkIds).toEqual(["a-fast"]);
+    expect(reversed).toEqual(forward);
+    expect(findTransferPath(
+      { memoryDomains, links },
+      routeRequirement(1_000),
+    )).toEqual(["source", "target"]);
+  });
+
+  it("requires a real pinned intermediate rather than a target cycle", () => {
+    const memoryDomains = [
+      routeDomain("source", ["pageable"]),
+      routeDomain("relay", ["pinned"]),
+      routeDomain("target", ["device"]),
+    ];
+    const direct = routeLink(
+      "direct",
+      "source",
+      "target",
+      100_000_000_000,
+      0,
+    );
+    const relayLinks = [
+      routeLink("relay-in", "source", "relay", 1_000_000_000, 0),
+      routeLink("relay-out", "relay", "target", 1_000_000_000, 0),
+    ];
+    const pinned = findTransferRoute(
+      { memoryDomains, links: [direct, ...relayLinks] },
+      routeRequirement(1_000, true),
+    );
+
+    expect(pinned?.domainIds).toEqual(["source", "relay", "target"]);
+    expect(findTransferRoute(
+      {
+        memoryDomains,
+        links: [
+          direct,
+          routeLink("target-relay", "target", "relay", 1_000_000_000, 0),
+          routeLink("relay-target", "relay", "target", 1_000_000_000, 0),
+        ],
+      },
+      routeRequirement(1_000, true),
+    )).toBeUndefined();
+    expect(findTransferRoute(
+      {
+        memoryDomains,
+        links: [
+          direct,
+          routeLink("source-relay", "source", "relay", 1_000_000_000, 0),
+          routeLink("relay-source", "relay", "source", 1_000_000_000, 0),
+        ],
+      },
+      routeRequirement(1_000, true),
+    )).toBeUndefined();
+  });
+
+  it("retains a costlier partial route when the cheapest label blocks completion", () => {
+    const memoryDomains = [
+      routeDomain("source", ["pageable"]),
+      routeDomain("block", ["pageable"]),
+      routeDomain("cheap-pinned", ["pinned"]),
+      routeDomain("costly-pinned", ["pinned"]),
+      routeDomain("join", ["pageable"]),
+      routeDomain("target", ["device"]),
+    ];
+    const links = [
+      routeLink("cheap-a", "source", "block", 1_000_000_000, 0),
+      routeLink("cheap-b", "block", "cheap-pinned", 1_000_000_000, 0),
+      routeLink("cheap-c", "cheap-pinned", "join", 1_000_000_000, 0),
+      routeLink("costly-a", "source", "costly-pinned", 1_000_000_000, 100),
+      routeLink("costly-b", "costly-pinned", "join", 1_000_000_000, 0),
+      routeLink("finish-a", "join", "block", 1_000_000_000, 0),
+      routeLink("finish-b", "block", "target", 1_000_000_000, 0),
+    ];
+
+    expect(findTransferRoute(
+      { memoryDomains, links },
+      routeRequirement(1, true),
+    )?.linkIds).toEqual([
+      "costly-a",
+      "costly-b",
+      "finish-a",
+      "finish-b",
+    ]);
+  });
+
+  it("fails closed for invalid transfer sizes and impossible local staging", () => {
+    const memoryDomains = [
+      routeDomain("source", ["pinned"]),
+      routeDomain("target", ["device"]),
+    ];
+    const links = [
+      routeLink("direct", "source", "target", 1_000_000_000, 0),
+    ];
+
+    expect(findTransferRoute(
+      { memoryDomains, links },
+      routeRequirement(0),
+    )).toBeUndefined();
+    expect(findTransferRoute(
+      { memoryDomains, links },
+      {
+        ...routeRequirement(1, true),
+        targetDomainId: "source",
+      },
+    )).toBeUndefined();
   });
 
   it("builds validated parameterized multi-GPU rings", () => {

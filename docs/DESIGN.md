@@ -624,11 +624,26 @@ history and rejects changed, omitted, or relabeled decisions. This policy can
 reduce future cold misses, but its copies, evictions, and bandwidth remain
 fully charged in the cache protocol's latency and byte ledger.
 
-Current scenario contract revision 3 retains revision 2's explicit
+Current scenario contract revision 4 retains revision 3's explicit
 cold-storage domain on every preset node, local CPU endpoint, authoritative
 expert-backing allocation, warm-cache allocation, directed storage-read link,
-and adds one device/unified hot-expert cache allocation to every FFN
-placement.
+and device/unified hot-expert cache allocation on every FFN placement. Revision
+4 changes physical routing from minimum hop count to a deterministic
+message-size-aware minimum-duration path:
+
+```text
+declared_route_duration(bytes) =
+  sum(link.latency_ns + ceil(bytes / link.bandwidth_bytes_per_sec * 1e9))
+```
+
+The route is directed, never revisits a memory domain, preserves the exact
+ordered link IDs, and breaks equal-duration ties by that ordered link-ID tuple.
+A transfer requiring pinned staging must traverse a pinned memory domain as a
+true intermediate; the source, target, or a cycle through either endpoint
+cannot satisfy the requirement. Invalid byte extents, unsafe durations, and
+unreachable constraints fail closed. Because the selected route can change
+with message size, route identity is part of the scenario contract rather than
+a presentation detail.
 
 Expert parallelism uses an explicit, replayable placement contract rather than
 an expert-ID hash or an even division of aggregate work. The contract carries
@@ -1035,24 +1050,31 @@ For every communicator size, all-reduce uses the ordered neighbor ring and
 AllToAllV enumerates every pairwise phase offset; the plan reserves the stable
 union of their directed physical paths. Every
 algorithm/path/participant-count combination requires its own observations.
-This arbitrary-rank phase model and EP-owner behavior is topology cost-model
-revision 6; revision 5 models are rejected.
+This arbitrary-rank phase model and EP-owner behavior is preserved in topology
+cost-model revision 7. Revision 7 additionally resolves every transfer and
+collective phase using the scenario revision 4 message-size-aware physical
+route, and carries the selected ordered link IDs into the FrozenPlan without
+re-selecting a parallel link. Revision 6 models are rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
 latency result is `calibrated` only when every performance input it uses is
-also calibrated. The weakest performance evidence determines the result label;
-the current conservative aggregation includes the applicable cost model plus
-scenario device and memory evidence. Declared link evidence is also included
-when no imported communication curves replace it. Built-in topology presets
-remain heuristic, so importing measured kernel timings alone does not turn
-their latency rankings into hardware predictions.
+also calibrated. The weakest performance evidence determines the result label.
+The current conservative aggregation includes the applicable cost model plus
+scenario device, memory, and link evidence. Built-in topology presets remain
+heuristic, so importing measured kernel timings alone does not turn their
+latency rankings into hardware predictions.
 
 When revision 2 exact-path communication curves are present, declared link
-bandwidth and latency are not used for duration and therefore do not lower the
-timing confidence. Link IDs and order remain structural routing inputs.
-Device and memory-domain evidence still participate in the conservative
-weakest-evidence aggregation.
+bandwidth and latency do not determine the selected path's final duration, but
+they still determine which physical path is selected for the message size.
+Their provenance therefore remains part of end-to-end confidence. The
+calibration curve applies only after routing and must exactly match the
+selected ordered link path, scenario, operation, participant count, algorithm,
+and byte range. The simulator does not search for an alternate calibrated path
+when the declared minimum-duration route lacks a curve; it fails closed. A
+future calibration contract may model route selection directly, but revision 2
+does not.
 
 The current compute fit is deliberately linear and device-kind scoped.
 Transport and collective timing is measured-curve scoped, but the model does
@@ -1318,10 +1340,13 @@ the same warm domain. Topology-bound execution derives independent hot
 partitions per EP owner and warm partitions per node, with aggregate and
 per-partition replay evidence.
 Speculative and expert-cache logical traces now compile into FrozenPlan
-resources across all six required topology families. Default link duration
-uses each declared directed link's latency and bandwidth; imported revision 2
-calibration instead uses exact-path transfer and collective curves with
-fail-closed message-range checks. Compute coefficients remain
+resources across all six required topology families. Physical routes minimize
+declared directed-link latency plus message-size service time with stable
+ordered-link tie-breaking and no domain revisits. Default link duration uses
+those same declarations; imported revision 2 calibration instead supplies the
+selected exact path's transfer or collective duration with fail-closed
+identity and message-range checks. Link provenance remains relevant because
+the declarations still select the path. Compute coefficients remain
 provenance-tagged. Routed expert profiles on multi-GPU and multi-node presets
 execute TP attention, bidirectional all-reduce, AllToAllV dispatch, owner-local
 FFN, and AllToAllV gather; demand loads and prefetches target the same explicit

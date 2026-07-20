@@ -9,6 +9,7 @@ import {
   type SimLinkSpec,
   type SimulationScenario,
   type TransferRequirement,
+  type TransferRoute,
 } from "./scenario-types.js";
 
 export class ScenarioValidationError extends Error {
@@ -547,8 +548,25 @@ export function findTransferPath(
   scenario: Pick<SimulationScenario, "memoryDomains" | "links">,
   transfer: TransferRequirement,
 ): readonly string[] | undefined {
+  return findTransferRoute(scenario, transfer)?.domainIds;
+}
+
+export function findTransferRoute(
+  scenario: Pick<SimulationScenario, "memoryDomains" | "links">,
+  transfer: TransferRequirement,
+): TransferRoute | undefined {
+  if (!Number.isSafeInteger(transfer.bytes) || transfer.bytes <= 0) {
+    return undefined;
+  }
   if (transfer.sourceDomainId === transfer.targetDomainId) {
-    return [transfer.sourceDomainId];
+    if (transfer.requiresPinnedStaging) {
+      return undefined;
+    }
+    return {
+      domainIds: [transfer.sourceDomainId],
+      linkIds: [],
+      declaredDurationNs: 0,
+    };
   }
 
   const domains = new Map(
@@ -565,48 +583,196 @@ export function findTransferPath(
     adjacency.set(link.sourceDomainId, outgoing);
   }
   for (const links of adjacency.values()) {
-    links.sort((left, right) => left.id.localeCompare(right.id));
+    links.sort((left, right) => compareRouteKeys(left.id, right.id));
   }
 
-  const queue: Array<{ path: string[]; hasPinnedIntermediate: boolean }> = [{
-    path: [transfer.sourceDomainId],
+  interface Candidate {
+    readonly domainId: string;
+    readonly domainIds: readonly string[];
+    readonly linkIds: readonly string[];
+    readonly routeKey: string;
+    readonly declaredDurationNs: number;
+    readonly hasPinnedIntermediate: boolean;
+    readonly visitedDomainIds: ReadonlySet<string>;
+  }
+  const initial: Candidate = {
+    domainId: transfer.sourceDomainId,
+    domainIds: [transfer.sourceDomainId],
+    linkIds: [],
+    routeKey: "",
+    declaredDurationNs: 0,
     hasPinnedIntermediate: false,
-  }];
-  const visited = new Set<string>([`${transfer.sourceDomainId}|false`]);
+    visitedDomainIds: new Set([transfer.sourceDomainId]),
+  };
+  const queue: Candidate[] = [initial];
+  const labelsByState = new Map<string, Candidate[]>([[
+    routeStateKey(initial.domainId, initial.hasPinnedIntermediate),
+    [initial],
+  ]]);
   while (queue.length > 0) {
+    queue.sort(compareRouteCandidates);
     const candidate = queue.shift();
     if (!candidate) {
       break;
     }
-    const { path, hasPinnedIntermediate } = candidate;
-    const current = path[path.length - 1];
-    for (const link of adjacency.get(current) ?? []) {
-      const currentIsIntermediate = current !== transfer.sourceDomainId;
-      const nextHasPinnedIntermediate = hasPinnedIntermediate || (
-        currentIsIntermediate
-        && domains.get(current)?.allocationClasses.includes("pinned") === true
-      );
-      const visitKey = `${link.targetDomainId}|${nextHasPinnedIntermediate}`;
-      if (visited.has(visitKey)) {
+    const stateKey = routeStateKey(
+      candidate.domainId,
+      candidate.hasPinnedIntermediate,
+    );
+    const labels = labelsByState.get(stateKey);
+    if (!labels?.some((label) => (
+      label.declaredDurationNs === candidate.declaredDurationNs
+      && label.routeKey === candidate.routeKey
+    ))) {
+      continue;
+    }
+    if (candidate.domainId === transfer.targetDomainId) {
+      if (
+        !transfer.requiresPinnedStaging
+        || candidate.hasPinnedIntermediate
+      ) {
+        return {
+          domainIds: candidate.domainIds,
+          linkIds: candidate.linkIds,
+          declaredDurationNs: candidate.declaredDurationNs,
+        };
+      }
+      continue;
+    }
+    for (const link of adjacency.get(candidate.domainId) ?? []) {
+      if (
+        !domains.has(link.targetDomainId)
+        || candidate.visitedDomainIds.has(link.targetDomainId)
+      ) {
         continue;
       }
-      const nextPath = [...path, link.targetDomainId];
-      if (link.targetDomainId === transfer.targetDomainId) {
-        if (
-          !transfer.requiresPinnedStaging
-          || nextHasPinnedIntermediate
-        ) {
-          return nextPath;
-        }
+      const edgeDurationNs = declaredLinkDurationNs(link, transfer.bytes);
+      if (edgeDurationNs === undefined) {
+        continue;
       }
-      visited.add(visitKey);
-      queue.push({
-        path: nextPath,
+      const currentIsIntermediate =
+        candidate.domainId !== transfer.sourceDomainId;
+      const nextHasPinnedIntermediate =
+        candidate.hasPinnedIntermediate || (
+        currentIsIntermediate
+        && domains.get(candidate.domainId)?.allocationClasses.includes(
+          "pinned",
+        ) === true
+      );
+      const declaredDurationNs =
+        candidate.declaredDurationNs + edgeDurationNs;
+      if (!Number.isSafeInteger(declaredDurationNs)) {
+        continue;
+      }
+      const linkIds = [...candidate.linkIds, link.id];
+      const routeKey = JSON.stringify(linkIds);
+      const nextStateKey = routeStateKey(
+        link.targetDomainId,
+        nextHasPinnedIntermediate,
+      );
+      const visitedDomainIds = new Set(candidate.visitedDomainIds);
+      visitedDomainIds.add(link.targetDomainId);
+      const next: Candidate = {
+        domainId: link.targetDomainId,
+        domainIds: [...candidate.domainIds, link.targetDomainId],
+        linkIds,
+        routeKey,
+        declaredDurationNs,
         hasPinnedIntermediate: nextHasPinnedIntermediate,
-      });
+        visitedDomainIds,
+      };
+      const priorLabels = labelsByState.get(nextStateKey) ?? [];
+      if (priorLabels.some((prior) => routeLabelDominates(prior, next))) {
+        continue;
+      }
+      labelsByState.set(
+        nextStateKey,
+        [
+          ...priorLabels.filter((prior) => (
+            !routeLabelDominates(next, prior)
+          )),
+          next,
+        ],
+      );
+      queue.push(next);
     }
   }
   return undefined;
+}
+
+function routeStateKey(
+  domainId: string,
+  hasPinnedIntermediate: boolean,
+): string {
+  return JSON.stringify([domainId, hasPinnedIntermediate]);
+}
+
+function compareRouteCandidates(
+  left: {
+    readonly declaredDurationNs: number;
+    readonly routeKey: string;
+  },
+  right: {
+    readonly declaredDurationNs: number;
+    readonly routeKey: string;
+  },
+): number {
+  if (left.declaredDurationNs !== right.declaredDurationNs) {
+    return left.declaredDurationNs < right.declaredDurationNs ? -1 : 1;
+  }
+  return compareRouteKeys(left.routeKey, right.routeKey);
+}
+
+function routeLabelDominates(
+  left: {
+    readonly declaredDurationNs: number;
+    readonly routeKey: string;
+    readonly visitedDomainIds: ReadonlySet<string>;
+  },
+  right: {
+    readonly declaredDurationNs: number;
+    readonly routeKey: string;
+    readonly visitedDomainIds: ReadonlySet<string>;
+  },
+): boolean {
+  if (
+    left.declaredDurationNs > right.declaredDurationNs
+    || (
+      left.declaredDurationNs === right.declaredDurationNs
+      && compareRouteKeys(left.routeKey, right.routeKey) > 0
+    )
+  ) {
+    return false;
+  }
+  for (const domainId of left.visitedDomainIds) {
+    if (!right.visitedDomainIds.has(domainId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function compareRouteKeys(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function declaredLinkDurationNs(
+  link: SimLinkSpec,
+  bytes: number,
+): number | undefined {
+  if (
+    !Number.isSafeInteger(link.latencyNs)
+    || link.latencyNs < 0
+    || !Number.isSafeInteger(link.bandwidthBytesPerSec)
+    || link.bandwidthBytesPerSec <= 0
+  ) {
+    return undefined;
+  }
+  const serviceNs = Math.ceil(
+    bytes / link.bandwidthBytesPerSec * 1_000_000_000,
+  );
+  const durationNs = link.latencyNs + serviceNs;
+  return Number.isSafeInteger(durationNs) ? durationNs : undefined;
 }
 
 function validateTransfer(
