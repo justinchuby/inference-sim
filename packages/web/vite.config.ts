@@ -2,7 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  base: mode === "github-pages" ? "/inference-sim/" : "/",
   plugins: [react(), tailwindcss()],
   server: {
     port: 4173,
@@ -10,4 +11,4 @@ export default defineConfig({
   build: {
     sourcemap: true,
   },
-});
+}));

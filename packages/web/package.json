@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
+    "build:pages": "tsc --noEmit && vite build --mode github-pages",
     "dev": "vite --host 127.0.0.1",
     "test": "vitest run --passWithNoTests"
   },
