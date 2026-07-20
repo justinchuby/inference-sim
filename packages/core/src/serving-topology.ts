@@ -33,6 +33,7 @@ import {
   type TopologyResourceUtilization,
   type TopologyWorkloadProfile,
   type TopologyModelWork,
+  type TopologyPipelineWork,
   type TopologyWorkloadResult,
 } from "./topology-workload.js";
 import {
@@ -139,6 +140,9 @@ export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
   config?: ServingSchedulerConfig["speculative"],
   modelWork?: TopologyModelWork,
+  pipeline?: TopologyPipelineWork,
+  promptInvocations = batch.prefill.length,
+  finalInvocations = 0,
 ): TopologyWorkloadProfile {
   const draftTokens = batch.decode.reduce(
     (sum, entry) => sum + entry.proposedAdditionalTokens,
@@ -151,6 +155,7 @@ export function topologyProfileFromServingBatch(
     id: `serving-batch:${batch.batchId}`,
     batchSize: 1,
     ...(modelWork === undefined ? {} : { modelWork }),
+    ...(pipeline === undefined ? {} : { pipeline }),
     units: [{
       id: `batch-${batch.batchId}`,
       targetTokenWidth: batch.tokenWork,
@@ -165,6 +170,8 @@ export function topologyProfileFromServingBatch(
       activeExperts: 1,
       warmLoadBytes: 0,
       coldLoadBytes: 0,
+      promptInvocations,
+      finalInvocations,
     }],
   };
 }
@@ -175,6 +182,7 @@ export function simulateTopologyServingWorkload(
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
   expertCacheConfig?: TopologyServingExpertCacheConfig,
   modelWork?: TopologyModelWork,
+  pipeline?: TopologyPipelineWork,
 ): TopologyServingResult {
   validateExpertCacheComposition(scenario, expertCacheConfig);
   const expertPlacement: TopologyExpertPlacement | undefined =
@@ -213,6 +221,15 @@ export function simulateTopologyServingWorkload(
   });
   const expertRoutes: ExpertRouteResult[] = [];
   let nextExpertTokenIndex = 0;
+  const promptedRequests = new Set<string>();
+  const promptTokensByRequest = new Map<string, number>();
+  const committedByRequest = new Map<string, number>();
+  const outputTokensByRequest = new Map(
+    config.requests.map((request) => [request.id, request.outputTokens]),
+  );
+  const inputTokensByRequest = new Map(
+    config.requests.map((request) => [request.id, request.promptTokens]),
+  );
   const estimateDuration = (
     work: ServingBatchWork,
     startedAtNs: number,
@@ -288,10 +305,46 @@ export function simulateTopologyServingWorkload(
     const cacheConstraintNs = expertCache === undefined
       ? 0
       : expertCache.snapshot().currentTimeNs - startedAtNs;
+    const promptInvocations = work.prefill.filter(
+      (slice) => !promptedRequests.has(slice.requestId),
+    ).length;
+    for (const slice of work.prefill) {
+      promptedRequests.add(slice.requestId);
+    }
+    let finalInvocations = 0;
+    for (const slice of work.prefill) {
+      const prior = promptTokensByRequest.get(slice.requestId) ?? 0;
+      const next = prior + slice.tokens;
+      promptTokensByRequest.set(slice.requestId, next);
+      const promptTokens = inputTokensByRequest.get(slice.requestId)
+        ?? Infinity;
+      if (prior < promptTokens && next >= promptTokens) {
+        committedByRequest.set(slice.requestId, 1);
+        if ((outputTokensByRequest.get(slice.requestId) ?? Infinity) === 1) {
+          finalInvocations++;
+        }
+      }
+    }
+    for (const slice of work.decode) {
+      const prior = committedByRequest.get(slice.requestId) ?? 0;
+      const next = prior + slice.committedTokens;
+      committedByRequest.set(slice.requestId, next);
+      if (prior < (outputTokensByRequest.get(slice.requestId) ?? Infinity)
+        && next >= (outputTokensByRequest.get(slice.requestId) ?? Infinity)) {
+        finalInvocations++;
+      }
+    }
     const topology = simulateTopologyWorkload(
       scenario,
       batchExpertRoutes.length === 0
-        ? topologyProfileFromServingBatch(work, config.speculative, modelWork)
+        ? topologyProfileFromServingBatch(
+            work,
+            config.speculative,
+            modelWork,
+            pipeline,
+            promptInvocations,
+            finalInvocations,
+          )
         : topologyProfileFromExpertServingBatch(
             work,
             config.speculative,
@@ -299,6 +352,9 @@ export function simulateTopologyServingWorkload(
             batchPrefetchLoads,
             requireExpertPlacement(expertPlacement),
             modelWork,
+            pipeline,
+            promptInvocations,
+            finalInvocations,
           ),
       costModel,
     );
@@ -779,6 +835,7 @@ export function compareTopologyServingWorkloads(
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
   expertCacheConfig?: TopologyServingExpertCacheConfig,
   modelWork?: TopologyModelWork,
+  pipeline?: TopologyPipelineWork,
 ): TopologyServingComparisonResult {
   if (scenarios.length === 0) {
     throw new Error("serving comparison requires at least one scenario");
@@ -799,6 +856,7 @@ export function compareTopologyServingWorkloads(
       costModel,
       expertCacheConfig,
       modelWork,
+      pipeline,
     ))
     .sort((left, right) => (
       left.metrics.totalDurationNs - right.metrics.totalDurationNs
@@ -822,6 +880,9 @@ function topologyProfileFromExpertServingBatch(
   prefetchLoads: readonly ExpertPendingLoadSnapshot[],
   placement: TopologyExpertPlacement,
   modelWork?: TopologyModelWork,
+  pipeline?: TopologyPipelineWork,
+  promptInvocations = batch.prefill.length,
+  finalInvocations = 0,
 ): TopologyWorkloadProfile {
   if (routes.length !== batch.tokenWork || routes.length === 0) {
     throw new Error(
@@ -832,6 +893,9 @@ function topologyProfileFromExpertServingBatch(
     batch,
     speculative,
     modelWork,
+    pipeline,
+    promptInvocations,
+    finalInvocations,
   );
   const topK = routes[0].expertIds.length;
   if (routes.some((route) => route.expertIds.length !== topK)) {

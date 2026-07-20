@@ -124,11 +124,13 @@ of package files without uploading them. A dedicated browser Worker decodes
 each ONNX protobuf, incrementally hashes external-data sidecars, parses
 `inference_metadata.yaml|json`, validates multi-model component and dataflow
 references, and displays the resulting pipeline. Imported model fingerprints
-and declared speculative families are bound into deterministic run input. The
-selected target model's name, parameter count, weight bytes, active
-attention/FFN streams, and approximate forward FLOPs are also bound into the
-Worker input and result artifact. Serving and speculative plans apply a
-per-invocation weight-bandwidth floor from the actual target memory domain;
+and declared speculative families are bound into deterministic run input.
+Every pipeline component's phase, order, weight inventory, device preference,
+and dataflow edges are also bound into the Worker input and result artifact.
+VLM and Whisper encoders execute before decode, TTS final stages execute after
+completion, and pure any-to-any composites use the one-shot Pipeline mode.
+Serving, speculative, and pipeline plans apply a per-invocation
+weight-bandwidth floor from the component's selected weight memory domain;
 they no longer time every model with one normalized token constant.
 Target-only is the only decode mode enabled when metadata does not provide
 specific speculative evidence; unknown proposal methods remain visible as

@@ -1567,27 +1567,38 @@ speculative evidence. Known fields fail closed while unknown schema-extension
 fields remain forward compatible.
 
 The model package generates a dashboard execution binding containing sorted
-ONNX manifest fingerprints, the uniquely identified target/decoder,
-component count, pipeline strategy, exact parameter and weight inventory,
-architecture-derived active attention/FFN weight streams, approximate forward
-FLOPs, and only the speculative families supported by explicit metadata.
-Multi-model packages without exactly one decoder/target fail closed instead of
-silently timing an arbitrary component. UI filtering is not the security or
-correctness boundary: dashboard artifact parsing preserves the binding and
-Worker execution independently rejects a speculative family absent from it.
+ONNX manifest fingerprints, the strategy-defined primary component, every
+component's phase, role, order, device preference and exact weight inventory,
+the declared dataflow edges, architecture-derived target attention/FFN weight
+streams, approximate forward FLOPs, and only the speculative families
+supported by explicit metadata. Autoregressive pipelines identify the decoder,
+iterative pipelines identify the denoiser, nested autoregressive pipelines
+identify the outer decoder, and pure composites use their ordered terminal
+stage. Ambiguous primary ownership fails closed instead of silently timing an
+arbitrary component. UI filtering is not the security or correctness boundary:
+dashboard artifact parsing preserves and validates the binding and Worker
+execution independently rejects a speculative family absent from it.
 `eagle` is not silently treated as `eagle3`, and generic draft heads do not
 imply MTP or EAGLE without a family declaration.
 
-The execution binding also carries an explicit coverage statement. A
-single-target dense model may report `complete/full_model`. A composite,
-independent-draft, or model-bound MoE package reports `partial` until every
-declared invocation, weight charge, placement, and transfer is compiled into
-the executable workload. In the current implementation, multi-model import
-preserves the DAG and phase gates but schedules only the selected target;
-generic EP and proposer events are not evidence that imported expert or draft
-profiles were bound. The UI and deterministic artifact list modeled and
-unmodeled component IDs plus machine-readable limitations. See
-`REPRESENTATIVE_MODEL_VALIDATION.md`.
+The execution binding also carries an explicit coverage statement. VLM and
+Whisper encoders run once at the first prompt slice, autoregressive decoders
+retain their token loop, TTS vocoders run once after request completion, and
+pure single-pass/composite any-to-any pipelines execute in the dedicated
+`pipeline` workload mode. Component compute operations retain component and
+phase identity in the frozen plan. Dataflow dependencies are ordered, explicit
+cross-device edges reserve transfer paths, `device_transfer: false` enforces
+colocation, component weights are checked against their selected memory
+domains, and timing uses the selected weight-domain bandwidth as a lower
+bound. Prompt components precede speculative proposers; final components run
+after the last speculative iteration.
+
+Coverage remains `partial` for semantics that are not yet execution-equivalent:
+on-demand application invocations, imported draft-model proposer costs,
+iterative scheduler and classifier-free-guidance work, nested-AR inner-loop
+details, model-bound MoE routing, and metadata hardware constraints. The UI and
+deterministic artifact list these as machine-readable limitations rather than
+claiming full support. See `REPRESENTATIVE_MODEL_VALIDATION.md`.
 
 The dashboard defaults to an explicit built-in Llama 3 8B target-only model;
 model selection and local folder/file import are first-class controls. Every

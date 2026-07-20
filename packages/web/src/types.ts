@@ -34,9 +34,14 @@ import type {
   StaticSearchObjective,
   StaticSearchResult,
   SimulationScenario,
+  TopologyPipelineWork,
 } from "@inference-sim/core";
 
-export type WorkloadMode = "serving" | "speculative" | "expert-cache";
+export type WorkloadMode =
+  | "serving"
+  | "pipeline"
+  | "speculative"
+  | "expert-cache";
 
 export interface DashboardModelBinding {
   readonly source: "builtin_model" | "local_model_package";
@@ -47,6 +52,7 @@ export interface DashboardModelBinding {
   readonly totalParameters: number;
   readonly weightBytes: number;
   readonly executionProfile: DashboardModelExecutionProfile;
+  readonly pipelineExecution?: TopologyPipelineWork;
   readonly executionCoverage: DashboardModelExecutionCoverage;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
@@ -160,6 +166,14 @@ export interface DashboardResult {
     readonly metrics: TopologyWorkloadMetrics;
     readonly topResources: readonly TopologyResourceUtilization[];
   };
+  readonly pipelineExecution?: {
+    readonly components: readonly {
+      readonly id: string;
+      readonly phase: string;
+      readonly deviceId: string;
+    }[];
+    readonly transferOperations: number;
+  };
   readonly speculative?: {
     readonly family: SpeculativeProposerFamily;
     readonly support: "onnx_genai_current" | "design_only";
@@ -226,6 +240,10 @@ export interface DashboardResult {
 }
 
 export type DashboardCoreEvidence =
+  | {
+      readonly kind: "pipeline";
+      readonly topology: TopologyWorkloadResult;
+    }
   | {
       readonly kind: "speculative";
       readonly workload: SpeculativeWorkloadResult;

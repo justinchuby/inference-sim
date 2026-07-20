@@ -6,6 +6,7 @@ import {
   type SimulationScenario,
 } from "@inference-sim/core";
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -579,9 +580,12 @@ export function App(): React.JSX.Element {
       changeConfig({
         ...config,
         modelBinding,
-        mode: config.mode === "speculative" && selectedFamily === undefined
-          ? "serving"
-          : config.mode,
+        mode: modelBinding.pipelineExecution?.replacesTarget === true
+          ? "pipeline"
+          : config.mode === "pipeline"
+              || (config.mode === "speculative" && selectedFamily === undefined)
+            ? "serving"
+            : config.mode,
         speculative: {
           ...speculative,
           ...(selectedFamily === undefined ? {} : { family: selectedFamily }),
@@ -2182,7 +2186,9 @@ function ConfigurationPanel({
                       {formatBytes(config.modelBinding.weightBytes)} weights ·{" "}
                       {formatFlops(
                         config.modelBinding.executionProfile.forwardFlopsPerToken,
-                      )} / token
+                      )} {config.modelBinding.pipelineExecution?.replacesTarget
+                        ? "primary forward estimate"
+                        : "/ token"}
                     </div>
                   </div>
                 </div>
@@ -2590,8 +2596,15 @@ function ConfigurationPanel({
           value={config.mode}
           onValueChange={(mode) => setMode(mode as WorkloadMode)}
         >
-        <TabsList className="mb-4 w-full grid-cols-3">
+        <TabsList className="mb-4 w-full grid-cols-4">
           <TabsTrigger value="serving">Serving</TabsTrigger>
+          <TabsTrigger
+            value="pipeline"
+            disabled={config.modelBinding?.pipelineExecution?.replacesTarget
+              !== true}
+          >
+            Pipeline
+          </TabsTrigger>
           <TabsTrigger
             value="speculative"
             aria-label="Speculative"
@@ -2602,6 +2615,26 @@ function ConfigurationPanel({
           </TabsTrigger>
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
+        <TabsContent value="pipeline" className="space-y-4">
+          <SliderField
+            label="Invocations"
+            value={config.serving.requestCount}
+            minimum={1}
+            maximum={32}
+            step={1}
+            disabled={disabled}
+            onChange={(requestCount) => onChange({
+              ...config,
+              serving: { ...config.serving, requestCount },
+            })}
+          />
+          <div className="border-t border-zinc-200 pt-3 text-xs text-zinc-600">
+            {config.modelBinding?.pipelineExecution?.components.length ?? 0}
+            {" "}ordered components ·{" "}
+            {config.modelBinding?.pipelineExecution?.edges.length ?? 0}
+            {" "}dataflow edges
+          </div>
+        </TabsContent>
         <TabsContent value="serving" className="space-y-4">
           <Field label="Topology scope">
             <Select
@@ -3568,7 +3601,9 @@ function Results({
     ? speculativeMetrics(result)
     : result.mode === "serving"
       ? servingMetrics(result)
-      : expertMetrics(result);
+      : result.mode === "pipeline"
+        ? pipelineMetrics(result)
+        : expertMetrics(result);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
@@ -3718,6 +3753,36 @@ function Results({
           </div>
         ))}
       </section>
+      {result.pipelineExecution
+        ? (
+            <section className="border-y border-zinc-200 py-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-sm font-bold">Pipeline placement</h2>
+                <span className="text-xs text-zinc-500">
+                  {result.pipelineExecution.transferOperations} link operations
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {result.pipelineExecution.components.map((component, index) => (
+                  <Fragment
+                    key={`${component.id}:${component.phase}:${component.deviceId}`}
+                  >
+                    {index === 0
+                      ? null
+                      : <span className="text-zinc-400">→</span>}
+                    <div className="min-w-36 border-l-2 border-emerald-600 pl-2">
+                      <div className="text-xs font-bold">{component.id}</div>
+                      <div className="text-[11px] text-zinc-500">
+                        {component.phase.replaceAll("_", " ")} ·{" "}
+                        {component.deviceId}
+                      </div>
+                    </div>
+                  </Fragment>
+                ))}
+              </div>
+            </section>
+          )
+        : null}
       {topologyScenario
         ? (
             <TopologyVisualizationSection
@@ -4373,6 +4438,12 @@ function ModelPackageOverview({
         <h2 className="mb-3 text-sm font-bold">Components</h2>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {components.map((component) => {
+            const phase = "runOn" in component
+              ? component.runOn
+              : undefined;
+            const devicePreference = "devicePreference" in component
+              ? component.devicePreference
+              : undefined;
             const model = modelPackage.models.find((candidate) => (
               candidate.fileName === component.filename
             ));
@@ -4393,6 +4464,12 @@ function ModelPackageOverview({
                     </div>
                     <div className="truncate text-xs text-zinc-500">
                       {component.filename}
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-zinc-400">
+                      {phase ?? "phase inferred"}
+                      {devicePreference
+                        ? ` · ${devicePreference}`
+                        : " · automatic placement"}
                     </div>
                   </div>
                   <Badge variant="neutral">{component.type}</Badge>
@@ -4538,6 +4615,16 @@ function modelCoverageLimitationLabel(limitation: string): string {
       return "metadata hardware requirements are not execution constraints";
     case "model_moe_routing_not_bound_to_expert_workload":
       return "model expert count and top-k do not configure EP routing";
+    case "on_demand_components_require_application_invocation":
+      return "on-demand components require an explicit application invocation";
+    case "iterative_scheduler_and_cfg_cost_not_modeled":
+      return "iterative scheduler and CFG costs are not yet modeled";
+    case "nested_autoregressive_inner_loop_not_modeled":
+      return "nested autoregressive inner-loop execution remains approximate";
+    case "vision_request_tile_expansion_not_modeled":
+      return "request image-tile token expansion is not yet modeled";
+    case "pipeline_strategy_not_executable":
+      return "the declared pipeline strategy is not executable";
     default:
       return limitation;
   }
@@ -4811,6 +4898,36 @@ function expertMetrics(result: DashboardResult) {
       label: "Bytes moved",
       value: formatBytes(metrics.bytesMoved),
       detail: `${metrics.evictions} evictions · ${formatDuration(metrics.stallNs)} cache stall`,
+      icon: <Network className="size-4 text-amber-700" />,
+    },
+  ];
+}
+
+function pipelineMetrics(result: DashboardResult) {
+  const topology = result.topology.metrics;
+  return [
+    {
+      label: "Pipeline latency",
+      value: formatDuration(topology.totalDurationNs),
+      detail: `${result.topology.confidence} device + link time`,
+      icon: <Clock3 className="size-4 text-amber-700" />,
+    },
+    {
+      label: "Invocations / sec",
+      value: formatRate(topology.tokensPerSecond),
+      detail: `${topology.committedTokens} completed pipelines`,
+      icon: <Gauge className="size-4 text-sky-700" />,
+    },
+    {
+      label: "Compute service",
+      value: formatDuration(topology.computeServiceNs),
+      detail: `${result.topology.operationCounts.compute} component operations`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
+    },
+    {
+      label: "Transfer service",
+      value: formatDuration(topology.transferServiceNs),
+      detail: `${result.topology.operationCounts.transfer} dataflow transfers`,
       icon: <Network className="size-4 text-amber-700" />,
     },
   ];

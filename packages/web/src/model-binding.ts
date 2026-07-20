@@ -2,6 +2,8 @@ import {
   buildModelProfile,
   resolveOnnxModelProfile,
   type ModelProfile,
+  type TopologyPipelinePhase,
+  type TopologyPipelineWork,
 } from "@inference-sim/core";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import type {
@@ -50,13 +52,16 @@ export function createImportedModelBinding(
   modelPackage: ImportedModelPackage,
 ): DashboardModelBinding {
   const target = selectTargetModel(modelPackage);
-  const model = resolveOnnxModelProfile(target.manifest);
+  const model = target.manifest.profileReadiness.ready
+    ? resolveOnnxModelProfile(target.manifest)
+    : undefined;
   const fingerprint = target.manifest.manifestFingerprint;
+  const pipelineExecution = buildPipelineExecution(modelPackage, target);
   const assessedCoverage = assessImportedModelExecutionCoverage(
     modelPackage,
-    target.componentIds,
+    pipelineExecution,
   );
-  const executionCoverage = model.moe === undefined
+  const executionCoverage = model?.moe === undefined
     ? assessedCoverage
     : addCoverageLimitation(
         assessedCoverage,
@@ -64,16 +69,32 @@ export function createImportedModelBinding(
       );
   return {
     source: "local_model_package",
-    displayName: model.name,
+    displayName: modelPackage.metadata.components.length > 1
+      ? modelPackage.metadata.components.map((component) => component.id)
+        .join(" -> ")
+      : model?.name
+        ?? target.manifest.architecture.modelType
+        ?? target.fileName.replace(/\.onnx$/i, ""),
     modelFingerprints: modelPackage.models
       .map((candidate) => candidate.manifest.manifestFingerprint)
       .sort(),
     targetModelFingerprint: fingerprint,
     componentCount: modelPackage.metadata.components.length
       || modelPackage.models.length,
-    totalParameters: model.totalParams,
-    weightBytes: target.manifest.totals.initializerLogicalBytes,
-    executionProfile: executionProfile(model, fingerprint),
+    totalParameters: modelPackage.models.reduce(
+      (sum, candidate) => sum + candidate.manifest.totals.initializerElements,
+      0,
+    ),
+    weightBytes: modelPackage.models.reduce(
+      (sum, candidate) => (
+        sum + candidate.manifest.totals.initializerLogicalBytes
+      ),
+      0,
+    ),
+    executionProfile: model === undefined
+      ? genericExecutionProfile(target)
+      : executionProfile(model, fingerprint),
+    ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
     executionCoverage,
     ...(modelPackage.metadata.pipelineStrategy === undefined
       ? {}
@@ -98,47 +119,52 @@ function addCoverageLimitation(
 
 export function assessImportedModelExecutionCoverage(
   modelPackage: ImportedModelPackage,
-  targetComponentIds?: readonly string[],
+  pipelineExecution = buildPipelineExecution(
+    modelPackage,
+    selectTargetModel(modelPackage),
+  ),
 ): DashboardModelBinding["executionCoverage"] {
   const allComponentIds = modelPackage.metadata.components.length > 0
     ? modelPackage.metadata.components.map((component) => component.id)
     : modelPackage.models.flatMap((model) => (
         model.componentIds.length > 0 ? model.componentIds : [model.fileName]
       ));
-  const componentType = new Map(modelPackage.metadata.components.map(
-    (component) => [component.id, component.type.toLowerCase()] as const,
-  ));
-  const selectedIds = targetComponentIds ?? selectTargetModel(
-    modelPackage,
-  ).componentIds;
-  const modeledComponentIds = selectedIds.filter((id) => {
-    const type = componentType.get(id);
-    return type === undefined
-      || type === "decoder"
-      || type === "target"
-      || type === "model";
-  });
-  if (modeledComponentIds.length === 0 && modelPackage.models.length === 1) {
-    modeledComponentIds.push(
-      selectedIds[0] ?? modelPackage.models[0]!.fileName,
-    );
-  }
+  const modeledComponentIds = pipelineExecution?.components.map(
+    (component) => component.id,
+  ) ?? allComponentIds;
   const modeled = new Set(modeledComponentIds);
   const unmodeledComponentIds = allComponentIds
     .filter((id) => !modeled.has(id))
     .sort();
   const limitations: string[] = [];
-  if (unmodeledComponentIds.length > 0) {
-    limitations.push("non_target_components_not_scheduled");
-    limitations.push("non_target_weights_not_capacity_checked");
+  if (
+    pipelineExecution !== undefined
+    && ![
+      "autoregressive",
+      "single_pass",
+      "composite",
+      "iterative",
+    ].includes(pipelineExecution.strategyKind)
+  ) {
+    limitations.push("pipeline_strategy_not_executable");
   }
-  if (modelPackage.metadata.edges.length > 0) {
-    limitations.push("pipeline_dataflow_transfers_not_scheduled");
-  }
-  if (modelPackage.metadata.components.some(
-    (component) => component.devicePreference !== undefined,
+  if (pipelineExecution?.components.some(
+    (component) => component.phase === "on_demand",
   )) {
-    limitations.push("component_device_preferences_not_enforced");
+    limitations.push("on_demand_components_require_application_invocation");
+  }
+  if (pipelineExecution?.components.some(
+    (component) => component.strategyKind === "iterative",
+  )) {
+    limitations.push("iterative_scheduler_and_cfg_cost_not_modeled");
+  }
+  if (pipelineExecution?.components.some(
+    (component) => component.strategyKind === "nested_autoregressive",
+  )) {
+    limitations.push("nested_autoregressive_inner_loop_not_modeled");
+  }
+  if (modelPackage.metadata.vision !== undefined) {
+    limitations.push("vision_request_tile_expansion_not_modeled");
   }
   if (
     modelPackage.metadata.components.some(
@@ -158,9 +184,7 @@ export function assessImportedModelExecutionCoverage(
   }
   return {
     fidelity: limitations.length === 0 ? "complete" : "partial",
-    scope: unmodeledComponentIds.length === 0
-      ? "full_model"
-      : "target_component_only",
+    scope: unmodeledComponentIds.length === 0 ? "full_model" : "target_component_only",
     modeledComponentIds: [...new Set(modeledComponentIds)].sort(),
     unmodeledComponentIds,
     limitations,
@@ -174,9 +198,23 @@ function selectTargetModel(modelPackage: ImportedModelPackage) {
   const componentType = new Map(modelPackage.metadata.components.map(
     (component) => [component.id, component.type.toLowerCase()] as const,
   ));
+  const leafStages = modelPackage.metadata.stages.filter(
+    (stage) => stage.componentIds.length > 0,
+  );
+  const preferredComponentId =
+    leafStages.find((stage) => stage.kind === "autoregressive")
+      ?.bindings.decoder
+    ?? leafStages.find((stage) => stage.kind === "nested_autoregressive")
+      ?.bindings.outer
+    ?? leafStages.find((stage) => stage.kind === "iterative")
+      ?.bindings.denoiser
+    ?? leafStages.at(-1)?.bindings.model;
   const scored = modelPackage.models.map((model) => {
     const types = model.componentIds.map((id) => componentType.get(id) ?? "");
-    const score = types.includes("decoder")
+    const stageScore = model.componentIds.includes(preferredComponentId ?? "")
+      ? 100
+      : 0;
+    const roleScore = types.includes("decoder")
       ? 4
       : types.includes("target")
         ? 3
@@ -185,18 +223,159 @@ function selectTargetModel(modelPackage: ImportedModelPackage) {
           : types.some((type) => type !== "draft" && type !== "encoder")
             ? 1
             : 0;
-    return { model, score };
+    return { model, score: stageScore * 10 + roleScore };
   }).sort((left, right) => right.score - left.score);
   if (
     scored[0] === undefined
-    || scored[0].score === 0
     || scored[0].score === scored[1]?.score
   ) {
     throw new Error(
-      "multi-model package must identify exactly one decoder or target component",
+      "multi-model package must identify exactly one executable primary component",
     );
   }
   return scored[0].model;
+}
+
+function buildPipelineExecution(
+  modelPackage: ImportedModelPackage,
+  primaryModel: ImportedModelPackage["models"][number],
+): TopologyPipelineWork | undefined {
+  const metadata = modelPackage.metadata;
+  if (metadata.components.length === 0) {
+    return undefined;
+  }
+  const modelByComponent = new Map(
+    modelPackage.models.flatMap((model) => (
+      model.componentIds.map((componentId) => [componentId, model] as const)
+    )),
+  );
+  const stageByComponent = new Map<string, typeof metadata.stages[number]>();
+  const orderByComponent = new Map<string, number>();
+  for (const [index, stage] of metadata.stages.entries()) {
+    for (const componentId of stage.componentIds) {
+      stageByComponent.set(componentId, stage);
+      orderByComponent.set(componentId, index);
+    }
+  }
+  const primaryIds = new Set(primaryModel.componentIds);
+  const strategyKind = metadata.pipelineStrategy ?? "single_pass";
+  const replacesTarget = !metadata.stages.some(
+    (stage) => stage.kind === "autoregressive"
+      || stage.kind === "nested_autoregressive",
+  );
+  const components = topologicalComponents(metadata.components, metadata.edges)
+    .map((component) => {
+      const model = modelByComponent.get(component.id);
+      if (model === undefined) {
+        throw new Error(
+          `pipeline component ${component.id} is not bound to an ONNX manifest`,
+        );
+      }
+      const stage = stageByComponent.get(component.id);
+      const phase = normalizePhase(
+        component.runOn
+          ?? stage?.runOn
+          ?? (component.type.toLowerCase() === "draft"
+            ? "on_demand"
+            : undefined)
+          ?? (stage?.kind === "iterative"
+              || stage?.kind === "nested_autoregressive"
+            ? "every_step"
+            : undefined)
+          ?? (primaryIds.has(component.id) && !replacesTarget
+            ? "every_step"
+            : "prompt_only"),
+      );
+      const invocationMultiplier = stage?.kind === "iterative"
+        ? Math.max(1, (stage.numSteps ?? 1) - (stage.startStep ?? 0))
+        : stage?.kind === "nested_autoregressive"
+            && stage.bindings.inner === component.id
+          ? stage.numCodeGroups ?? 1
+        : 1;
+      return {
+        id: component.id,
+        role: component.type,
+        phase,
+        strategyKind: stage?.kind ?? strategyKind,
+        invocationMultiplier,
+        weightBytes: model.manifest.totals.initializerLogicalBytes,
+        ...(component.devicePreference === undefined
+          ? {}
+          : { devicePreference: component.devicePreference.toLowerCase() }),
+        isPrimary: primaryIds.has(component.id),
+        order: orderByComponent.get(component.id)
+          ?? metadata.stages.length + metadata.components.findIndex(
+            (candidate) => candidate.id === component.id,
+          ),
+      };
+    }).sort((left, right) => left.order - right.order);
+  return {
+    strategyKind,
+    replacesTarget,
+    components,
+    edges: metadata.edges.map((edge) => ({
+      fromComponent: edge.fromComponent,
+      toComponent: edge.toComponent,
+      ...(edge.deviceTransfer === undefined
+        ? {}
+        : { deviceTransfer: edge.deviceTransfer }),
+    })),
+  };
+}
+
+function topologicalComponents<T extends { readonly id: string }>(
+  components: readonly T[],
+  edges: ImportedModelPackage["metadata"]["edges"],
+): T[] {
+  const remaining = new Map(components.map((component) => (
+    [component.id, component] as const
+  )));
+  const ordered: T[] = [];
+  while (remaining.size > 0) {
+    const ready = [...remaining.values()].find((component) => (
+      edges.every((edge) => (
+        edge.toComponent !== component.id
+        || edge.fromComponent === component.id
+        || !remaining.has(edge.fromComponent)
+      ))
+    ));
+    if (ready === undefined) {
+      throw new Error("pipeline dataflow contains a non-iterative cycle");
+    }
+    ordered.push(ready);
+    remaining.delete(ready.id);
+  }
+  return ordered;
+}
+
+function normalizePhase(value: string): TopologyPipelinePhase {
+  if (value === "always") {
+    return "every_step";
+  }
+  if (
+    value !== "prompt_only"
+    && value !== "every_step"
+    && value !== "final_only"
+    && value !== "on_demand"
+  ) {
+    throw new Error(`unsupported pipeline phase ${value}`);
+  }
+  return value;
+}
+
+function genericExecutionProfile(
+  model: ImportedModelPackage["models"][number],
+): DashboardModelExecutionProfile {
+  const bytes = Math.max(1, model.manifest.totals.initializerLogicalBytes);
+  const parameters = Math.max(1, model.manifest.totals.initializerElements);
+  return {
+    modelId: model.manifest.manifestFingerprint,
+    modelName: model.manifest.architecture.modelType
+      ?? model.fileName.replace(/\.onnx$/i, ""),
+    attentionWeightBytesPerToken: Math.max(1, Math.floor(bytes / 4)),
+    ffnWeightBytesPerToken: Math.max(1, bytes - Math.floor(bytes / 4)),
+    forwardFlopsPerToken: 2 * parameters,
+  };
 }
 
 function executionProfile(

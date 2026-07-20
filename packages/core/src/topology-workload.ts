@@ -53,6 +53,8 @@ export interface TopologyWorkUnit {
   readonly warmLoadBytes: number;
   readonly coldLoadBytes: number;
   readonly requiredPrefetchIds?: readonly string[];
+  readonly promptInvocations?: number;
+  readonly finalInvocations?: number;
 }
 
 export interface TopologyWorkloadProfile {
@@ -60,9 +62,41 @@ export interface TopologyWorkloadProfile {
   readonly batchSize: number;
   readonly units: readonly TopologyWorkUnit[];
   readonly modelWork?: TopologyModelWork;
+  readonly pipeline?: TopologyPipelineWork;
   readonly expertPlacement?: TopologyExpertPlacement;
   readonly expertTokenPlacement?: "round_robin";
   readonly backgroundPrefetches?: readonly TopologyBackgroundPrefetch[];
+}
+
+export type TopologyPipelinePhase =
+  | "prompt_only"
+  | "every_step"
+  | "final_only"
+  | "on_demand";
+
+export interface TopologyPipelineComponentWork {
+  readonly id: string;
+  readonly role: string;
+  readonly phase: TopologyPipelinePhase;
+  readonly strategyKind: string;
+  readonly invocationMultiplier: number;
+  readonly weightBytes: number;
+  readonly devicePreference?: string;
+  readonly isPrimary: boolean;
+  readonly order: number;
+}
+
+export interface TopologyPipelineEdgeWork {
+  readonly fromComponent: string;
+  readonly toComponent: string;
+  readonly deviceTransfer?: boolean;
+}
+
+export interface TopologyPipelineWork {
+  readonly strategyKind: string;
+  readonly replacesTarget: boolean;
+  readonly components: readonly TopologyPipelineComponentWork[];
+  readonly edges: readonly TopologyPipelineEdgeWork[];
 }
 
 export interface TopologyModelWork {
@@ -258,12 +292,14 @@ export const DEFAULT_TOPOLOGY_COST_MODEL: TopologyCostModel = {
 export function topologyProfileFromSpeculative(
   result: SpeculativeWorkloadResult,
   modelWork?: TopologyModelWork,
+  pipeline?: TopologyPipelineWork,
 ): TopologyWorkloadProfile {
   return {
     id: `speculative:${result.family}`,
     batchSize: 1,
     ...(modelWork === undefined ? {} : { modelWork }),
-    units: result.iterations.map((iteration) => ({
+    ...(pipeline === undefined ? {} : { pipeline }),
+    units: result.iterations.map((iteration, index) => ({
       id: `iteration-${iteration.iteration}`,
       targetTokenWidth: checkedAdd(
         iteration.proposedDraftTokens,
@@ -277,7 +313,37 @@ export function topologyProfileFromSpeculative(
       activeExperts: 1,
       warmLoadBytes: 0,
       coldLoadBytes: 0,
+      promptInvocations: iteration.iteration === 0 ? 1 : 0,
+      finalInvocations: index === result.iterations.length - 1 ? 1 : 0,
     })),
+  };
+}
+
+export function topologyProfileFromPipeline(
+  pipeline: TopologyPipelineWork,
+  invocations: number,
+): TopologyWorkloadProfile {
+  assertPositiveSafeInteger(invocations, "pipeline invocations");
+  if (!pipeline.replacesTarget) {
+    throw new TopologyWorkloadError(
+      "one-shot pipeline workload requires a pipeline without an autoregressive target",
+    );
+  }
+  return {
+    id: `pipeline:${pipeline.strategyKind}`,
+    batchSize: 1,
+    pipeline,
+    units: [{
+      id: "pipeline-batch",
+      targetTokenWidth: 1,
+      committedTokens: invocations,
+      draftTokens: 0,
+      activeExperts: 1,
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
+      promptInvocations: invocations,
+      finalInvocations: invocations,
+    }],
   };
 }
 
@@ -1040,6 +1106,13 @@ class WorkloadPlanCompiler {
       ? []
       : [this.previousTerminalStepId];
 
+    entryDependencies = this.compilePipelinePhase(
+      unit,
+      "prompt_only",
+      unit.promptInvocations ?? 0,
+      entryDependencies,
+    );
+
     if (unit.draftTokens > 0) {
       const execution = unit.proposerExecution ?? "separate_model";
       const capability = execution === "cpu_lookup" ? "lookup" : "draft";
@@ -1082,12 +1155,53 @@ class WorkloadPlanCompiler {
       entryDependencies = [draftStep];
     }
 
-    if (this.scenario.execution.parallelism.pipeline > 1) {
-      this.previousTerminalStepId = this.compilePipeline(
+    if (this.profile.pipeline?.replacesTarget === true) {
+      entryDependencies = this.compilePipelinePhase(
         unit,
+        "every_step",
+        Math.max(1, unit.committedTokens),
         entryDependencies,
       );
-      return;
+    } else {
+      entryDependencies = this.compilePipelinePhase(
+        unit,
+        "every_step",
+        Math.max(1, unit.targetTokenWidth),
+        entryDependencies,
+      );
+      const primary = this.profile.pipeline?.components.find(
+        (component) => component.isPrimary,
+      );
+      if (
+        primary !== undefined
+        && !this.deviceMatchesPreference(
+          this.placements[0].deviceId,
+          primary.devicePreference,
+        )
+      ) {
+        throw new TopologyWorkloadError(
+          `primary pipeline component ${primary.id} cannot satisfy device preference ${primary.devicePreference}`,
+        );
+      }
+      const targetTerminal = this.compileTarget(unit, entryDependencies);
+      entryDependencies = [targetTerminal];
+    }
+
+    entryDependencies = this.compilePipelinePhase(
+      unit,
+      "final_only",
+      unit.finalInvocations ?? 0,
+      entryDependencies,
+    );
+    this.previousTerminalStepId = entryDependencies.at(-1);
+  }
+
+  private compileTarget(
+    unit: TopologyWorkUnit,
+    dependencies: readonly number[],
+  ): number {
+    if (this.scenario.execution.parallelism.pipeline > 1) {
+      return this.compilePipeline(unit, dependencies);
     }
     if (
       (
@@ -1099,23 +1213,268 @@ class WorkloadPlanCompiler {
       )
       && this.placements.length > 1
     ) {
-      this.previousTerminalStepId = this.compileTensorParallel(
-        unit,
-        entryDependencies,
-      );
-      return;
+      return this.compileTensorParallel(unit, dependencies);
     }
     const cacheLoad = this.prepareCacheLoad(
       this.placements[0],
       unit,
-      entryDependencies,
+      dependencies,
       1,
     );
-    this.previousTerminalStepId = this.compilePlacement(
+    return this.compilePlacement(
       this.placements[0],
       unit,
       cacheLoad.dependencies,
       cacheLoad.localMemoryPenaltyNs,
+    );
+  }
+
+  private compilePipelinePhase(
+    unit: TopologyWorkUnit,
+    phase: TopologyPipelinePhase,
+    invocations: number,
+    entryDependencies: readonly number[],
+  ): number[] {
+    const pipeline = this.profile.pipeline;
+    if (pipeline === undefined || invocations === 0 || phase === "on_demand") {
+      return [...entryDependencies];
+    }
+    const active = pipeline.components.filter((component) => (
+      component.phase === phase
+      && (pipeline.replacesTarget || !component.isPrimary)
+    ));
+    if (active.length === 0) {
+      return [...entryDependencies];
+    }
+    const activeIds = new Set(active.map((component) => component.id));
+    const terminalByComponent = new Map<string, number>();
+    const placementByComponent = new Map<string, PartitionPlacement>();
+    const phaseTerminals: number[] = [];
+    let previousComponentTerminal: number | undefined;
+    for (const component of active) {
+      const incoming = pipeline.edges.filter(
+        (edge) => edge.toComponent === component.id,
+      );
+      const colocatedSource = incoming
+        .filter((edge) => edge.deviceTransfer === false)
+        .map((edge) => placementByComponent.get(edge.fromComponent))
+        .find((placement) => placement !== undefined);
+      const placement = colocatedSource
+        ?? this.pipelinePlacement(component.devicePreference);
+      if (
+        colocatedSource !== undefined
+        && !this.deviceMatchesPreference(
+          colocatedSource.deviceId,
+          component.devicePreference,
+        )
+      ) {
+        throw new TopologyWorkloadError(
+          `pipeline component ${component.id} cannot satisfy device preference ${component.devicePreference} and a device_transfer:false input`,
+        );
+      }
+      const dependencies = uniqueNumbers([
+        ...entryDependencies,
+        ...(previousComponentTerminal === undefined
+          ? []
+          : [previousComponentTerminal]),
+        ...incoming.flatMap((edge) => {
+          const sourceComponent = pipeline.components.find(
+            (candidate) => candidate.id === edge.fromComponent,
+          );
+          const sourceIsPrimary = sourceComponent?.isPrimary === true;
+          const sourceTerminal = terminalByComponent.get(edge.fromComponent)
+            ?? (
+              sourceComponent?.phase !== phase
+                ? entryDependencies.at(-1)
+                : undefined
+            );
+          if (sourceTerminal === undefined) {
+            return [];
+          }
+          const sourcePlacement = placementByComponent.get(edge.fromComponent)
+            ?? (
+              sourceIsPrimary
+                ? this.placements[0]
+                : sourceComponent?.phase !== phase
+                  ? this.pipelinePlacement(sourceComponent?.devicePreference)
+                  : undefined
+            );
+          if (sourcePlacement === undefined) {
+            return [];
+          }
+          if (workspaceDomain(sourcePlacement) === workspaceDomain(placement)) {
+            return [sourceTerminal];
+          }
+          if (edge.deviceTransfer === false) {
+            throw new TopologyWorkloadError(
+              `pipeline edge ${edge.fromComponent}->${edge.toComponent} forbids its required device transfer`,
+            );
+          }
+          const transfers = this.addTransferPath(
+            workspaceDomain(sourcePlacement),
+            workspaceDomain(placement),
+            checkedMultiply(
+              this.costModel.activationBytesPerToken,
+              Math.max(1, invocations),
+              `pipeline edge ${edge.fromComponent}->${edge.toComponent} bytes`,
+            ),
+            [sourceTerminal],
+            [this.rank(sourcePlacement.deviceId), this.rank(placement.deviceId)],
+          );
+          return transfers.length === 0
+            ? [sourceTerminal]
+            : [transfers[transfers.length - 1]];
+        }),
+      ]);
+      const durationNs = this.pipelineComponentDuration(
+        placement,
+        component,
+        invocations,
+        placement.requiredCapabilities.includes("ffn")
+          ? "ffn"
+          : "attention",
+      );
+      const capability = placement.requiredCapabilities.includes("ffn")
+        ? "ffn"
+        : "attention";
+      const terminal = this.addCompute(
+        placement,
+        capability,
+        durationNs,
+        dependencies,
+        [],
+        {
+          componentId: component.id,
+          pipelinePhase: phase,
+        },
+      );
+      terminalByComponent.set(component.id, terminal);
+      placementByComponent.set(component.id, placement);
+      phaseTerminals.push(terminal);
+      previousComponentTerminal = terminal;
+    }
+    const outgoingToPrimary = pipeline.replacesTarget
+      ? []
+      : pipeline.edges.filter((edge) => (
+          activeIds.has(edge.fromComponent)
+          && pipeline.components.some((component) => (
+            component.id === edge.toComponent && component.isPrimary
+          ))
+        ));
+    for (const edge of outgoingToPrimary) {
+      const sourceTerminal = terminalByComponent.get(edge.fromComponent);
+      const sourcePlacement = placementByComponent.get(edge.fromComponent);
+      const targetPlacement = this.placements[0];
+      if (
+        sourceTerminal === undefined
+        || sourcePlacement === undefined
+        || targetPlacement === undefined
+        || workspaceDomain(sourcePlacement) === workspaceDomain(targetPlacement)
+      ) {
+        continue;
+      }
+      if (edge.deviceTransfer === false) {
+        throw new TopologyWorkloadError(
+          `pipeline edge ${edge.fromComponent}->${edge.toComponent} forbids transfer to the primary model`,
+        );
+      }
+      const transfers = this.addTransferPath(
+        workspaceDomain(sourcePlacement),
+        workspaceDomain(targetPlacement),
+        checkedMultiply(
+          this.costModel.activationBytesPerToken,
+          Math.max(1, invocations),
+          `pipeline edge ${edge.fromComponent}->${edge.toComponent} bytes`,
+        ),
+        [sourceTerminal],
+        [this.rank(sourcePlacement.deviceId), this.rank(targetPlacement.deviceId)],
+      );
+      if (transfers.length > 0) {
+        phaseTerminals.push(transfers[transfers.length - 1]);
+      }
+    }
+    return uniqueNumbers(phaseTerminals);
+  }
+
+  private pipelinePlacement(
+    preference: string | undefined,
+  ): PartitionPlacement {
+    const preferred = this.placements.find((placement) => (
+      this.deviceMatchesPreference(placement.deviceId, preference)
+    ));
+    if (preferred !== undefined) {
+      return preferred;
+    }
+    if (preference !== undefined && preference !== "auto") {
+      throw new TopologyWorkloadError(
+        `scenario ${this.scenario.id} has no model placement satisfying ${preference}`,
+      );
+    }
+    return this.placements[0];
+  }
+
+  private deviceMatchesPreference(
+    deviceId: string,
+    preference: string | undefined,
+  ): boolean {
+    if (preference === undefined || preference === "auto") {
+      return true;
+    }
+    const device = this.device(deviceId);
+    if (preference === "cpu") {
+      return device.kind === "cpu";
+    }
+    if (preference === "npu") {
+      return device.kind === "npu";
+    }
+    if (preference === "coreml") {
+      return device.executionProvider.toLowerCase().includes("coreml");
+    }
+    return device.kind === "gpu"
+      && device.executionProvider.toLowerCase().includes(preference);
+  }
+
+  private pipelineComponentDuration(
+    placement: PartitionPlacement,
+    component: TopologyPipelineComponentWork,
+    invocations: number,
+    capability: "attention" | "ffn",
+  ): number {
+    assertPositiveSafeInteger(invocations, `${component.id} invocations`);
+    const multiplier = component.invocationMultiplier;
+    assertPositiveSafeInteger(multiplier, `${component.id} multiplier`);
+    const weightDomainId = placement.allocations.find(
+      (allocation) => allocation.purpose === "weights",
+    )?.domainId ?? workspaceDomain(placement);
+    const domain = this.scenario.memoryDomains.find(
+      (candidate) => candidate.id === weightDomainId,
+    );
+    if (domain === undefined) {
+      throw new TopologyWorkloadError(
+        `pipeline component ${component.id} has no memory domain`,
+      );
+    }
+    const costs = this.costModel.deviceCosts[
+      this.device(placement.deviceId).kind
+    ];
+    const computeNs = checkedAdd(
+      costs.invocationOverheadNs,
+      checkedMultiply(
+        capability === "attention"
+          ? costs.attentionNsPerToken
+          : costs.ffnNsPerToken,
+        invocations,
+        `${component.id} work`,
+      ),
+      `${component.id} invocation`,
+    );
+    const bandwidthNs = Math.ceil(
+      component.weightBytes / domain.bandwidthBytesPerSec * 1e9,
+    );
+    return checkedMultiply(
+      Math.max(1, computeNs, bandwidthNs),
+      multiplier,
+      `${component.id} duration`,
     );
   }
 
@@ -1735,6 +2094,10 @@ class WorkloadPlanCompiler {
     durationNs: number,
     dependencies: readonly number[],
     additionalReads: readonly string[] = [],
+    pipelineIdentity?: {
+      readonly componentId: string;
+      readonly pipelinePhase: TopologyPipelinePhase;
+    },
   ): number {
     const state = placement.allocations
       .filter((allocation) => (
@@ -1756,6 +2119,7 @@ class WorkloadPlanCompiler {
         deviceId: placement.deviceId,
         capability,
         durationNs,
+        ...(pipelineIdentity === undefined ? {} : pipelineIdentity),
       },
     });
   }
@@ -2692,6 +3056,44 @@ function validateInputs(
       profile.modelWork.forwardFlopsPerToken,
       "model forward FLOPs per token",
     );
+  }
+  if (profile.pipeline !== undefined) {
+    const ids = profile.pipeline.components.map((component) => component.id);
+    if (ids.length === 0 || new Set(ids).size !== ids.length) {
+      throw new TopologyWorkloadError(
+        "pipeline component ids must be non-empty and unique",
+      );
+    }
+    if (profile.pipeline.components.filter(
+      (component) => component.isPrimary,
+    ).length !== 1) {
+      throw new TopologyWorkloadError(
+        "pipeline requires exactly one primary component",
+      );
+    }
+    const known = new Set(ids);
+    for (const component of profile.pipeline.components) {
+      if (component.id.length === 0 || component.role.length === 0) {
+        throw new TopologyWorkloadError(
+          "pipeline component id and role must be non-empty",
+        );
+      }
+      assertPositiveSafeInteger(
+        component.invocationMultiplier,
+        `${component.id} invocation multiplier`,
+      );
+      assertPositiveSafeInteger(
+        component.weightBytes,
+        `${component.id} weight bytes`,
+      );
+    }
+    for (const edge of profile.pipeline.edges) {
+      if (!known.has(edge.fromComponent) || !known.has(edge.toComponent)) {
+        throw new TopologyWorkloadError(
+          `pipeline edge ${edge.fromComponent}->${edge.toComponent} references an unknown component`,
+        );
+      }
+    }
   }
   if (profile.units.length === 0) {
     throw new TopologyWorkloadError("profile must contain at least one work unit");

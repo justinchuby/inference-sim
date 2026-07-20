@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_TOPOLOGY_COST_MODEL,
   buildModelProfile,
   buildScenarioPreset,
   buildTopology,
   createOnnxModelManifest,
   parseInferenceMetadata,
+  simulateTopologyServingWorkload,
+  simulateTopologyWorkload,
+  topologyProfileFromPipeline,
 } from "@inference-sim/core";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import {
@@ -97,7 +101,7 @@ describe("model UI metrics", () => {
     });
   });
 
-  it("reports Gemma 4 VLM prompt components as unmodeled execution", () => {
+  it("binds and schedules the complete Gemma 4 VLM prompt pipeline", () => {
     const modelPackage = packageWithComponents({
       metadata: {
         pipeline: {
@@ -165,16 +169,53 @@ describe("model UI metrics", () => {
     const binding = createImportedModelBinding(modelPackage);
 
     expect(binding.executionCoverage).toMatchObject({
-      fidelity: "partial",
-      scope: "target_component_only",
-      modeledComponentIds: ["decoder"],
-      unmodeledComponentIds: ["embedding", "vision_encoder"],
+      fidelity: "complete",
+      scope: "full_model",
+      modeledComponentIds: ["decoder", "embedding", "vision_encoder"],
+      unmodeledComponentIds: [],
     });
-    expect(binding.executionCoverage.limitations).toEqual(expect.arrayContaining([
-      "non_target_components_not_scheduled",
-      "pipeline_dataflow_transfers_not_scheduled",
-      "component_device_preferences_not_enforced",
-    ]));
+    expect(binding.weightBytes).toBe(12_000);
+    expect(binding.pipelineExecution).toMatchObject({
+      strategyKind: "composite",
+      replacesTarget: false,
+      components: [
+        { id: "vision_encoder", phase: "prompt_only" },
+        { id: "embedding", phase: "prompt_only" },
+        { id: "decoder", phase: "every_step", isPrimary: true },
+      ],
+    });
+    const serving = simulateTopologyServingWorkload(
+      buildScenarioPreset("single-gpu-cpu"),
+      {
+        requests: [{
+          id: "vlm",
+          arrivalNs: 0,
+          promptTokens: 32,
+          outputTokens: 2,
+        }],
+        maxBatchSize: 1,
+        maxBatchTokens: 8,
+        prefillChunkTokens: 8,
+        maxKvTokens: 64,
+      },
+      DEFAULT_TOPOLOGY_COST_MODEL,
+      undefined,
+      binding.executionProfile,
+      binding.pipelineExecution,
+    );
+    const componentIds = serving.batches.flatMap((batch) => (
+      batch.topology.plan.steps.flatMap((step) => (
+        step.operation.kind === "compute" && step.operation.componentId
+          ? [step.operation.componentId]
+          : []
+      ))
+    ));
+    expect(componentIds.filter(
+      (componentId) => componentId === "vision_encoder",
+    )).toHaveLength(1);
+    expect(componentIds.filter(
+      (componentId) => componentId === "embedding",
+    )).toHaveLength(1);
   });
 
   it("reports an independent draft model as heuristic proposer work", () => {
@@ -190,6 +231,7 @@ describe("model UI metrics", () => {
             target: { filename: "target.onnx", type: "target" },
             draft: { filename: "draft.onnx", type: "draft" },
           },
+          strategy: { kind: "autoregressive", decoder: "target" },
         },
       },
       components: [
@@ -201,10 +243,135 @@ describe("model UI metrics", () => {
     const binding = createImportedModelBinding(modelPackage);
 
     expect(binding.speculativeFamilies).toContain("draft_model");
-    expect(binding.executionCoverage.unmodeledComponentIds).toEqual(["draft"]);
+    expect(binding.executionCoverage.unmodeledComponentIds).toEqual([]);
     expect(binding.executionCoverage.limitations).toContain(
       "draft_model_profile_not_bound_to_proposer_cost",
     );
+  });
+
+  it("runs a pure any-to-any codec as an ordered one-shot pipeline", () => {
+    const modelPackage = packageWithComponents({
+      metadata: {
+        pipeline: {
+          models: {
+            encoder: { filename: "encoder.onnx", type: "audio_encoder" },
+            vocoder: { filename: "vocoder.onnx", type: "vocoder" },
+          },
+          phases: {
+            encoder: { run_on: "prompt_only" },
+            vocoder: { run_on: "prompt_only" },
+          },
+          dataflow: [{
+            from: "encoder.codes",
+            to: "vocoder.codes",
+            device_transfer: false,
+          }],
+          strategy: {
+            kind: "composite",
+            stages: [
+              {
+                name: "encode",
+                strategy: { kind: "single_pass", model: "encoder" },
+              },
+              {
+                name: "decode",
+                strategy: { kind: "single_pass", model: "vocoder" },
+              },
+            ],
+          },
+        },
+      },
+      components: [
+        ["encoder.onnx", "encoder"],
+        ["vocoder.onnx", "vocoder"],
+      ],
+    });
+    const binding = createImportedModelBinding(modelPackage);
+    expect(binding.pipelineExecution?.replacesTarget).toBe(true);
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("single-gpu-cpu"),
+      topologyProfileFromPipeline(binding.pipelineExecution!, 3),
+    );
+    const componentIds = result.plan.steps.flatMap((step) => (
+      step.operation.kind === "compute" && step.operation.componentId
+        ? [step.operation.componentId]
+        : []
+    ));
+    expect(componentIds.filter(
+      (componentId) => componentId === "encoder",
+    )).toHaveLength(1);
+    expect(componentIds.filter(
+      (componentId) => componentId === "vocoder",
+    )).toHaveLength(1);
+    expect(result.metrics.committedTokens).toBe(3);
+  });
+
+  it("runs Whisper encoders before decode and TTS vocoders after completion", () => {
+    const run = (finalRole: "none" | "vocoder") => {
+      const models: Record<string, unknown> = {
+        encoder: { filename: "encoder.onnx", type: "audio_encoder" },
+        decoder: { filename: "decoder.onnx", type: "decoder" },
+      };
+      const phases: Record<string, unknown> = {
+        encoder: { run_on: "prompt_only" },
+        decoder: { run_on: "every_step" },
+      };
+      const dataflow: unknown[] = [{
+        from: "encoder.encoder_hidden_states",
+        to: "decoder.encoder_hidden_states",
+      }];
+      const components: Array<readonly [string, string]> = [
+        ["encoder.onnx", "encoder"],
+        ["decoder.onnx", "decoder"],
+      ];
+      if (finalRole === "vocoder") {
+        models.vocoder = { filename: "vocoder.onnx", type: "vocoder" };
+        phases.vocoder = { run_on: "final_only" };
+        dataflow.push({
+          from: "decoder.output_ids",
+          to: "vocoder.codes",
+        });
+        components.push(["vocoder.onnx", "vocoder"]);
+      }
+      const binding = createImportedModelBinding(packageWithComponents({
+        metadata: {
+          pipeline: {
+            models,
+            phases,
+            dataflow,
+            strategy: {
+              kind: "autoregressive",
+              decoder: "decoder",
+            },
+          },
+        },
+        components,
+      }));
+      return simulateTopologyServingWorkload(
+        buildScenarioPreset("single-gpu-cpu"),
+        {
+          requests: [{
+            id: "audio",
+            arrivalNs: 0,
+            promptTokens: 24,
+            outputTokens: 3,
+          }],
+          maxBatchSize: 1,
+          maxBatchTokens: 8,
+          prefillChunkTokens: 8,
+          maxKvTokens: 64,
+        },
+        DEFAULT_TOPOLOGY_COST_MODEL,
+        undefined,
+        binding.executionProfile,
+        binding.pipelineExecution,
+      );
+    };
+    const whisperComponents = run("none").batches.flatMap(componentOperations);
+    expect(whisperComponents.filter((id) => id === "encoder")).toHaveLength(1);
+    const ttsComponents = run("vocoder").batches.flatMap(componentOperations);
+    expect(ttsComponents.filter((id) => id === "encoder")).toHaveLength(1);
+    expect(ttsComponents.filter((id) => id === "vocoder")).toHaveLength(1);
   });
 
   it("does not claim model-bound EP for representative MoE presets", () => {
@@ -240,6 +407,16 @@ function packageWithComponents({
     fileCount: components.length,
     unboundOnnxFiles: [],
   };
+}
+
+function componentOperations(
+  batch: ReturnType<typeof simulateTopologyServingWorkload>["batches"][number],
+): string[] {
+  return batch.topology.plan.steps.flatMap((step) => (
+    step.operation.kind === "compute" && step.operation.componentId
+      ? [step.operation.componentId]
+      : []
+  ));
 }
 
 function packageWithDenseModel(): ImportedModelPackage {

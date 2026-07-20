@@ -18,6 +18,7 @@ import {
   simulateTopologyWorkload,
   speculativeFamilyContract,
   topologyProfileFromExpertCache,
+  topologyProfileFromPipeline,
   topologyProfileFromSpeculative,
   type ScenarioPresetName,
   type ServingSchedulerConfig,
@@ -84,6 +85,7 @@ export function simulateDashboardExecution(
       costModel,
       buildServingExpertCacheConfig(config),
       config.modelBinding?.executionProfile,
+      config.modelBinding?.pipelineExecution,
     );
     reportProgress({ progress: 74, phase: "Ranking topology replays" });
     const fastest = comparison.runs[0];
@@ -124,6 +126,7 @@ export function simulateDashboardExecution(
       topologyProfileFromSpeculative(
         workload.result,
         config.modelBinding?.executionProfile,
+        config.modelBinding?.pipelineExecution,
       ),
       costModel,
     );
@@ -136,6 +139,7 @@ export function simulateDashboardExecution(
           : { model: modelSummary(config)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
+        ...pipelineExecutionSummary([topology]),
         speculative: workload.dashboard,
       }),
       evidence: {
@@ -159,6 +163,36 @@ export function simulateDashboardExecution(
         kind: "serving",
         serving,
       },
+    };
+  }
+  if (config.mode === "pipeline") {
+    const pipeline = config.modelBinding?.pipelineExecution;
+    if (pipeline === undefined || !pipeline.replacesTarget) {
+      throw new Error(
+        "pipeline mode requires an imported single-pass, composite, or iterative pipeline",
+      );
+    }
+    reportProgress({ progress: 50, phase: "Compiling component pipeline" });
+    const topology = simulateTopologyWorkload(
+      scenario,
+      topologyProfileFromPipeline(
+        pipeline,
+        clampInteger(config.serving.requestCount, 1, 32),
+      ),
+      costModel,
+    );
+    reportProgress({ progress: 78, phase: "Summarizing pipeline evidence" });
+    return {
+      summary: attachCalibration({
+        scenario: scenarioSummary,
+        ...(modelSummary(config) === undefined
+          ? {}
+          : { model: modelSummary(config)! }),
+        mode: config.mode,
+        topology: summarizeTopology(topology),
+        ...pipelineExecutionSummary([topology]),
+      }),
+      evidence: { kind: "pipeline", topology },
     };
   }
   reportProgress({ progress: 38, phase: "Simulating expert cache routes" });
@@ -236,6 +270,65 @@ function validateModelCapacity(
     throw new Error(
       `model ${binding.displayName} requires ${formatGiB(binding.weightBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains`,
     );
+  }
+  if (binding.pipelineExecution !== undefined) {
+    const bytesByDomain = new Map<string, number>();
+    for (const component of binding.pipelineExecution.components) {
+      const placement = scenario.placements.find((candidate) => {
+        if (
+          !candidate.requiredCapabilities.includes("attention")
+          && !candidate.requiredCapabilities.includes("ffn")
+        ) {
+          return false;
+        }
+        const device = scenario.devices.find(
+          (candidateDevice) => candidateDevice.id === candidate.deviceId,
+        );
+        const preference = component.devicePreference;
+        return device !== undefined && (
+          preference === undefined
+          || preference === "auto"
+          || (preference === "cpu" && device.kind === "cpu")
+          || (preference === "npu" && device.kind === "npu")
+          || (
+            preference === "coreml"
+            && device.executionProvider.toLowerCase().includes("coreml")
+          )
+          || (
+            !["cpu", "npu", "coreml"].includes(preference)
+            && device.kind === "gpu"
+            && device.executionProvider.toLowerCase().includes(preference)
+          )
+        );
+      });
+      if (placement === undefined) {
+        throw new Error(
+          `pipeline component ${component.id} cannot satisfy device preference ${component.devicePreference ?? "auto"} on topology ${scenario.id}`,
+        );
+      }
+      const domainId = placement.allocations.find(
+        (allocation) => allocation.purpose === "weights",
+      )?.domainId;
+      if (domainId === undefined) {
+        throw new Error(
+          `pipeline component ${component.id} placement has no weight memory`,
+        );
+      }
+      bytesByDomain.set(
+        domainId,
+        (bytesByDomain.get(domainId) ?? 0) + component.weightBytes,
+      );
+    }
+    for (const [domainId, componentBytes] of bytesByDomain) {
+      const domain = scenario.memoryDomains.find(
+        (candidate) => candidate.id === domainId,
+      )!;
+      if (componentBytes > domain.resourceLimitBytes) {
+        throw new Error(
+          `pipeline components placed on ${domainId} require ${formatGiB(componentBytes)} GiB but the resource manager allows ${formatGiB(domain.resourceLimitBytes)} GiB`,
+        );
+      }
+    }
   }
 }
 
@@ -367,6 +460,7 @@ function runServing(
     costModel,
     buildServingExpertCacheConfig(config),
     config.modelBinding?.executionProfile,
+    config.modelBinding?.pipelineExecution,
   );
 }
 
@@ -441,6 +535,9 @@ function servingDashboardResult(
       : { model: modelSummary(config)! }),
     mode: "serving",
     topology: summarizeServingTopology(serving),
+    ...pipelineExecutionSummary(
+      serving.batches.map((batch) => batch.topology),
+    ),
     serving: {
       decodeMode: config.serving.decodeMode,
       support: config.serving.decodeMode === "target_only"
@@ -865,6 +962,45 @@ function summarizeTopology(
       ))
       .slice(0, 8),
   };
+}
+
+function pipelineExecutionSummary(
+  results: readonly TopologyWorkloadResult[],
+): Pick<DashboardResult, "pipelineExecution"> {
+  const components = new Map<string, {
+    readonly id: string;
+    readonly phase: string;
+    readonly deviceId: string;
+  }>();
+  let transferOperations = 0;
+  for (const result of results) {
+    for (const step of result.plan.steps) {
+      if (step.operation.kind === "transfer") {
+        transferOperations++;
+      } else if (
+        step.operation.kind === "compute"
+        && step.operation.componentId !== undefined
+      ) {
+        const component = {
+          id: step.operation.componentId,
+          phase: step.operation.pipelinePhase ?? "unspecified",
+          deviceId: step.operation.deviceId,
+        };
+        components.set(
+          `${component.id}:${component.phase}:${component.deviceId}`,
+          component,
+        );
+      }
+    }
+  }
+  return components.size === 0
+    ? {}
+    : {
+        pipelineExecution: {
+          components: [...components.values()],
+          transferOperations,
+        },
+      };
 }
 
 function summarizeServingTopology(

@@ -67,8 +67,37 @@ describe("inference metadata", () => {
       "encode",
       "decode",
     ]);
+    expect(parsed.stages[1]).toMatchObject({
+      parentName: "pipeline",
+      runOn: "prompt_only",
+    });
     expect(parsed.hardware.minimumMemoryGiB).toBe(24);
     expect(parsed.speculative.availableFamilies).toEqual([]);
+  });
+
+  it("preserves iterative and nested loop bounds", () => {
+    const parsed = parseInferenceMetadata({
+      pipeline: {
+        models: {
+          denoiser: { filename: "denoiser.onnx", type: "denoiser" },
+        },
+        strategy: {
+          kind: "iterative",
+          denoiser: "denoiser",
+          num_steps: 12,
+          start_step: 3,
+          max_tokens: 64,
+          num_code_groups: 8,
+        },
+      },
+    });
+    expect(parsed.stages[0]).toMatchObject({
+      kind: "iterative",
+      numSteps: 12,
+      startStep: 3,
+      maxTokens: 64,
+      numCodeGroups: 8,
+    });
   });
 
   it("preserves component phase gates for execution planning", () => {
@@ -82,6 +111,7 @@ describe("inference metadata", () => {
           vision: { run_on: "prompt_only" },
           decoder: { run_on: "every_step" },
         },
+        strategy: { kind: "autoregressive", decoder: "decoder" },
       },
     });
 
@@ -171,5 +201,13 @@ describe("inference metadata", () => {
     expect(() => parseInferenceMetadata({
       hardware_requirements: { required_dtypes: "fp16" },
     })).toThrow("must be an array");
+    expect(() => parseInferenceMetadata({
+      pipeline: {
+        models: {
+          encoder: { filename: "encoder.onnx", type: "encoder" },
+        },
+        phases: { encoder: { run_on: "sometimes" } },
+      },
+    })).toThrow("unsupported phase sometimes");
   });
 });

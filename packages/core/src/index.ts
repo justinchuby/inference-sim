@@ -418,6 +418,7 @@ export {
   simulateTopologyWorkload,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
+  topologyProfileFromPipeline,
   topologyProfileFromSpeculative,
   type DeviceCapabilityCost,
   type TopologyComparisonEntry,
@@ -437,5 +438,9 @@ export {
   type TopologyWorkloadMetrics,
   type TopologyWorkloadProfile,
   type TopologyModelWork,
+  type TopologyPipelineComponentWork,
+  type TopologyPipelineEdgeWork,
+  type TopologyPipelinePhase,
+  type TopologyPipelineWork,
   type TopologyWorkloadResult,
 } from "./topology-workload.js";

@@ -44,7 +44,7 @@ export default function ResultCharts({
         />
         <ResourceChart result={result} />
       </section>
-      <section className="panel">
+      {result.mode === "pipeline" ? null : <section className="panel">
         <SectionHeading
           title={result.mode === "speculative"
             ? "Acceptance profile"
@@ -62,7 +62,7 @@ export default function ResultCharts({
           : result.mode === "serving"
             ? <ServingLatencyChart result={result} />
             : <CacheOutcomeChart result={result} />}
-      </section>
+      </section>}
       {result.expertCache
         ? (
             <section className="panel">

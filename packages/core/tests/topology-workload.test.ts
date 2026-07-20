@@ -17,6 +17,7 @@ import {
   simulateTopologyWorkload,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
+  topologyProfileFromPipeline,
   topologyProfileFromSpeculative,
 } from "../src/index.js";
 
@@ -28,6 +29,62 @@ function expertPlacement(
 }
 
 describe("topology-aware workload execution", () => {
+  it("places pipeline components by preference and transfers dataflow", () => {
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("gpu-npu"),
+      topologyProfileFromPipeline({
+        strategyKind: "composite",
+        replacesTarget: true,
+        components: [
+          {
+            id: "encoder",
+            role: "audio_encoder",
+            phase: "prompt_only",
+            strategyKind: "single_pass",
+            invocationMultiplier: 1,
+            weightBytes: 1024 ** 3,
+            devicePreference: "cuda",
+            isPrimary: false,
+            order: 0,
+          },
+          {
+            id: "vocoder",
+            role: "vocoder",
+            phase: "prompt_only",
+            strategyKind: "single_pass",
+            invocationMultiplier: 1,
+            weightBytes: 512 * 1024 ** 2,
+            devicePreference: "npu",
+            isPrimary: true,
+            order: 1,
+          },
+        ],
+        edges: [{
+          fromComponent: "encoder",
+          toComponent: "vocoder",
+          deviceTransfer: true,
+        }],
+      }, 1),
+    );
+    const compute = result.plan.steps.filter((step) => (
+      step.operation.kind === "compute"
+      && step.operation.componentId !== undefined
+    ));
+    expect(compute.map((step) => (
+      step.operation.kind === "compute"
+        ? [step.operation.componentId, step.operation.deviceId]
+        : []
+    ))).toEqual([
+      ["encoder", "node0:gpu0"],
+      ["vocoder", "node0:npu0"],
+    ]);
+    const transfers = result.plan.steps.filter(
+      (step) => step.operation.kind === "transfer",
+    );
+    expect(transfers.length).toBeGreaterThan(0);
+    expect(compute[1].dependencies).toContain(transfers.at(-1)!.id);
+  });
+
   it("rejects cost models from the previous routed-traffic revision", () => {
     expect(() => simulateTopologyWorkload(
       buildScenarioPreset("single-gpu-cpu"),

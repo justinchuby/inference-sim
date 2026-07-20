@@ -209,6 +209,8 @@ function parseOperation(value: unknown, label: string): PlanOperation {
       "deviceId",
       "capability",
       "durationNs",
+      ...(operation.componentId === undefined ? [] : ["componentId"]),
+      ...(operation.pipelinePhase === undefined ? [] : ["pipelinePhase"]),
     ], label);
     return {
       kind,
@@ -221,6 +223,22 @@ function parseOperation(value: unknown, label: string): PlanOperation {
         operation.durationNs,
         `${label} durationNs`,
       ),
+      ...(operation.componentId === undefined
+        ? {}
+        : {
+            componentId: requireNonEmptyString(
+              operation.componentId,
+              `${label} componentId`,
+            ),
+          }),
+      ...(operation.pipelinePhase === undefined
+        ? {}
+        : {
+            pipelinePhase: requireNonEmptyString(
+              operation.pipelinePhase,
+              `${label} pipelinePhase`,
+            ),
+          }),
     };
   }
   if (kind === "transfer") {

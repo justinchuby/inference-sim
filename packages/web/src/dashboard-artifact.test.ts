@@ -58,6 +58,60 @@ const config: DashboardRunConfig = {
 };
 
 describe("dashboard result artifact import", () => {
+  const pipelineConfig: DashboardRunConfig = {
+    ...config,
+    mode: "pipeline",
+    modelBinding: {
+      ...createBuiltinModelBinding("llama-3-8b"),
+      source: "local_model_package",
+      displayName: "audio codec pipeline",
+      modelFingerprints: ["fnv1a32:12345678", "fnv1a32:90abcdef"],
+      targetModelFingerprint: "fnv1a32:90abcdef",
+      componentCount: 2,
+      totalParameters: 2_000,
+      weightBytes: 4_000,
+      pipelineStrategy: "composite",
+      pipelineExecution: {
+        strategyKind: "composite",
+        replacesTarget: true,
+        components: [
+          {
+            id: "encoder",
+            role: "audio_encoder",
+            phase: "prompt_only",
+            strategyKind: "single_pass",
+            invocationMultiplier: 1,
+            weightBytes: 2_000,
+            isPrimary: false,
+            order: 0,
+          },
+          {
+            id: "vocoder",
+            role: "vocoder",
+            phase: "prompt_only",
+            strategyKind: "single_pass",
+            invocationMultiplier: 1,
+            weightBytes: 2_000,
+            isPrimary: true,
+            order: 1,
+          },
+        ],
+        edges: [{
+          fromComponent: "encoder",
+          toComponent: "vocoder",
+          deviceTransfer: false,
+        }],
+      },
+      executionCoverage: {
+        fidelity: "complete",
+        scope: "full_model",
+        modeledComponentIds: ["encoder", "vocoder"],
+        unmodeledComponentIds: [],
+        limitations: [],
+      },
+    },
+  };
+
   it("binds only contracts used by the selected execution path", () => {
     expect(Object.keys(dashboardArtifactContracts(config)).sort()).toEqual([
       "frozen_plan",
@@ -191,6 +245,7 @@ describe("dashboard result artifact import", () => {
   it("replays all dashboard modes through the Worker execution boundary", async () => {
     const configs: DashboardRunConfig[] = [
       config,
+      pipelineConfig,
       { ...config, mode: "expert-cache" },
       { ...config, mode: "serving" },
       {
@@ -224,6 +279,34 @@ describe("dashboard result artifact import", () => {
         parsed.expectation.artifactFingerprint,
       );
     }
+  });
+
+  it("round-trips component-tagged pipeline execution", () => {
+    const output = simulateDashboardExecution(pipelineConfig);
+    const artifact = createDashboardArtifact(
+      pipelineConfig,
+      output,
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "pipeline.json",
+    );
+    const replay = executeDashboardWorkerRun(
+      parsed.config,
+      parsed.expectation,
+    );
+    expect(parsed.config.modelBinding?.pipelineExecution).toEqual(
+      pipelineConfig.modelBinding?.pipelineExecution,
+    );
+    expect(replay.artifactReplay?.matches).toBe(true);
+    const operations = output.evidence.kind === "pipeline"
+      ? output.evidence.topology.plan.steps.flatMap((step) => (
+          step.operation.kind === "compute"
+            ? [step.operation.componentId]
+            : []
+        ))
+      : [];
+    expect(operations).toEqual(["encoder", "vocoder"]);
   });
 
   it("reports execution-bound progress without changing the artifact", async () => {

@@ -1,6 +1,6 @@
 import type { ComputeCapability } from "./scenario-types.js";
 
-export const PLAN_CONTRACT_REVISION = 4;
+export const PLAN_CONTRACT_REVISION = 5;
 
 export type CollectiveAlgorithm = "all_reduce_ring" | "all_to_all_v";
 
@@ -10,6 +10,8 @@ export type PlanOperation =
       readonly deviceId: string;
       readonly capability: ComputeCapability;
       readonly durationNs: number;
+      readonly componentId?: string;
+      readonly pipelinePhase?: string;
     }
   | {
       readonly kind: "transfer";

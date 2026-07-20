@@ -25,6 +25,12 @@ export interface InferencePipelineStage {
   readonly kind: string;
   readonly runOn?: string;
   readonly componentIds: readonly string[];
+  readonly parentName?: string;
+  readonly maxTokens?: number;
+  readonly numSteps?: number;
+  readonly startStep?: number;
+  readonly numCodeGroups?: number;
+  readonly bindings: Readonly<Record<string, string>>;
 }
 
 export interface InferenceMetadataSpeculativeEvidence {
@@ -44,6 +50,10 @@ export interface InferenceMetadataSummary {
   readonly pipelineStrategy?: string;
   readonly stages: readonly InferencePipelineStage[];
   readonly requiredCapabilities: readonly string[];
+  readonly vision?: {
+    readonly imagePlaceholderTokenId?: number;
+    readonly tokensPerTile?: number;
+  };
   readonly hardware: {
     readonly minimumMemoryGiB?: number;
     readonly minimumTensorParallelDegree?: number;
@@ -86,6 +96,9 @@ export function parseInferenceMetadata(
   }));
   const edges = parseEdges(pipeline?.dataflow, componentIds);
   const strategy = optionalRecord(pipeline?.strategy, "pipeline.strategy");
+  if (pipeline !== undefined && strategy === undefined) {
+    fail("pipeline.strategy is required when pipeline is declared");
+  }
   const stages = strategy === undefined
     ? []
     : parsePipelineStrategy(strategy, "pipeline.strategy", componentIds);
@@ -136,6 +149,7 @@ export function parseInferenceMetadata(
           ),
         }),
     stages,
+    ...parseVision(pipeline?.vision),
     requiredCapabilities: stringArray(
       root.required_capabilities,
       "required_capabilities",
@@ -148,6 +162,30 @@ export function parseInferenceMetadata(
     },
     warnings,
   };
+}
+
+function parseVision(
+  input: unknown,
+): { readonly vision?: InferenceMetadataSummary["vision"] } {
+  const vision = optionalRecord(input, "pipeline.vision");
+  if (vision === undefined) {
+    return {};
+  }
+  const parsed = {
+    ...optionalIntegerProperty(
+      vision.image_placeholder_token_id,
+      "pipeline.vision.image_placeholder_token_id",
+      "imagePlaceholderTokenId",
+      Number.MIN_SAFE_INTEGER,
+    ),
+    ...optionalIntegerProperty(
+      vision.tokens_per_tile,
+      "pipeline.vision.tokens_per_tile",
+      "tokensPerTile",
+      1,
+    ),
+  };
+  return { vision: parsed };
 }
 
 function parsePhases(
@@ -164,13 +202,14 @@ function parsePhases(
       fail(`pipeline.phases references unknown component ${componentId}`);
     }
     const phase = record(value, `pipeline.phases.${componentId}`);
-    result.set(
-      componentId,
-      nonEmptyString(
-        phase.run_on,
-        `pipeline.phases.${componentId}.run_on`,
-      ),
+    const runOn = optionalPhase(
+      phase.run_on,
+      `pipeline.phases.${componentId}.run_on`,
     );
+    if (runOn === undefined) {
+      fail(`pipeline.phases.${componentId}.run_on is required`);
+    }
+    result.set(componentId, runOn);
   }
   return result;
 }
@@ -261,6 +300,7 @@ function parsePipelineStrategy(
   path: string,
   componentIds: ReadonlySet<string>,
   stageName = "pipeline",
+  parentName?: string,
 ): InferencePipelineStage[] {
   const kind = nonEmptyString(strategy.kind, `${path}.kind`);
   const referenced = ["model", "decoder", "denoiser", "outer", "inner"]
@@ -279,6 +319,34 @@ function parsePipelineStrategy(
     name: stageName,
     kind,
     componentIds: referenced,
+    bindings: Object.fromEntries(
+      ["model", "decoder", "denoiser", "outer", "inner"].flatMap((field) => (
+        typeof strategy[field] === "string"
+          ? [[field, strategy[field] as string] as const]
+          : []
+      )),
+    ),
+    ...(parentName === undefined ? {} : { parentName }),
+    ...optionalPositiveIntegerProperty(
+      strategy.max_tokens,
+      `${path}.max_tokens`,
+      "maxTokens",
+    ),
+    ...optionalPositiveIntegerProperty(
+      strategy.num_steps,
+      `${path}.num_steps`,
+      "numSteps",
+    ),
+    ...optionalNonNegativeIntegerProperty(
+      strategy.start_step,
+      `${path}.start_step`,
+      "startStep",
+    ),
+    ...optionalPositiveIntegerProperty(
+      strategy.num_code_groups,
+      `${path}.num_code_groups`,
+      "numCodeGroups",
+    ),
   };
   if (strategy.stages === undefined || strategy.stages === null) {
     return [current];
@@ -303,8 +371,9 @@ function parsePipelineStrategy(
       `${path}.stages[${index}].strategy`,
       componentIds,
       name,
+      stageName,
     );
-    const runOn = optionalString(
+    const runOn = optionalPhase(
       child.run_on,
       `${path}.stages[${index}].run_on`,
     );
@@ -313,6 +382,44 @@ function parsePipelineStrategy(
       : [{ ...parsed[0], runOn }, ...parsed.slice(1)];
   });
   return [current, ...children];
+}
+
+function optionalPhase(
+  input: unknown,
+  path: string,
+): string | undefined {
+  const value = optionalString(input, path);
+  if (
+    value !== undefined
+    && !["prompt_only", "every_step", "always", "final_only", "on_demand"]
+      .includes(value)
+  ) {
+    fail(`${path} has unsupported phase ${value}`);
+  }
+  return value === "always" ? "every_step" : value;
+}
+
+function optionalPositiveIntegerProperty(
+  input: unknown,
+  path: string,
+  key: string,
+): Record<string, number> {
+  const value = optionalPositiveInteger(input, path);
+  return value === undefined ? {} : { [key]: value };
+}
+
+function optionalNonNegativeIntegerProperty(
+  input: unknown,
+  path: string,
+  key: string,
+): Record<string, number> {
+  if (input === undefined || input === null) {
+    return {};
+  }
+  if (!Number.isSafeInteger(input) || (input as number) < 0) {
+    fail(`${path} must be a non-negative integer`);
+  }
+  return { [key]: input as number };
 }
 
 function parseStandaloneSpeculative(

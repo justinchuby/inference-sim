@@ -31,6 +31,7 @@ import type {
 } from "./types.js";
 
 export const MAX_DASHBOARD_ARTIFACT_FILE_BYTES = 128 * 1024 * 1024;
+export const PIPELINE_EXECUTION_CONTRACT_REVISION = 1;
 
 const DASHBOARD_BASE_CONTRACTS = {
   frozen_plan: PLAN_CONTRACT_REVISION,
@@ -107,6 +108,9 @@ export function dashboardArtifactContracts(
     ...(config.calibration === undefined
       ? {}
       : { calibration_dataset: CALIBRATION_DATASET_REVISION }),
+    ...(config.modelBinding?.pipelineExecution === undefined
+      ? {}
+      : { pipeline_execution: PIPELINE_EXECUTION_CONTRACT_REVISION }),
     ...(config.mode === "serving"
       ? { serving_trace: SERVING_TRACE_CONTRACT_REVISION }
       : {}),
@@ -271,7 +275,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     }
     const mode = requireEnum(
       config.mode,
-      ["serving", "speculative", "expert-cache"] as const,
+      ["serving", "pipeline", "speculative", "expert-cache"] as const,
       "artifact input mode",
     );
     const seed = requireInteger(config.seed, 0, 0xffff_ffff, "artifact input seed");
@@ -281,6 +285,14 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     const modelBinding = config.modelBinding === undefined
       ? undefined
       : parseModelBinding(config.modelBinding);
+    if (
+      mode === "pipeline"
+      && modelBinding?.pipelineExecution?.replacesTarget !== true
+    ) {
+      throw new Error(
+        "artifact input pipeline mode requires a replacing pipeline execution",
+      );
+    }
     const calibration = config.calibration === undefined
       ? undefined
       : config.calibration as CalibrationDataset;
@@ -317,6 +329,7 @@ function parseModelBinding(
     "totalParameters",
     "weightBytes",
     "executionProfile",
+    "pipelineExecution",
     "executionCoverage",
     "pipelineStrategy",
     "speculativeFamilies",
@@ -343,6 +356,9 @@ function parseModelBinding(
   const pipelineStrategy = binding.pipelineStrategy === undefined
     ? undefined
     : requireString(binding.pipelineStrategy, "modelBinding pipelineStrategy");
+  const pipelineExecution = binding.pipelineExecution === undefined
+    ? undefined
+    : parsePipelineExecution(binding.pipelineExecution);
   return {
     source: requireEnum(
       binding.source,
@@ -377,12 +393,177 @@ function parseModelBinding(
       "modelBinding weightBytes",
     ),
     executionProfile: parseModelExecutionProfile(binding.executionProfile),
+    ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
     executionCoverage: parseModelExecutionCoverage(
       binding.executionCoverage,
     ),
     ...(pipelineStrategy === undefined ? {} : { pipelineStrategy }),
     speculativeFamilies,
   };
+}
+
+function parsePipelineExecution(
+  input: unknown,
+): NonNullable<
+  NonNullable<DashboardRunConfig["modelBinding"]>["pipelineExecution"]
+> {
+  const pipeline = requireRecord(input, "modelBinding pipelineExecution");
+  assertOnlyKeys(pipeline, [
+    "strategyKind",
+    "replacesTarget",
+    "components",
+    "edges",
+  ], "modelBinding pipelineExecution");
+  const components = requireArray(
+    pipeline.components,
+    "modelBinding pipelineExecution components",
+  ).map((input, index) => {
+    const component = requireRecord(
+      input,
+      `modelBinding pipelineExecution components[${index}]`,
+    );
+    assertOnlyKeys(component, [
+      "id",
+      "role",
+      "phase",
+      "strategyKind",
+      "invocationMultiplier",
+      "weightBytes",
+      "devicePreference",
+      "isPrimary",
+      "order",
+    ], `modelBinding pipelineExecution components[${index}]`);
+    return {
+      id: requireString(component.id, "pipeline component id"),
+      role: requireString(component.role, "pipeline component role"),
+      phase: requireEnum(
+        component.phase,
+        ["prompt_only", "every_step", "final_only", "on_demand"] as const,
+        "pipeline component phase",
+      ),
+      strategyKind: requireString(
+        component.strategyKind,
+        "pipeline component strategyKind",
+      ),
+      invocationMultiplier: requireInteger(
+        component.invocationMultiplier,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        "pipeline component invocationMultiplier",
+      ),
+      weightBytes: requireInteger(
+        component.weightBytes,
+        1,
+        Number.MAX_SAFE_INTEGER,
+        "pipeline component weightBytes",
+      ),
+      ...(component.devicePreference === undefined
+        ? {}
+        : {
+            devicePreference: requireString(
+              component.devicePreference,
+              "pipeline component devicePreference",
+            ),
+          }),
+      isPrimary: requireBoolean(component.isPrimary, "pipeline component isPrimary"),
+      order: requireInteger(
+        component.order,
+        0,
+        Number.MAX_SAFE_INTEGER,
+        "pipeline component order",
+      ),
+    };
+  });
+  const edges = requireArray(
+    pipeline.edges,
+    "modelBinding pipelineExecution edges",
+  ).map((input, index) => {
+    const edge = requireRecord(
+      input,
+      `modelBinding pipelineExecution edges[${index}]`,
+    );
+    assertOnlyKeys(edge, [
+      "fromComponent",
+      "toComponent",
+      "deviceTransfer",
+    ], `modelBinding pipelineExecution edges[${index}]`);
+    return {
+      fromComponent: requireString(
+        edge.fromComponent,
+        "pipeline edge fromComponent",
+      ),
+      toComponent: requireString(
+        edge.toComponent,
+        "pipeline edge toComponent",
+      ),
+      ...(edge.deviceTransfer === undefined
+        ? {}
+        : {
+            deviceTransfer: requireBoolean(
+              edge.deviceTransfer,
+              "pipeline edge deviceTransfer",
+            ),
+      }),
+    };
+  });
+  const componentIds = components.map((component) => component.id);
+  if (new Set(componentIds).size !== componentIds.length) {
+    throw new Error("modelBinding pipelineExecution component ids must be unique");
+  }
+  if (components.filter((component) => component.isPrimary).length !== 1) {
+    throw new Error(
+      "modelBinding pipelineExecution requires exactly one primary component",
+    );
+  }
+  const known = new Set(componentIds);
+  for (const edge of edges) {
+    if (!known.has(edge.fromComponent) || !known.has(edge.toComponent)) {
+      throw new Error(
+        "modelBinding pipelineExecution edge references an unknown component",
+      );
+    }
+  }
+  assertAcyclicPipeline(componentIds, edges);
+  return {
+    strategyKind: requireString(
+      pipeline.strategyKind,
+      "pipeline strategyKind",
+    ),
+    replacesTarget: requireBoolean(
+      pipeline.replacesTarget,
+      "pipeline replacesTarget",
+    ),
+    components,
+    edges,
+  };
+}
+
+function assertAcyclicPipeline(
+  componentIds: readonly string[],
+  edges: readonly {
+    readonly fromComponent: string;
+    readonly toComponent: string;
+  }[],
+): void {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): void => {
+    if (visiting.has(id)) {
+      throw new Error("modelBinding pipelineExecution dataflow contains a cycle");
+    }
+    if (visited.has(id)) {
+      return;
+    }
+    visiting.add(id);
+    for (const edge of edges) {
+      if (edge.fromComponent === id && edge.toComponent !== id) {
+        visit(edge.toComponent);
+      }
+    }
+    visiting.delete(id);
+    visited.add(id);
+  };
+  componentIds.forEach(visit);
 }
 
 function parseModelExecutionCoverage(
@@ -718,6 +899,9 @@ function assertOnlyKeys(
     && key !== "customScenario"
     && key !== "modelBinding"
     && key !== "pipelineStrategy"
+    && key !== "pipelineExecution"
+    && key !== "devicePreference"
+    && key !== "deviceTransfer"
     && key !== "trace"
     && !(key in record)
   ));
