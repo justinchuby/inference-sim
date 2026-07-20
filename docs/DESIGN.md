@@ -1599,9 +1599,12 @@ scenario, topology epoch, and all three integrity fingerprints.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. Standalone FrozenPlan
 file export is available in the CLI and shared core contract, and browser
-execution/import is available in the React workbench. General configuration
-search, ONNX import, artifact history management, and richer progress phases
-remain. Calibration YAML/JSON
+execution/import is available in the React workbench. ONNX Analyze/Search modes
+share the core resolver, analyzer, and bounded search contract. Search scope
+controls expand visible finite topology, KV dtype, batch, parallelism, and
+offload axes, display the declared count before execution, and report ranked
+candidates plus complete rejection accounting. Artifact history management
+and richer progress phases remain. Calibration YAML/JSON
 import shares the core parser and fit contract with the CLI, enforces a 1 MiB
 input limit, refits in the Worker, and reports the dataset fingerprint, compute
 diagnostics, and transport-curve diagnostics in the result view.

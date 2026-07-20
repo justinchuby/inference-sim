@@ -31,6 +31,8 @@ import type {
   MemoryPolicyConfig,
   ParallelismConfig,
   QuantType,
+  StaticSearchObjective,
+  StaticSearchResult,
 } from "@inference-sim/core";
 
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
@@ -315,6 +317,30 @@ export interface OnnxStaticBrowserResult {
   readonly analysis: StaticAnalysisResult;
 }
 
+export interface OnnxSearchBrowserConfig {
+  readonly objective: StaticSearchObjective;
+  readonly topologyScope: "selected" | "all";
+  readonly kvCacheScope: "selected" | "fp16_fp8";
+  readonly batchScope: "selected" | "common";
+  readonly parallelismScope: "selected" | "common";
+  readonly offloadScope: "selected" | "none_partial";
+  readonly maximumDeviceUsedFraction: number;
+  readonly topK: number;
+  readonly maxCandidates: number;
+}
+
+export interface OnnxSearchBrowserResult {
+  readonly sourceFileName: string;
+  readonly manifest: {
+    readonly fingerprint: string;
+    readonly modelFileName: string;
+  };
+  readonly modelName: string;
+  readonly baseConfig: OnnxStaticBrowserConfig;
+  readonly searchConfig: OnnxSearchBrowserConfig;
+  readonly result: StaticSearchResult;
+}
+
 export type WorkerRequest =
   | {
       readonly type: "run";
@@ -334,6 +360,14 @@ export type WorkerRequest =
       readonly sourceFileName: string;
       readonly artifactText: string;
       readonly config: OnnxStaticBrowserConfig;
+    }
+  | {
+      readonly type: "run-onnx-search";
+      readonly runId: number;
+      readonly sourceFileName: string;
+      readonly artifactText: string;
+      readonly baseConfig: OnnxStaticBrowserConfig;
+      readonly searchConfig: OnnxSearchBrowserConfig;
     };
 
 export type WorkerResponse =
@@ -361,6 +395,12 @@ export type WorkerResponse =
       readonly type: "onnx-static-result";
       readonly runId: number;
       readonly result: OnnxStaticBrowserResult;
+      readonly durationMs: number;
+    }
+  | {
+      readonly type: "onnx-search-result";
+      readonly runId: number;
+      readonly result: OnnxSearchBrowserResult;
       readonly durationMs: number;
     }
   | {

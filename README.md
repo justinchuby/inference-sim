@@ -121,6 +121,10 @@ space across topology, runtime dtype, batch, sequence shape, TP/PP/EP/DP, and
 offload. It reports declared, evaluated, eligible, returned, and per-reason
 rejected counts with stable candidate IDs. The result is an evidence-labeled
 ranking of that finite space, never an unexplained claim of a global optimum.
+The ONNX workbench exposes the same contract through Analyze/Search modes.
+Search scope controls expand only visible finite axes, show the declared
+candidate count before execution, and render top-K candidates beside complete
+structural and constraint rejection counts.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

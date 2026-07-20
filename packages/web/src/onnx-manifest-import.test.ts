@@ -7,7 +7,11 @@ import {
 } from "@inference-sim/core";
 import { parseOnnxManifestFileText } from "./onnx-manifest-import.js";
 import { executeOnnxStaticWorkerRun } from "./onnx-static-worker-run.js";
-import type { OnnxStaticBrowserConfig } from "./types.js";
+import { executeOnnxSearchWorkerRun } from "./onnx-search-worker-run.js";
+import type {
+  OnnxSearchBrowserConfig,
+  OnnxStaticBrowserConfig,
+} from "./types.js";
 
 function manifestText(): string {
   return serializeOnnxModelManifest(createOnnxModelManifest({
@@ -87,6 +91,18 @@ const config: OnnxStaticBrowserConfig = {
   },
 };
 
+const searchConfig: OnnxSearchBrowserConfig = {
+  objective: "decode_throughput",
+  topologyScope: "all",
+  kvCacheScope: "fp16_fp8",
+  batchScope: "common",
+  parallelismScope: "common",
+  offloadScope: "none_partial",
+  maximumDeviceUsedFraction: 0.9,
+  topK: 10,
+  maxCandidates: 10_000,
+};
+
 describe("ONNX manifest browser import", () => {
   it("validates the shared manifest and runs static analysis", () => {
     const text = manifestText();
@@ -108,5 +124,31 @@ describe("ONNX manifest browser import", () => {
     )).toThrow("revision");
     expect(() => parseOnnxManifestFileText(manifestText(), "tiny.yaml"))
       .toThrow("must use .json");
+  });
+
+  it("runs deterministic bounded search through the Worker boundary", () => {
+    const text = manifestText();
+    const first = executeOnnxSearchWorkerRun(
+      text,
+      "tiny.json",
+      config,
+      searchConfig,
+    );
+    const second = executeOnnxSearchWorkerRun(
+      text,
+      "tiny.json",
+      config,
+      searchConfig,
+    );
+
+    expect(first).toEqual(second);
+    expect(first.result.declaredCandidateCount).toBe(3456);
+    expect(first.result.returnedCandidateCount).toBe(10);
+    expect(first.result.rejectionCounts).toMatchObject({
+      expert_parallel_requires_moe: expect.any(Number),
+      pipeline_parallel_exceeds_layers: expect.any(Number),
+    });
+    expect(first.result.candidates.every((candidate) => candidate.feasible))
+      .toBe(true);
   });
 });

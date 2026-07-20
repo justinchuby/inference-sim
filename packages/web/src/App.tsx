@@ -81,6 +81,8 @@ import type {
   DashboardResult,
   DashboardRunConfig,
   FrozenPlanBrowserResult,
+  OnnxSearchBrowserConfig,
+  OnnxSearchBrowserResult,
   OnnxStaticBrowserConfig,
   OnnxStaticBrowserResult,
   WorkerResponse,
@@ -177,6 +179,18 @@ const DEFAULT_ONNX_CONFIG: OnnxStaticBrowserConfig = {
   },
 };
 
+const DEFAULT_ONNX_SEARCH_CONFIG: OnnxSearchBrowserConfig = {
+  objective: "decode_throughput",
+  topologyScope: "all",
+  kvCacheScope: "fp16_fp8",
+  batchScope: "common",
+  parallelismScope: "common",
+  offloadScope: "none_partial",
+  maximumDeviceUsedFraction: 0.9,
+  topK: 10,
+  maxCandidates: 10_000,
+};
+
 const ONNX_HARDWARE: ReadonlyArray<{
   readonly value: OnnxStaticBrowserConfig["hardwarePreset"];
   readonly label: string;
@@ -209,6 +223,7 @@ interface RunState {
   readonly artifactReplay?: DashboardArtifactReplay;
   readonly frozenPlan?: FrozenPlanBrowserResult;
   readonly onnxStatic?: OnnxStaticBrowserResult;
+  readonly onnxSearch?: OnnxSearchBrowserResult;
   readonly error?: string;
 }
 
@@ -242,6 +257,9 @@ export function App(): React.JSX.Element {
   const [onnxManifest, setOnnxManifest] =
     useState<OnnxManifestSelection | undefined>(undefined);
   const [onnxConfig, setOnnxConfig] = useState(DEFAULT_ONNX_CONFIG);
+  const [onnxSearchConfig, setOnnxSearchConfig] =
+    useState(DEFAULT_ONNX_SEARCH_CONFIG);
+  const [onnxMode, setOnnxMode] = useState<"analyze" | "search">("analyze");
   const workerRef = useRef<Worker | undefined>(undefined);
   const artifactInputRef = useRef<HTMLInputElement | null>(null);
   const frozenPlanInputRef = useRef<HTMLInputElement | null>(null);
@@ -382,6 +400,8 @@ export function App(): React.JSX.Element {
     setTokenTrace({});
     setOnnxManifest(undefined);
     setOnnxConfig(DEFAULT_ONNX_CONFIG);
+    setOnnxSearchConfig(DEFAULT_ONNX_SEARCH_CONFIG);
+    setOnnxMode("analyze");
   }, [changeConfig]);
 
   const run = useCallback((
@@ -675,6 +695,80 @@ export function App(): React.JSX.Element {
     });
   }, []);
 
+  const runOnnxSearch = useCallback((
+    selection: OnnxManifestSelection,
+    baseConfig: OnnxStaticBrowserConfig,
+    searchConfig: OnnxSearchBrowserConfig,
+  ) => {
+    workerRef.current?.terminate();
+    const worker = new Worker(new URL("./sim-worker.ts", import.meta.url), {
+      type: "module",
+    });
+    const runId = ++runIdRef.current;
+    workerRef.current = worker;
+    setRunState({
+      status: "running",
+      progress: 4,
+      phase: "Starting configuration search",
+    });
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const message = event.data;
+      if (message.runId !== runIdRef.current) {
+        return;
+      }
+      if (message.type === "progress") {
+        setRunState((current) => ({
+          ...current,
+          progress: message.progress,
+          phase: message.phase,
+        }));
+        return;
+      }
+      if (message.type === "error") {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "Configuration search failed",
+          error: message.message,
+        });
+      } else if (message.type === "onnx-search-result") {
+        setRunState({
+          status: "complete",
+          progress: 100,
+          phase: "Candidate ranking complete",
+          onnxSearch: message.result,
+        });
+      } else {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "Configuration search failed",
+          error: "search worker returned an unexpected result",
+        });
+      }
+      worker.terminate();
+      workerRef.current = undefined;
+    };
+    worker.onerror = (event) => {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "Configuration search worker failed",
+        error: event.message,
+      });
+      worker.terminate();
+      workerRef.current = undefined;
+    };
+    worker.postMessage({
+      type: "run-onnx-search",
+      runId,
+      sourceFileName: selection.fileName,
+      artifactText: selection.artifactText,
+      baseConfig,
+      searchConfig,
+    });
+  }, []);
+
   const importOnnxManifest = useCallback(async (file: File) => {
     try {
       if (file.size > MAX_ONNX_MANIFEST_FILE_BYTES) {
@@ -685,6 +779,7 @@ export function App(): React.JSX.Element {
       const selection = { fileName: file.name, artifactText };
       setOnnxManifest(selection);
       setOnnxConfig(DEFAULT_ONNX_CONFIG);
+      setOnnxMode("analyze");
       runOnnxStatic(selection, DEFAULT_ONNX_CONFIG);
     } catch (error) {
       setRunState({
@@ -830,6 +925,8 @@ export function App(): React.JSX.Element {
                   <OnnxConfigurationPanel
                     selection={onnxManifest}
                     config={onnxConfig}
+                    mode={onnxMode}
+                    searchConfig={onnxSearchConfig}
                     disabled={runState.status === "running"}
                     running={runState.status === "running"}
                     onChange={(nextConfig) => {
@@ -842,7 +939,33 @@ export function App(): React.JSX.Element {
                             phase: "Configuration changed",
                           });
                     }}
-                    onRun={() => runOnnxStatic(onnxManifest, onnxConfig)}
+                    onModeChange={(mode) => {
+                      setOnnxMode(mode);
+                      setRunState({
+                        status: "idle",
+                        progress: 0,
+                        phase: mode === "search"
+                          ? "Search configured"
+                          : "Analysis configured",
+                      });
+                    }}
+                    onSearchChange={(nextSearchConfig) => {
+                      setOnnxSearchConfig(nextSearchConfig);
+                      setRunState((current) => current.status === "running"
+                        ? current
+                        : {
+                            status: "idle",
+                            progress: 0,
+                            phase: "Search configuration changed",
+                          });
+                    }}
+                    onRun={() => onnxMode === "search"
+                      ? runOnnxSearch(
+                          onnxManifest,
+                          onnxConfig,
+                          onnxSearchConfig,
+                        )
+                      : runOnnxStatic(onnxManifest, onnxConfig)}
                     onCancel={cancel}
                     onClose={() => {
                       setOnnxManifest(undefined);
@@ -875,7 +998,9 @@ export function App(): React.JSX.Element {
 
           <main className="min-w-0 overflow-y-auto p-4 sm:p-5">
             <RunProgress state={runState} />
-            {runState.onnxStatic
+            {runState.onnxSearch
+              ? <OnnxSearchResults result={runState.onnxSearch} />
+              : runState.onnxStatic
               ? <OnnxStaticResults result={runState.onnxStatic} />
               : runState.frozenPlan
               ? <FrozenPlanResults result={runState.frozenPlan} />
@@ -891,7 +1016,9 @@ export function App(): React.JSX.Element {
           </main>
 
           <aside className="min-w-0 border-t border-zinc-200 bg-white p-4 xl:border-l xl:border-t-0">
-            {runState.onnxStatic
+            {runState.onnxSearch
+              ? <OnnxSearchInspector result={runState.onnxSearch} />
+              : runState.onnxStatic
               ? <OnnxInspector result={runState.onnxStatic} />
               : <Inspector result={result} />}
           </aside>
@@ -904,18 +1031,26 @@ export function App(): React.JSX.Element {
 function OnnxConfigurationPanel({
   selection,
   config,
+  mode,
+  searchConfig,
   disabled,
   running,
   onChange,
+  onModeChange,
+  onSearchChange,
   onRun,
   onCancel,
   onClose,
 }: {
   readonly selection: OnnxManifestSelection;
   readonly config: OnnxStaticBrowserConfig;
+  readonly mode: "analyze" | "search";
+  readonly searchConfig: OnnxSearchBrowserConfig;
   readonly disabled: boolean;
   readonly running: boolean;
   readonly onChange: (config: OnnxStaticBrowserConfig) => void;
+  readonly onModeChange: (mode: "analyze" | "search") => void;
+  readonly onSearchChange: (config: OnnxSearchBrowserConfig) => void;
   readonly onRun: () => void;
   readonly onCancel: () => void;
   readonly onClose: () => void;
@@ -952,6 +1087,22 @@ function OnnxConfigurationPanel({
             </TooltipTrigger>
             <TooltipContent>Close ONNX model manifest</TooltipContent>
           </Tooltip>
+        </div>
+
+        <div className="mb-4 grid grid-cols-2 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1">
+          {(["analyze", "search"] as const).map((candidateMode) => (
+            <Button
+              key={candidateMode}
+              type="button"
+              className="h-8 capitalize"
+              variant={mode === candidateMode ? "default" : "ghost"}
+              disabled={disabled}
+              aria-pressed={mode === candidateMode}
+              onClick={() => onModeChange(candidateMode)}
+            >
+              {candidateMode}
+            </Button>
+          ))}
         </div>
 
         <Field label="Hardware">
@@ -1023,49 +1174,173 @@ function OnnxConfigurationPanel({
           disabled={disabled}
           onChange={(outputSeqLen) => onChange({ ...config, outputSeqLen })}
         />
-        <div className="grid grid-cols-3 gap-3 border-y border-zinc-200 py-4">
-          <CompactParallelismSelect
-            label="TP"
-            value={config.parallelism.tensorParallel}
-            disabled={disabled}
-            onChange={(value) => setParallelism("tensorParallel", value)}
-          />
-          <CompactParallelismSelect
-            label="PP"
-            value={config.parallelism.pipelineParallel}
-            disabled={disabled}
-            onChange={(value) => setParallelism("pipelineParallel", value)}
-          />
-          <CompactParallelismSelect
-            label="EP"
-            value={config.parallelism.expertParallel}
-            disabled={disabled}
-            onChange={(value) => setParallelism("expertParallel", value)}
-          />
-        </div>
-        <Field label="Offload">
-          <Select
-            value={config.memory.offloadStrategy}
-            disabled={disabled}
-            onValueChange={(offloadStrategy) => onChange({
-              ...config,
-              memory: {
-                ...config.memory,
-                offloadStrategy:
-                  offloadStrategy as OnnxStaticBrowserConfig[
-                    "memory"
-                  ]["offloadStrategy"],
-              },
-            })}
-          >
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              <SelectItem value="partial">Partial</SelectItem>
-              <SelectItem value="full">Full</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
+        {mode === "analyze"
+          ? (
+              <>
+                <div className="grid grid-cols-3 gap-3 border-y border-zinc-200 py-4">
+                  <CompactParallelismSelect
+                    label="TP"
+                    value={config.parallelism.tensorParallel}
+                    disabled={disabled}
+                    onChange={(value) => setParallelism("tensorParallel", value)}
+                  />
+                  <CompactParallelismSelect
+                    label="PP"
+                    value={config.parallelism.pipelineParallel}
+                    disabled={disabled}
+                    onChange={(value) => setParallelism("pipelineParallel", value)}
+                  />
+                  <CompactParallelismSelect
+                    label="EP"
+                    value={config.parallelism.expertParallel}
+                    disabled={disabled}
+                    onChange={(value) => setParallelism("expertParallel", value)}
+                  />
+                </div>
+                <Field label="Offload">
+                  <Select
+                    value={config.memory.offloadStrategy}
+                    disabled={disabled}
+                    onValueChange={(offloadStrategy) => onChange({
+                      ...config,
+                      memory: {
+                        ...config.memory,
+                        offloadStrategy:
+                          offloadStrategy as OnnxStaticBrowserConfig[
+                            "memory"
+                          ]["offloadStrategy"],
+                      },
+                    })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      <SelectItem value="partial">Partial</SelectItem>
+                      <SelectItem value="full">Full</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </>
+            )
+          : (
+              <div className="border-y border-zinc-200 py-4">
+                <Field label="Ranking objective">
+                  <Select
+                    value={searchConfig.objective}
+                    disabled={disabled}
+                    onValueChange={(objective) => onSearchChange({
+                      ...searchConfig,
+                      objective:
+                        objective as OnnxSearchBrowserConfig["objective"],
+                    })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="decode_throughput">Decode throughput</SelectItem>
+                      <SelectItem value="prefill_throughput">Prefill throughput</SelectItem>
+                      <SelectItem value="time_to_first_token">Lowest TTFT</SelectItem>
+                      <SelectItem value="inter_token_latency">Lowest ITL</SelectItem>
+                      <SelectItem value="device_headroom">Device headroom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <SearchScopeField
+                  label="Topologies"
+                  value={searchConfig.topologyScope}
+                  expandedValue="all"
+                  selectedLabel="Selected"
+                  expandedLabel="All six"
+                  disabled={disabled}
+                  onChange={(topologyScope) => onSearchChange({
+                    ...searchConfig,
+                    topologyScope: topologyScope as OnnxSearchBrowserConfig[
+                      "topologyScope"
+                    ],
+                  })}
+                />
+                <SearchScopeField
+                  label="KV cache axis"
+                  value={searchConfig.kvCacheScope}
+                  expandedValue="fp16_fp8"
+                  selectedLabel="Selected"
+                  expandedLabel="FP16 + FP8"
+                  disabled={disabled}
+                  onChange={(kvCacheScope) => onSearchChange({
+                    ...searchConfig,
+                    kvCacheScope: kvCacheScope as OnnxSearchBrowserConfig[
+                      "kvCacheScope"
+                    ],
+                  })}
+                />
+                <SearchScopeField
+                  label="Batch axis"
+                  value={searchConfig.batchScope}
+                  expandedValue="common"
+                  selectedLabel="Selected"
+                  expandedLabel="1, 4, 16"
+                  disabled={disabled}
+                  onChange={(batchScope) => onSearchChange({
+                    ...searchConfig,
+                    batchScope: batchScope as OnnxSearchBrowserConfig[
+                      "batchScope"
+                    ],
+                  })}
+                />
+                <SearchScopeField
+                  label="Parallelism axes"
+                  value={searchConfig.parallelismScope}
+                  expandedValue="common"
+                  selectedLabel="Selected"
+                  expandedLabel="Common powers"
+                  disabled={disabled}
+                  onChange={(parallelismScope) => onSearchChange({
+                    ...searchConfig,
+                    parallelismScope:
+                      parallelismScope as OnnxSearchBrowserConfig[
+                        "parallelismScope"
+                      ],
+                  })}
+                />
+                <SearchScopeField
+                  label="Offload axis"
+                  value={searchConfig.offloadScope}
+                  expandedValue="none_partial"
+                  selectedLabel="Selected"
+                  expandedLabel="None + partial"
+                  disabled={disabled}
+                  onChange={(offloadScope) => onSearchChange({
+                    ...searchConfig,
+                    offloadScope: offloadScope as OnnxSearchBrowserConfig[
+                      "offloadScope"
+                    ],
+                  })}
+                />
+                <SliderField
+                  label="Maximum device use"
+                  value={Math.round(
+                    searchConfig.maximumDeviceUsedFraction * 100,
+                  )}
+                  suffix="%"
+                  minimum={50}
+                  maximum={100}
+                  step={1}
+                  disabled={disabled}
+                  onChange={(maximumDeviceUsedFraction) => onSearchChange({
+                    ...searchConfig,
+                    maximumDeviceUsedFraction:
+                      maximumDeviceUsedFraction / 100,
+                  })}
+                />
+                <div className="flex items-center justify-between gap-3 bg-zinc-50 px-3 py-2 text-xs">
+                  <span className="font-semibold text-zinc-600">
+                    Declared candidates
+                  </span>
+                  <span className="font-bold tabular-nums text-zinc-900">
+                    {declaredOnnxSearchCandidates(searchConfig).toLocaleString()}
+                  </span>
+                </div>
+              </div>
+            )}
       </div>
       <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
         {running
@@ -1078,7 +1353,7 @@ function OnnxConfigurationPanel({
           : (
               <Button className="w-full" onClick={onRun}>
                 <Play className="size-4 fill-current" />
-                Analyze model
+                {mode === "search" ? "Search configurations" : "Analyze model"}
               </Button>
             )}
       </div>
@@ -1113,6 +1388,50 @@ function QuantizationSelect({
       </SelectContent>
     </Select>
   );
+}
+
+function SearchScopeField({
+  label,
+  value,
+  expandedValue,
+  selectedLabel,
+  expandedLabel,
+  disabled,
+  onChange,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly expandedValue: string;
+  readonly selectedLabel: string;
+  readonly expandedLabel: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}): React.JSX.Element {
+  return (
+    <Field label={label}>
+      <Select
+        value={value}
+        disabled={disabled}
+        onValueChange={onChange}
+      >
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="selected">{selectedLabel}</SelectItem>
+          <SelectItem value={expandedValue}>{expandedLabel}</SelectItem>
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function declaredOnnxSearchCandidates(
+  config: OnnxSearchBrowserConfig,
+): number {
+  return (config.topologyScope === "all" ? 6 : 1)
+    * (config.kvCacheScope === "fp16_fp8" ? 2 : 1)
+    * (config.batchScope === "common" ? 3 : 1)
+    * (config.parallelismScope === "common" ? 4 * 3 * 4 : 1)
+    * (config.offloadScope === "none_partial" ? 2 : 1);
 }
 
 function CompactParallelismSelect({
@@ -1906,6 +2225,145 @@ function ConfigurationPanel({
   );
 }
 
+function OnnxSearchResults({
+  result,
+}: {
+  readonly result: OnnxSearchBrowserResult;
+}): React.JSX.Element {
+  const search = result.result;
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 pb-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-bold">{result.modelName}</h1>
+          <div className="mt-1 truncate text-xs text-zinc-500">
+            {result.manifest.modelFileName} · {result.manifest.fingerprint}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="success">exhaustive declared space</Badge>
+          <Badge variant="warning">{search.evidence.confidence} evidence</Badge>
+        </div>
+      </div>
+
+      <div className="grid gap-px overflow-hidden border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4">
+        <OnnxMetric
+          label="Declared"
+          value={search.declaredCandidateCount.toLocaleString()}
+          detail="finite candidates"
+        />
+        <OnnxMetric
+          label="Evaluated"
+          value={search.evaluatedCandidateCount.toLocaleString()}
+          detail="structurally valid"
+        />
+        <OnnxMetric
+          label="Eligible"
+          value={search.eligibleCandidateCount.toLocaleString()}
+          detail="constraints passed"
+        />
+        <OnnxMetric
+          label="Returned"
+          value={search.returnedCandidateCount.toLocaleString()}
+          detail="ranked candidates"
+        />
+      </div>
+
+      <section>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold">Candidate ranking</h2>
+          <Badge variant="neutral">
+            {searchObjectiveLabel(search.objective)}
+          </Badge>
+        </div>
+        <div className="overflow-x-auto border-y border-zinc-200">
+          <table className="w-full min-w-[760px] text-left text-xs">
+            <thead className="bg-zinc-50 text-zinc-500">
+              <tr>
+                {["Rank", "Topology", "Runtime", "Batch", "TP / PP / EP", "Device use", "Objective"].map((label) => (
+                  <th key={label} className="px-3 py-2 font-semibold">{label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-200 bg-white">
+              {search.candidates.map((candidate) => (
+                <tr key={candidate.candidateId}>
+                  <td className="px-3 py-2 font-bold tabular-nums">
+                    #{candidate.rank}
+                  </td>
+                  <td className="px-3 py-2 font-semibold">
+                    {candidate.topologyId}
+                  </td>
+                  <td className="px-3 py-2 uppercase">
+                    {candidate.kvCacheQuantization} KV ·{" "}
+                    {candidate.memory.offloadStrategy}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {candidate.batchSize}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {candidate.parallelism.tensorParallel} /{" "}
+                    {candidate.parallelism.pipelineParallel} /{" "}
+                    {candidate.parallelism.expertParallel}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {(candidate.deviceUsedFraction * 100).toFixed(1)}%
+                  </td>
+                  <td className="px-3 py-2 font-bold tabular-nums text-sky-800">
+                    {formatSearchObjective(candidate, search.objective)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="border-y border-zinc-200 py-3">
+        <h2 className="mb-2 text-sm font-bold">Search evidence</h2>
+        <div className="space-y-2">
+          {search.evidence.assumptions.map((assumption) => (
+            <div key={assumption} className="flex gap-2 text-xs leading-5 text-zinc-600">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+              <span>{assumption}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function searchObjectiveLabel(
+  objective: OnnxSearchBrowserResult["result"]["objective"],
+): string {
+  return {
+    decode_throughput: "decode throughput",
+    prefill_throughput: "prefill throughput",
+    time_to_first_token: "lowest TTFT",
+    inter_token_latency: "lowest ITL",
+    device_headroom: "device headroom",
+  }[objective];
+}
+
+function formatSearchObjective(
+  candidate: OnnxSearchBrowserResult["result"]["candidates"][number],
+  objective: OnnxSearchBrowserResult["result"]["objective"],
+): string {
+  switch (objective) {
+    case "decode_throughput":
+      return formatRate(candidate.analysis.estimatedThroughput.decodeToksPerSec);
+    case "prefill_throughput":
+      return formatRate(candidate.analysis.estimatedThroughput.prefillToksPerSec);
+    case "time_to_first_token":
+      return `${candidate.analysis.estimatedThroughput.timeToFirstTokenMs.toFixed(2)} ms`;
+    case "inter_token_latency":
+      return `${candidate.analysis.estimatedThroughput.interTokenLatencyMs.toFixed(3)} ms`;
+    case "device_headroom":
+      return `${((1 - candidate.deviceUsedFraction) * 100).toFixed(1)}% free`;
+  }
+}
+
 function OnnxStaticResults({
   result,
 }: {
@@ -2535,6 +2993,69 @@ function downloadArtifact(artifact: DashboardArtifactDownload): void {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function OnnxSearchInspector({
+  result,
+}: {
+  readonly result: OnnxSearchBrowserResult;
+}): React.JSX.Element {
+  const search = result.result;
+  const rejected = Object.entries(search.rejectionCounts);
+  const rejectedTotal = rejected.reduce(
+    (sum, [, count]) => sum + count,
+    0,
+  );
+  return (
+    <div className="mx-auto max-w-md xl:max-w-none">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-sm font-bold">Search inspector</h2>
+        <Badge variant="neutral">{rejectedTotal.toLocaleString()} rejected</Badge>
+      </div>
+      <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+        {rejected.map(([reason, count]) => (
+          <div
+            key={reason}
+            className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 text-xs"
+          >
+            <span className="min-w-0 break-words capitalize text-zinc-500">
+              {reason.replaceAll("_", " ")}
+            </span>
+            <span className="font-semibold tabular-nums text-zinc-800">
+              {count.toLocaleString()}
+            </span>
+          </div>
+        ))}
+        {rejected.length === 0
+          ? (
+              <div className="py-4 text-center text-xs text-zinc-500">
+                No rejected candidates
+              </div>
+            )
+          : null}
+      </div>
+      <div className="mt-4 divide-y divide-zinc-200 border-y border-zinc-200">
+        <div className="flex justify-between gap-3 py-2.5 text-xs">
+          <span className="text-zinc-500">Objective</span>
+          <span className="font-semibold capitalize">
+            {searchObjectiveLabel(search.objective)}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3 py-2.5 text-xs">
+          <span className="text-zinc-500">Candidate limit</span>
+          <span className="font-semibold tabular-nums">
+            {result.searchConfig.maxCandidates.toLocaleString()}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3 py-2.5 text-xs">
+          <span className="text-zinc-500">Device use ceiling</span>
+          <span className="font-semibold tabular-nums">
+            {(result.searchConfig.maximumDeviceUsedFraction * 100).toFixed(0)}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function OnnxInspector({

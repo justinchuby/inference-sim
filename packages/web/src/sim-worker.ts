@@ -3,11 +3,55 @@
 import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
 import { executeFrozenPlanWorkerRun } from "./frozen-plan-worker-run.js";
 import { executeOnnxStaticWorkerRun } from "./onnx-static-worker-run.js";
+import { executeOnnxSearchWorkerRun } from "./onnx-search-worker-run.js";
 import type { WorkerRequest, WorkerResponse } from "./types.js";
 
 const worker = self as DedicatedWorkerGlobalScope;
 
 worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
+  if (event.data.type === "run-onnx-search") {
+    const {
+      runId,
+      artifactText,
+      sourceFileName,
+      baseConfig,
+      searchConfig,
+    } = event.data;
+    try {
+      post({
+        type: "progress",
+        runId,
+        progress: 14,
+        phase: "Validating search space",
+      });
+      const startedAt = performance.now();
+      const result = executeOnnxSearchWorkerRun(
+        artifactText,
+        sourceFileName,
+        baseConfig,
+        searchConfig,
+      );
+      post({
+        type: "progress",
+        runId,
+        progress: 94,
+        phase: "Ranking eligible candidates",
+      });
+      post({
+        type: "onnx-search-result",
+        runId,
+        result,
+        durationMs: performance.now() - startedAt,
+      });
+    } catch (error) {
+      post({
+        type: "error",
+        runId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (event.data.type === "run-onnx-static") {
     const {
       runId,
