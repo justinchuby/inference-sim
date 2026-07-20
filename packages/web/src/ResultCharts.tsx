@@ -19,6 +19,17 @@ export default function ResultCharts({
 }): React.JSX.Element {
   return (
     <>
+      {result.comparison
+        ? (
+            <section className="panel">
+              <SectionHeading
+                title="Topology comparison"
+                detail="Same workload · lower is better"
+              />
+              <TopologyComparisonChart result={result} />
+            </section>
+          )
+        : null}
       <section className="panel">
         <SectionHeading
           title="Memory domains"
@@ -53,6 +64,54 @@ export default function ResultCharts({
             : <CacheOutcomeChart result={result} />}
       </section>
     </>
+  );
+}
+
+function TopologyComparisonChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const data = result.comparison?.map((entry) => ({
+    scenario: entry.scenarioId.replaceAll("-", " "),
+    duration: entry.totalDurationNs / 1_000_000,
+    rank: entry.rank,
+  })) ?? [];
+  return (
+    <div className="chart-frame">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical" margin={{ left: 14, right: 18 }}>
+          <CartesianGrid stroke="#e4e4e7" horizontal={false} />
+          <XAxis
+            type="number"
+            tickFormatter={(value: number) => `${Math.round(value)}ms`}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="scenario"
+            width={112}
+            tick={{ fill: "#52525b", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ChartTooltip
+            formatter={(value) => `${Number(value).toFixed(2)} ms`}
+            contentStyle={chartTooltipStyle}
+          />
+          <Bar dataKey="duration" name="Duration" radius={[0, 3, 3, 0]}>
+            {data.map((entry) => (
+              <Cell
+                key={entry.scenario}
+                fill={entry.rank === 1 ? "#059669" : "#0369a1"}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

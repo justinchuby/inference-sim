@@ -1,7 +1,9 @@
 import {
+  SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
+  compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
@@ -11,6 +13,7 @@ import {
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
   type ScenarioPresetName,
+  type ServingSchedulerConfig,
   type TopologyWorkloadResult,
 } from "@inference-sim/core";
 import type { DashboardResult, DashboardRunConfig } from "./types.js";
@@ -18,16 +21,29 @@ import type { DashboardResult, DashboardRunConfig } from "./types.js";
 export function simulateDashboard(
   config: DashboardRunConfig,
 ): Omit<DashboardResult, "durationMs"> {
+  if (config.mode === "serving" && config.serving.compareTopologies) {
+    const comparison = compareTopologyServingWorkloads(
+      SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
+      buildServingConfig(config),
+    );
+    const fastest = comparison.runs[0];
+    if (!fastest) {
+      throw new Error("serving comparison produced no topology runs");
+    }
+    const scenario = buildScenarioPreset(
+      fastest.result.scenarioId as ScenarioPresetName,
+    );
+    return servingDashboardResult(
+      config,
+      scenario,
+      fastest.result,
+      comparison,
+    );
+  }
   const scenario = buildScenarioPreset(
     config.scenarioName as ScenarioPresetName,
   );
-  const scenarioSummary = {
-    id: scenario.id,
-    family: scenario.family,
-    deviceCount: scenario.devices.length,
-    linkCount: scenario.links.length,
-    memoryLedger: calculateScenarioMemoryLedger(scenario),
-  };
+  const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
     const workload = runSpeculative(config);
     return {
@@ -42,27 +58,7 @@ export function simulateDashboard(
   }
   if (config.mode === "serving") {
     const serving = runServing(config, scenario);
-    return {
-      scenario: scenarioSummary,
-      mode: config.mode,
-      topology: summarizeServingTopology(serving),
-      serving: {
-        decodeMode: config.serving.decodeMode,
-        support: config.serving.decodeMode === "target_only"
-          ? "target_only"
-          : speculativeFamilyContract(config.serving.decodeMode).support,
-        metrics: serving.serving.metrics,
-        requests: serving.serving.requests,
-        batches: serving.batches.map((batch) => ({
-          batchId: batch.batchId,
-          sequenceCount: batch.work.sequenceCount,
-          tokenWork: batch.work.tokenWork,
-          prefillSequences: batch.work.prefill.length,
-          decodeSequences: batch.work.decode.length,
-          durationNs: batch.topology.metrics.totalDurationNs,
-        })),
-      },
-    };
+    return servingDashboardResult(config, scenario, serving);
   }
   const workload = runExpertCache(config);
   return {
@@ -80,6 +76,15 @@ function runServing(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
 ) {
+  return simulateTopologyServingWorkload(
+    scenario,
+    buildServingConfig(config),
+  );
+}
+
+function buildServingConfig(
+  config: DashboardRunConfig,
+): ServingSchedulerConfig {
   const requestCount = clampInteger(config.serving.requestCount, 1, 32);
   const promptTokens = clampInteger(config.serving.promptTokens, 16, 4096);
   const outputTokens = clampInteger(config.serving.outputTokens, 1, 512);
@@ -90,52 +95,112 @@ function runServing(
     0.05,
     0.99,
   );
-  return simulateTopologyServingWorkload(
-    scenario,
-    {
-      requests: Array.from({ length: requestCount }, (_, index) => ({
-        id: `request-${index}`,
-        arrivalNs: index * clampInteger(
-          config.serving.arrivalGapUs,
-          0,
-          10_000,
-        ) * 1_000,
-        promptTokens,
-        outputTokens,
-      })),
-      maxBatchSize: clampInteger(config.serving.maxBatchSize, 1, 16),
-      maxBatchTokens: clampInteger(
-        config.serving.maxBatchTokens,
-        8,
-        512,
-      ),
-      prefillChunkTokens: clampInteger(
-        config.serving.prefillChunkTokens,
-        8,
-        512,
-      ),
-      maxKvTokens: requestCount * peakPerRequest,
-      ...(config.serving.decodeMode === "target_only"
-        ? {}
-        : {
-            speculative: {
-              family: config.serving.decodeMode,
-              eligibility: defaultSpeculativeEligibility(
-                config.serving.decodeMode,
+  return {
+    requests: Array.from({ length: requestCount }, (_, index) => ({
+      id: `request-${index}`,
+      arrivalNs: index * clampInteger(
+        config.serving.arrivalGapUs,
+        0,
+        10_000,
+      ) * 1_000,
+      promptTokens,
+      outputTokens,
+    })),
+    maxBatchSize: clampInteger(config.serving.maxBatchSize, 1, 16),
+    maxBatchTokens: clampInteger(
+      config.serving.maxBatchTokens,
+      8,
+      512,
+    ),
+    prefillChunkTokens: clampInteger(
+      config.serving.prefillChunkTokens,
+      8,
+      512,
+    ),
+    maxKvTokens: requestCount * peakPerRequest,
+    ...(config.serving.decodeMode === "target_only"
+      ? {}
+      : {
+          speculative: {
+            family: config.serving.decodeMode,
+            eligibility: defaultSpeculativeEligibility(
+              config.serving.decodeMode,
+            ),
+            maxAdditionalTokens: draftWidth,
+            acceptance: {
+              kind: "conditional_heuristic" as const,
+              matchProbabilityByPosition: Array.from(
+                { length: draftWidth },
+                (_, index) => Math.max(0.05, first * 0.86 ** index),
               ),
-              maxAdditionalTokens: draftWidth,
-              acceptance: {
-                kind: "conditional_heuristic" as const,
-                matchProbabilityByPosition: Array.from(
-                  { length: draftWidth },
-                  (_, index) => Math.max(0.05, first * 0.86 ** index),
-                ),
-                seed: clampInteger(config.seed, 0, 0xffff_ffff),
-              },
+              seed: clampInteger(config.seed, 0, 0xffff_ffff),
             },
-          }),
+          },
+        }),
+  };
+}
+
+function servingDashboardResult(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+  serving: ReturnType<typeof simulateTopologyServingWorkload>,
+  comparison?: ReturnType<typeof compareTopologyServingWorkloads>,
+): Omit<DashboardResult, "durationMs"> {
+  return {
+    scenario: summarizeScenario(scenario),
+    mode: "serving",
+    topology: summarizeServingTopology(serving),
+    serving: {
+      decodeMode: config.serving.decodeMode,
+      support: config.serving.decodeMode === "target_only"
+        ? "target_only"
+        : speculativeFamilyContract(config.serving.decodeMode).support,
+      metrics: serving.serving.metrics,
+      requests: serving.serving.requests,
+      batches: serving.batches.map((batch) => ({
+        batchId: batch.batchId,
+        sequenceCount: batch.work.sequenceCount,
+        tokenWork: batch.work.tokenWork,
+        prefillSequences: batch.work.prefill.length,
+        decodeSequences: batch.work.decode.length,
+        durationNs: batch.topology.metrics.totalDurationNs,
+      })),
     },
-  );
+    ...(comparison
+      ? {
+          comparison: comparison.runs.map((run) => ({
+            rank: run.rank,
+            scenarioId: run.result.scenarioId,
+            relativeToFastest: run.relativeToFastest,
+            totalDurationNs: run.result.metrics.totalDurationNs,
+            throughputTokensPerSecond:
+              run.result.serving.metrics.throughputTokensPerSecond,
+            p95TimeToFirstTokenNs:
+              run.result.serving.metrics.p95TimeToFirstTokenNs,
+            p95InterTokenLatencyNs:
+              run.result.serving.metrics.p95InterTokenLatencyNs,
+            averageRequestLatencyNs:
+              run.result.serving.metrics.averageRequestLatencyNs,
+            kvHighWaterTokens:
+              run.result.serving.metrics.kvHighWaterTokens,
+            batches: run.result.serving.metrics.batches,
+            confidence: run.result.confidence,
+          })),
+        }
+      : {}),
+  };
+}
+
+function summarizeScenario(
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): DashboardResult["scenario"] {
+  return {
+    id: scenario.id,
+    family: scenario.family,
+    deviceCount: scenario.devices.length,
+    linkCount: scenario.links.length,
+    memoryLedger: calculateScenarioMemoryLedger(scenario),
+  };
 }
 
 function runSpeculative(

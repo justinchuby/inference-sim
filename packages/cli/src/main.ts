@@ -7,6 +7,7 @@ import {
   buildScenarioPreset,
   buildTopology,
   calculateScenarioMemoryLedger,
+  compareTopologyServingWorkloads,
   compareTopologyWorkloads,
   compileTopologyWorkloadPlan,
   defaultSpeculativeEligibility,
@@ -135,6 +136,17 @@ export async function runCli(
           io,
           summarizeServingRun(simulateTopologyServingWorkload(
             buildScenarioPreset(argument as ScenarioPresetName),
+            parseServingConfig(config),
+          )),
+        );
+        return 0;
+      }
+      case "serving-compare": {
+        const config = await loadRequiredConfig(argument, "serving-compare");
+        printJson(
+          io,
+          summarizeServingComparison(compareTopologyServingWorkloads(
+            SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
             parseServingConfig(config),
           )),
         );
@@ -780,6 +792,36 @@ function summarizeServingRun(result: TopologyServingResult) {
   };
 }
 
+function summarizeServingComparison(
+  comparison: ReturnType<typeof compareTopologyServingWorkloads>,
+) {
+  return {
+    comparison: comparison.runs.map((run) => ({
+      rank: run.rank,
+      scenarioId: run.result.scenarioId,
+      relativeToFastest: run.relativeToFastest,
+      confidence: run.result.confidence,
+      totalDurationNs: run.result.metrics.totalDurationNs,
+      throughputTokensPerSecond:
+        run.result.serving.metrics.throughputTokensPerSecond,
+      p95TimeToFirstTokenNs:
+        run.result.serving.metrics.p95TimeToFirstTokenNs,
+      p95InterTokenLatencyNs:
+        run.result.serving.metrics.p95InterTokenLatencyNs,
+      averageRequestLatencyNs:
+        run.result.serving.metrics.averageRequestLatencyNs,
+      batches: run.result.serving.metrics.batches,
+      kvHighWaterTokens: run.result.serving.metrics.kvHighWaterTokens,
+      targetForwards: run.result.serving.metrics.targetForwards,
+      proposedDraftTokens:
+        run.result.serving.metrics.proposedDraftTokens,
+      acceptedDraftTokens:
+        run.result.serving.metrics.acceptedDraftTokens,
+      replayAppliedEvents: run.result.serving.replay.appliedEvents,
+    })),
+  };
+}
+
 function countTopologyOperations(
   result: ReturnType<typeof simulateTopologyWorkload>,
 ) {
@@ -872,6 +914,7 @@ Usage:
   inference-sim speculative <config.yaml|json>
   inference-sim expert-cache <config.yaml|json>
   inference-sim serving <scenario-preset> <config.yaml|json>
+  inference-sim serving-compare <config.yaml|json>
   inference-sim run <scenario-preset> <workload.yaml|json>
   inference-sim compare <workload.yaml|json>
   inference-sim fault-campaign <scenario-preset> <workload.yaml|json>

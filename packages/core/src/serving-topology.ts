@@ -49,6 +49,16 @@ export interface TopologyServingResult {
   readonly metrics: TopologyServingMetrics;
 }
 
+export interface TopologyServingComparisonRun {
+  readonly rank: number;
+  readonly relativeToFastest: number;
+  readonly result: TopologyServingResult;
+}
+
+export interface TopologyServingComparisonResult {
+  readonly runs: readonly TopologyServingComparisonRun[];
+}
+
 export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
   config?: ServingSchedulerConfig["speculative"],
@@ -186,5 +196,43 @@ export function simulateTopologyServingWorkload(
           || left.resourceId.localeCompare(right.resourceId)
         )),
     },
+  };
+}
+
+export function compareTopologyServingWorkloads(
+  scenarios: readonly SimulationScenario[],
+  config: ServingSchedulerConfig,
+  costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
+): TopologyServingComparisonResult {
+  if (scenarios.length === 0) {
+    throw new Error("serving comparison requires at least one scenario");
+  }
+  const scenarioIds = new Set<string>();
+  for (const scenario of scenarios) {
+    if (scenarioIds.has(scenario.id)) {
+      throw new Error(
+        `serving comparison scenario id must be unique; got ${scenario.id}`,
+      );
+    }
+    scenarioIds.add(scenario.id);
+  }
+  const results = scenarios
+    .map((scenario) => simulateTopologyServingWorkload(
+      scenario,
+      config,
+      costModel,
+    ))
+    .sort((left, right) => (
+      left.metrics.totalDurationNs - right.metrics.totalDurationNs
+      || left.scenarioId.localeCompare(right.scenarioId)
+    ));
+  const fastestDurationNs = results[0].metrics.totalDurationNs;
+  return {
+    runs: results.map((result, index) => ({
+      rank: index + 1,
+      relativeToFastest:
+        result.metrics.totalDurationNs / fastestDurationNs,
+      result,
+    })),
   };
 }

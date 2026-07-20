@@ -869,6 +869,7 @@ function selectServingBatch(
       : 0;
     const acceptedDraftTokens = request.speculative?.acceptance.next(
       proposedDraftTokens,
+      request.outputEmitted,
     ) ?? 0;
     const committedTokens = acceptedDraftTokens + 1;
     const targetTokenWidth = proposedDraftTokens + 1;

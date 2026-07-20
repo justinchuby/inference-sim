@@ -60,14 +60,17 @@ Phase 3 has an initial speculative workload slice:
   across all six topology presets; and
 - speculative serving with per-request acceptance streams, transactional
   target/proposer state, transient candidate-KV admission, burst emission, and
-  a six-proposer by six-topology execution matrix.
+  a six-proposer by six-topology execution matrix; and
+- deterministic serving comparison across all six device configurations with
+  ranked latency, throughput, TTFT/ITL, KV, and replay evidence.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
 continuous-serving, speculative, and expert-cache controls, including
 target-only versus proposer-family serving, modeled latency/throughput, request
 TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
-inspector.
+inspector. Serving can run one selected topology or compare all six in one
+replay-verified view.
 The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly.
 
@@ -103,15 +106,17 @@ pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
+pnpm sim serving-compare examples/serving-speculative.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm dev:web
 ```
 
-`run` and `compare` use the bundled heuristic cost model. Their output carries
-the confidence class and assumptions; calibrate the coefficients against
-backend traces before treating results as hardware predictions.
+`run`, `compare`, `serving`, and `serving-compare` use the bundled heuristic
+cost model. Their output carries the confidence class and assumptions;
+calibrate the coefficients against backend traces before treating results as
+hardware predictions.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

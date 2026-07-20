@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
+  compareTopologyServingWorkloads,
   defaultSpeculativeEligibility,
   simulateTopologyServingWorkload,
   type ServingSchedulerConfig,
@@ -171,5 +172,48 @@ describe("topology-aware serving", () => {
     expect(speculative.metrics.totalDurationNs).toBeLessThan(
       targetOnly.metrics.totalDurationNs,
     );
+  });
+
+  it("ranks the same serving workload across every topology", () => {
+    const scenarios = SCENARIO_PRESET_NAMES.map(buildScenarioPreset);
+    const config: ServingSchedulerConfig = {
+      ...workload,
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 2,
+        acceptance: {
+          kind: "conditional_empirical",
+          matchProbabilityByPosition: [0.8, 0.6],
+          seed: 19,
+        },
+      },
+    };
+    const first = compareTopologyServingWorkloads(scenarios, config);
+    const second = compareTopologyServingWorkloads(scenarios, config);
+
+    expect(first).toEqual(second);
+    expect(first.runs).toHaveLength(6);
+    expect(first.runs.map((run) => run.rank)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(first.runs[0].relativeToFastest).toBe(1);
+    expect(first.runs.every((run) => (
+      run.result.serving.replay.completedRequests === 3
+      && run.result.serving.metrics.outputTokens === 8
+      && run.result.serving.replay.finalKvTokens === 0
+    ))).toBe(true);
+    expect(new Set(first.runs.map((run) => (
+      run.result.scenarioId
+    )))).toEqual(new Set(SCENARIO_PRESET_NAMES));
+    expect(first.runs.at(-1)?.result.scenarioId).toBe("cpu-only");
+  });
+
+  it("rejects empty and duplicate serving comparison scenarios", () => {
+    expect(() => compareTopologyServingWorkloads([], workload))
+      .toThrow("at least one scenario");
+    const scenario = buildScenarioPreset("multi-gpu");
+    expect(() => compareTopologyServingWorkloads(
+      [scenario, scenario],
+      workload,
+    )).toThrow("scenario id must be unique");
   });
 });

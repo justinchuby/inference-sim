@@ -31,6 +31,7 @@ export interface DashboardRunConfig {
     readonly firstPositionAcceptance: number;
   };
   readonly serving: {
+    readonly compareTopologies: boolean;
     readonly decodeMode: "target_only" | SpeculativeProposerFamily;
     readonly draftWidth: number;
     readonly firstPositionAcceptance: number;
@@ -102,6 +103,19 @@ export interface DashboardResult {
       readonly durationNs: number;
     }[];
   };
+  readonly comparison?: readonly {
+    readonly rank: number;
+    readonly scenarioId: string;
+    readonly relativeToFastest: number;
+    readonly totalDurationNs: number;
+    readonly throughputTokensPerSecond: number;
+    readonly p95TimeToFirstTokenNs: number;
+    readonly p95InterTokenLatencyNs: number;
+    readonly averageRequestLatencyNs: number;
+    readonly kvHighWaterTokens: number;
+    readonly batches: number;
+    readonly confidence: ConfidenceClass;
+  }[];
 }
 
 export type WorkerRequest = {

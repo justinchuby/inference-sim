@@ -57,9 +57,12 @@ export {
   type ServingTraceEvent,
 } from "./serving.js";
 export {
+  compareTopologyServingWorkloads,
   simulateTopologyServingWorkload,
   topologyProfileFromServingBatch,
   type TopologyServingBatchResult,
+  type TopologyServingComparisonResult,
+  type TopologyServingComparisonRun,
   type TopologyServingMetrics,
   type TopologyServingResult,
 } from "./serving-topology.js";

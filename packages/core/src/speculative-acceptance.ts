@@ -33,9 +33,12 @@ export class SpeculativeAcceptanceCursor {
     this.streamHash = hashString(streamId);
   }
 
-  next(draftTokenCount: number): number {
+  next(draftTokenCount: number, coordinate?: number): number {
     assertNonNegativeSafeInteger(draftTokenCount, "draftTokenCount");
     const iteration = this.iteration++;
+    if (coordinate !== undefined) {
+      assertNonNegativeSafeInteger(coordinate, "acceptance coordinate");
+    }
     if (draftTokenCount === 0) {
       return 0;
     }
@@ -70,7 +73,7 @@ export class SpeculativeAcceptanceCursor {
         deterministicFloat(
           this.model.seed,
           this.streamHash,
-          iteration,
+          coordinate ?? iteration,
           position,
         ) >= probability
       ) {

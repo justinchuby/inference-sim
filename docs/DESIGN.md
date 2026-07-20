@@ -396,9 +396,10 @@ token work free. Both terms retain heuristic provenance until calibrated.
 ### 9.6 Continuous Serving Composition
 
 Each decoding request owns its speculative transaction and acceptance stream.
-Conditional acceptance is keyed by request, iteration, and draft position so
-changing topology timing cannot silently assign another request's random
-outcome. Replay acceptance is explicitly keyed by request ID.
+Conditional acceptance is keyed by request, committed output coordinate, and
+draft position so changing topology timing cannot silently assign another
+request or token's random outcome. Replay acceptance is explicitly keyed by
+request ID.
 
 A serving decode batch records, per request:
 
@@ -838,6 +839,8 @@ per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
 topology execution matrix. Measured calibration, adaptive prefetch policy, and
 differential token-value traces remain; self-speculative remains design-only.
+The same serving workload can also execute across all six topology presets and
+produce a deterministic latency ranking with per-run replay evidence.
 
 ### Phase 4: Product Surfaces
 
@@ -858,6 +861,9 @@ The `serving` command executes arrival-driven target-only or speculative
 continuous batching on a selected topology and reports request timing,
 scheduler trace/replay, accepted/rejected draft work, batch work, and topology
 operation summaries.
+The `serving-compare` command runs that same request and acceptance
+configuration across all six topology presets and reports a stable ranked
+summary without duplicating six full traces in CLI output.
 The `fault-campaign` command compiles that workload, executes and replays a
 successful baseline, then injects deterministic mid-operation faults into each
 used device/link and the next topology epoch.
@@ -868,8 +874,10 @@ continuous-serving/speculative-family/expert-cache controls, request TTFT/ITL,
 heuristic modeled latency and throughput, memory, acceptance, cache, and resource
 utilization charts, and recent request/iteration/route inspection. Serving
 controls select target-only or any proposer family plus width and acceptance.
-Browser compare/search, FrozenPlan file execution/export, ONNX import, trace
-export, and richer progress phases remain.
+The browser can compare all six serving topologies with a ranked latency chart,
+fastest-topology detail view, and comparison inspector. General configuration
+search, FrozenPlan file execution/export, ONNX import, trace export, and richer
+progress phases remain.
 
 ## 16. Testing and Delivery Gates
 

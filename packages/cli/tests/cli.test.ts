@@ -217,6 +217,50 @@ serving:
     ))).toBe(true);
   });
 
+  it("compares one serving workload across all topology presets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "serving-compare.yaml");
+    await writeFile(path, `
+serving:
+  max_batch_size: 2
+  max_batch_tokens: 8
+  prefill_chunk_tokens: 4
+  max_kv_tokens: 24
+  speculative:
+    family: mtp
+    max_additional_tokens: 2
+    acceptance:
+      kind: conditional_empirical
+      match_probability_by_position: [0.8, 0.6]
+      seed: 42
+  requests:
+    - { id: a, arrival_ns: 0, prompt_tokens: 4, output_tokens: 5 }
+    - { id: b, arrival_ns: 10, prompt_tokens: 4, output_tokens: 5 }
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli(["serving-compare", path], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      comparison: Array<{
+        rank: number;
+        scenarioId: string;
+        relativeToFastest: number;
+        replayAppliedEvents: number;
+      }>;
+    };
+    expect(output.comparison).toHaveLength(6);
+    expect(output.comparison.map((entry) => entry.rank))
+      .toEqual([1, 2, 3, 4, 5, 6]);
+    expect(output.comparison[0]).toMatchObject({
+      scenarioId: "multi-gpu",
+      relativeToFastest: 1,
+    });
+    expect(output.comparison.at(-1)?.scenarioId).toBe("cpu-only");
+    expect(output.comparison.every((entry) => (
+      entry.replayAppliedEvents > 0
+    ))).toBe(true);
+  });
+
   it("runs a workload through topology resources", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "target-only.yaml");

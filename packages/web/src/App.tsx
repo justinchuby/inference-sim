@@ -85,6 +85,7 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     firstPositionAcceptance: 0.82,
   },
   serving: {
+    compareTopologies: false,
     decodeMode: "mtp",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -302,27 +303,32 @@ function ConfigurationPanel({
           <p className="mt-0.5 text-xs text-zinc-500">Seed {config.seed}</p>
         </div>
 
-        <Field label="Device topology">
-          <Select
-            value={config.scenarioName}
-            disabled={disabled}
-            onValueChange={(scenarioName) => onChange({
-              ...config,
-              scenarioName: scenarioName as DashboardRunConfig["scenarioName"],
-            })}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SCENARIOS.map((scenario) => (
-                <SelectItem key={scenario.value} value={scenario.value}>
-                  {scenario.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+        {config.mode === "serving" && config.serving.compareTopologies
+          ? null
+          : (
+              <Field label="Device topology">
+                <Select
+                  value={config.scenarioName}
+                  disabled={disabled}
+                  onValueChange={(scenarioName) => onChange({
+                    ...config,
+                    scenarioName:
+                      scenarioName as DashboardRunConfig["scenarioName"],
+                  })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SCENARIOS.map((scenario) => (
+                      <SelectItem key={scenario.value} value={scenario.value}>
+                        {scenario.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
 
         <Tabs
           value={config.mode}
@@ -336,6 +342,27 @@ function ConfigurationPanel({
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
         <TabsContent value="serving" className="space-y-5">
+          <Field label="Topology scope">
+            <Select
+              value={config.serving.compareTopologies ? "all" : "single"}
+              disabled={disabled}
+              onValueChange={(scope) => onChange({
+                ...config,
+                serving: {
+                  ...config.serving,
+                  compareTopologies: scope === "all",
+                },
+              })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="single">Selected topology</SelectItem>
+                <SelectItem value="all">Compare all six</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
           <Field label="Decode mode">
             <Select
               value={config.serving.decodeMode}
@@ -644,6 +671,18 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
           {result.topology.operationCounts.collective.toLocaleString()} collective
         </div>
         <div className="flex items-center gap-2">
+          {result.comparison
+            ? (
+                <>
+                  <Badge variant="neutral">
+                    {result.comparison.length} topologies
+                  </Badge>
+                  <Badge variant="success">
+                    fastest · {result.scenario.id}
+                  </Badge>
+                </>
+              )
+            : null}
           {result.speculative
             ? (
                 <Badge variant={result.speculative.support === "design_only"
@@ -711,6 +750,15 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
 
 function Inspector({ result }: { readonly result?: DashboardResult }): React.JSX.Element {
   const rows = useMemo(() => {
+    if (result?.comparison) {
+      return result.comparison.map((entry) => ({
+        id: `#${entry.rank} ${entry.scenarioId}`,
+        primary: `P95 TTFT ${formatDuration(entry.p95TimeToFirstTokenNs)}`,
+        secondary:
+          `${entry.relativeToFastest.toFixed(2)}x · ${entry.batches} batches`,
+        value: formatRate(entry.throughputTokensPerSecond),
+      }));
+    }
     if (result?.speculative) {
       return result.speculative.iterations.slice(-12).reverse().map((iteration) => ({
         id: `Iteration ${iteration.iteration + 1}`,
@@ -959,7 +1007,9 @@ function servingMetrics(result: DashboardResult) {
     {
       label: "P95 TTFT",
       value: formatDuration(metrics.p95TimeToFirstTokenNs),
-      detail: `${metrics.requests} requests`,
+      detail: result.comparison
+        ? `${result.scenario.id} · fastest of ${result.comparison.length}`
+        : `${metrics.requests} requests`,
       icon: <Clock3 className="size-4 text-amber-700" />,
     },
     {

@@ -13,6 +13,7 @@ const base: DashboardRunConfig = {
     firstPositionAcceptance: 0.82,
   },
   serving: {
+    compareTopologies: false,
     decodeMode: "mtp",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -102,6 +103,31 @@ describe("simulateDashboard", () => {
     expect(result.serving?.metrics.proposedDraftTokens).toBe(0);
     expect(result.serving?.metrics.acceptedDraftTokens).toBe(0);
     expect(result.serving?.metrics.committedTokensPerTargetForward).toBe(1);
+  });
+
+  it("compares the same serving workload across all six topologies", () => {
+    const config: DashboardRunConfig = {
+      ...base,
+      mode: "serving",
+      serving: { ...base.serving, compareTopologies: true },
+    };
+    const first = simulateDashboard(config);
+    const second = simulateDashboard(config);
+
+    expect(first).toEqual(second);
+    expect(first.comparison).toHaveLength(6);
+    expect(first.comparison?.map((entry) => entry.rank))
+      .toEqual([1, 2, 3, 4, 5, 6]);
+    expect(first.comparison?.[0]).toMatchObject({
+      scenarioId: "multi-gpu",
+      relativeToFastest: 1,
+    });
+    expect(first.comparison?.at(-1)?.scenarioId).toBe("cpu-only");
+    expect(first.scenario.id).toBe("multi-gpu");
+    expect(first.comparison?.every((entry, index, entries) => (
+      index === 0
+      || entry.totalDurationNs >= entries[index - 1].totalDurationNs
+    ))).toBe(true);
   });
 
   it("changes modeled latency when the same workload changes topology", () => {
