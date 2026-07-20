@@ -1251,13 +1251,16 @@ terminal state.
 
 ```text
 packages/core   deterministic simulation, models, traces, checks; zero I/O
+packages/onnx-inspector  shared ONNX protobuf and initializer inspection
 packages/cli    config/model/plan loading, reports, trace export
 packages/web    worker orchestration and visualization
 ```
 
 `core` has zero runtime dependencies and runs identically in Node.js and a
-browser worker. CLI ONNX parsing may use a separate dependency and converts
-into versioned core profile types.
+browser worker. `onnx-inspector` owns the protobuf walk and converts bytes plus
+an environment-supplied external-data resolver and SHA-256 implementation into
+versioned core manifests. CLI and Web provide I/O adapters; neither owns a
+second graph parser.
 
 ## 15. Implementation Plan
 
@@ -1474,12 +1477,28 @@ are provenance-labeled assumptions. Built-in model presets carry heuristic
 provenance too. MoE expert residency uses explicit per-layer units: PP assigns
 layers, EP shards routed experts, and shared experts remain replicated across
 EP ranks.
-The React workbench accepts that same revision-2 JSON manifest rather than
-decoding ONNX protobufs on the main thread. Import performs a bounded,
-fingerprint-validating parse; the Worker repeats validation before profile
-resolution and analysis. ONNX sessions have their own hardware, runtime dtype,
-sequence, parallelism, and offload controls and do not masquerade as replayable
-serving/speculative dashboard artifacts. The result exposes per-device
+The React workbench accepts that same revision-2 JSON manifest for direct
+static-analysis sessions. It also accepts a local model directory or selected
+package files. Local package import stays entirely in the static application:
+a dedicated browser Worker decodes ONNX protobufs with the same shared
+inspector used by the CLI, validates external-data paths and extents, hashes
+sidecars incrementally, and parses portable `inference_metadata.yaml|json`.
+The normalized metadata preserves multi-model components, dataflow edges,
+pipeline stages, device preferences, hardware requirements, and exact
+speculative evidence. Known fields fail closed while unknown schema-extension
+fields remain forward compatible.
+
+The model package generates a compact dashboard binding containing sorted ONNX
+manifest fingerprints, component count, pipeline strategy, and only the
+speculative families supported by explicit metadata. UI filtering is not the
+security or correctness boundary: dashboard artifact parsing preserves the
+binding and Worker execution independently rejects a speculative family absent
+from it. `eagle` is not silently treated as `eagle3`, and generic draft heads
+do not imply MTP or EAGLE without a family declaration. With no imported
+package, speculative controls remain an explicitly unbound design exploration.
+ONNX static-analysis sessions have their own hardware, runtime dtype, sequence,
+parallelism, and offload controls and do not masquerade as replayable
+serving/speculative dashboard artifacts. Static results expose per-device
 weights, expert residency, KV, activation, and free capacity alongside the
 manifest inventory and profile assumptions.
 

@@ -10,22 +10,25 @@ importers:
 
   packages/cli:
     dependencies:
-      '@bufbuild/protobuf':
-        specifier: 2.12.1
-        version: 2.12.1
       '@inference-sim/core':
         specifier: workspace:*
         version: link:../core
-      onnx-buf:
-        specifier: 1.20.0-1
-        version: 1.20.0-1
+      '@inference-sim/onnx-inspector':
+        specifier: workspace:*
+        version: link:../onnx-inspector
       yaml:
         specifier: ^2.8.1
         version: 2.9.0
     devDependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.1
+        version: 2.12.1
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      onnx-buf:
+        specifier: 1.20.0-1
+        version: 1.20.0-1
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -42,11 +45,36 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
 
+  packages/onnx-inspector:
+    dependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.1
+        version: 2.12.1
+      '@inference-sim/core':
+        specifier: workspace:*
+        version: link:../core
+      onnx-buf:
+        specifier: 1.20.0-1
+        version: 1.20.0-1
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
+
   packages/web:
     dependencies:
       '@inference-sim/core':
         specifier: workspace:*
         version: link:../core
+      '@inference-sim/onnx-inspector':
+        specifier: workspace:*
+        version: link:../onnx-inspector
+      '@noble/hashes':
+        specifier: ^2.0.1
+        version: 2.2.0
       '@radix-ui/react-dialog':
         specifier: ^1.1.15
         version: 1.1.20(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -96,6 +124,9 @@ importers:
         specifier: ^2.8.1
         version: 2.9.0
     devDependencies:
+      '@bufbuild/protobuf':
+        specifier: 2.12.1
+        version: 2.12.1
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
@@ -111,6 +142,9 @@ importers:
       fake-indexeddb:
         specifier: ^6.2.4
         version: 6.2.5
+      onnx-buf:
+        specifier: 1.20.0-1
+        version: 1.20.0-1
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -330,6 +364,10 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
+
+  '@noble/hashes@2.2.0':
+    resolution: {integrity: sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg==}
+    engines: {node: '>= 20.19.0'}
 
   '@oxc-project/types@0.139.0':
     resolution: {integrity: sha512-r9gHphtCs+1M7J0pw6Sn/hh/Wpa/iQrOOkrNAlVLF/gHq+/CJmHIWKKUUhdWjcD6CIa8idarspCsASiXCXvFUw==}
@@ -1823,6 +1861,8 @@ snapshots:
       '@emnapi/runtime': 1.11.1
       '@tybys/wasm-util': 0.10.3
     optional: true
+
+  '@noble/hashes@2.2.0': {}
 
   '@oxc-project/types@0.139.0': {}
 

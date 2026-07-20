@@ -16,6 +16,7 @@ import {
   FileDiff,
   FileCheck2,
   FilePlay,
+  FolderOpen,
   Gauge,
   History,
   MemoryStick,
@@ -26,6 +27,7 @@ import {
   TriangleAlert,
   Trash2,
   Upload,
+  Workflow,
   X,
 } from "lucide-react";
 import {
@@ -63,6 +65,8 @@ import {
   MAX_SCENARIO_FILE_BYTES,
   parseScenarioFileText,
 } from "./scenario-import.js";
+import { importModelPackage } from "./model-import-client.js";
+import type { ImportedModelPackage } from "./model-package-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -97,6 +101,7 @@ import type {
   DashboardArtifactDownload,
   DashboardArtifactExpectation,
   DashboardArtifactReplay,
+  DashboardModelBinding,
   DashboardResult,
   DashboardRunConfig,
   FrozenPlanBrowserResult,
@@ -270,6 +275,14 @@ interface ScenarioSelection {
   readonly error?: string;
 }
 
+interface ModelPackageSelection {
+  readonly label?: string;
+  readonly result?: ImportedModelPackage;
+  readonly embeddedBinding?: DashboardModelBinding;
+  readonly importing?: boolean;
+  readonly error?: string;
+}
+
 export function App(): React.JSX.Element {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [runState, setRunState] = useState<RunState>({
@@ -280,6 +293,8 @@ export function App(): React.JSX.Element {
   const [calibration, setCalibration] = useState<CalibrationSelection>({});
   const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
   const [customScenario, setCustomScenario] = useState<ScenarioSelection>({});
+  const [modelPackage, setModelPackage] =
+    useState<ModelPackageSelection>({});
   const [onnxManifest, setOnnxManifest] =
     useState<OnnxManifestSelection | undefined>(undefined);
   const [onnxConfig, setOnnxConfig] = useState(DEFAULT_ONNX_CONFIG);
@@ -354,6 +369,14 @@ export function App(): React.JSX.Element {
         await file.text(),
         file.name,
       );
+      if (
+        config.modelBinding !== undefined
+        && !config.modelBinding.speculativeFamilies.includes(parsed.trace.family)
+      ) {
+        throw new Error(
+          `model package does not declare ${parsed.trace.family}`,
+        );
+      }
       changeConfig({
         ...config,
         mode: "speculative",
@@ -395,6 +418,14 @@ export function App(): React.JSX.Element {
         trace: runtimePair.trace,
         preview: runtimePair.preview,
       };
+      if (
+        config.modelBinding !== undefined
+        && !config.modelBinding.speculativeFamilies.includes(parsed.trace.family)
+      ) {
+        throw new Error(
+          `model package does not declare ${parsed.trace.family}`,
+        );
+      }
       changeConfig({
         ...config,
         mode: "speculative",
@@ -464,11 +495,82 @@ export function App(): React.JSX.Element {
     setCustomScenario({});
   }, [changeConfig, config]);
 
+  const importLocalModelPackage = useCallback(async (
+    files: readonly File[],
+    label: string,
+  ) => {
+    setModelPackage((current) => ({
+      ...current,
+      importing: true,
+      error: undefined,
+    }));
+    try {
+      const result = await importModelPackage(files);
+      const families = result.metadata.speculative.availableFamilies;
+      const selectedFamily = families.includes(config.speculative.family)
+        ? config.speculative.family
+        : families[0];
+      const maximumDraftTokens = selectedFamily === undefined
+        ? undefined
+        : result.metadata.speculative.evidence.find(
+            (item) => item.family === selectedFamily,
+          )?.maximumDraftTokens;
+      const { trace: _trace, ...speculative } = config.speculative;
+      const modelBinding: DashboardModelBinding = {
+        source: "local_model_package",
+        modelFingerprints: result.models
+          .map((model) => model.manifest.manifestFingerprint)
+          .sort(),
+        componentCount: result.metadata.components.length,
+        ...(result.metadata.pipelineStrategy === undefined
+          ? {}
+          : { pipelineStrategy: result.metadata.pipelineStrategy }),
+        speculativeFamilies: families,
+      };
+      changeConfig({
+        ...config,
+        modelBinding,
+        mode: config.mode === "speculative" && selectedFamily === undefined
+          ? "serving"
+          : config.mode,
+        speculative: {
+          ...speculative,
+          ...(selectedFamily === undefined ? {} : { family: selectedFamily }),
+          ...(maximumDraftTokens === undefined
+            ? {}
+            : { draftWidth: Math.min(8, maximumDraftTokens) }),
+        },
+        serving: {
+          ...config.serving,
+          decodeMode: config.serving.decodeMode !== "target_only"
+            && families.includes(config.serving.decodeMode)
+            ? config.serving.decodeMode
+            : "target_only",
+        },
+      });
+      setTokenTrace({});
+      setModelPackage({ label, result });
+    } catch (error) {
+      setModelPackage((current) => ({
+        ...current,
+        importing: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [changeConfig, config]);
+
+  const clearModelPackage = useCallback(() => {
+    const { modelBinding: _binding, ...withoutBinding } = config;
+    changeConfig(withoutBinding);
+    setModelPackage({});
+  }, [changeConfig, config]);
+
   const reset = useCallback(() => {
     changeConfig(DEFAULT_CONFIG);
     setCalibration({});
     setTokenTrace({});
     setCustomScenario({});
+    setModelPackage({});
     setOnnxManifest(undefined);
     setOnnxConfig(DEFAULT_ONNX_CONFIG);
     setOnnxSearchConfig(DEFAULT_ONNX_SEARCH_CONFIG);
@@ -609,6 +711,12 @@ export function App(): React.JSX.Element {
         : {});
       setCustomScenario(parsed.config.customScenario
         ? { fileName: `${fileName} / embedded scenario` }
+        : {});
+      setModelPackage(parsed.config.modelBinding
+        ? {
+            label: `${fileName} / embedded model binding`,
+            embeddedBinding: parsed.config.modelBinding,
+          }
         : {});
       setOnnxManifest(undefined);
       run(parsed.config, parsed.expectation);
@@ -1155,6 +1263,9 @@ export function App(): React.JSX.Element {
               : (
                   <ConfigurationPanel
                     config={config}
+                    modelPackage={modelPackage}
+                    onModelPackageFiles={importLocalModelPackage}
+                    onClearModelPackage={clearModelPackage}
                     customScenario={customScenario}
                     disabled={runState.status === "running"}
                     onChange={changeConfig}
@@ -1190,6 +1301,8 @@ export function App(): React.JSX.Element {
                     artifactReplay={runState.artifactReplay}
                   />
                 )
+              : modelPackage.result
+              ? <ModelPackageOverview modelPackage={modelPackage.result} />
               : <EmptyState state={runState} />}
           </main>
 
@@ -1198,6 +1311,8 @@ export function App(): React.JSX.Element {
               ? <OnnxSearchInspector result={runState.onnxSearch} />
               : runState.onnxStatic
               ? <OnnxInspector result={runState.onnxStatic} />
+              : modelPackage.result
+              ? <ModelPackageInspector modelPackage={modelPackage.result} />
               : <Inspector result={result} />}
           </aside>
         </div>
@@ -1783,6 +1898,9 @@ function CompactParallelismSelect({
 
 function ConfigurationPanel({
   config,
+  modelPackage,
+  onModelPackageFiles,
+  onClearModelPackage,
   customScenario,
   disabled,
   onChange,
@@ -1800,6 +1918,12 @@ function ConfigurationPanel({
   running,
 }: {
   readonly config: DashboardRunConfig;
+  readonly modelPackage: ModelPackageSelection;
+  readonly onModelPackageFiles: (
+    files: readonly File[],
+    label: string,
+  ) => void;
+  readonly onClearModelPackage: () => void;
   readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
@@ -1821,10 +1945,17 @@ function ConfigurationPanel({
   readonly onCancel: () => void;
   readonly running: boolean;
 }): React.JSX.Element {
+  const modelFilesInput = useRef<HTMLInputElement | null>(null);
+  const modelDirectoryInput = useRef<HTMLInputElement | null>(null);
   const calibrationInput = useRef<HTMLInputElement | null>(null);
   const scenarioInput = useRef<HTMLInputElement | null>(null);
   const tokenTraceInput = useRef<HTMLInputElement | null>(null);
   const runtimeCaptureInput = useRef<HTMLInputElement | null>(null);
+  const availableSpeculativeFamilies = config.modelBinding
+    ?.speculativeFamilies ?? SPECULATIVE_FAMILIES.map((family) => family.value);
+  const speculativeOptions = SPECULATIVE_FAMILIES.filter((family) => (
+    availableSpeculativeFamilies.includes(family.value)
+  ));
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
@@ -1832,6 +1963,148 @@ function ConfigurationPanel({
         <div className="mb-4">
           <h2 className="text-sm font-bold">Run configuration</h2>
           <p className="mt-0.5 text-xs text-zinc-500">Seed {config.seed}</p>
+        </div>
+
+        <div className="mb-4 border-y border-zinc-200 py-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-zinc-600">
+              Model package
+            </span>
+            <Badge variant={config.modelBinding ? "success" : "neutral"}>
+              {modelPackage.importing
+                ? "analyzing"
+                : config.modelBinding
+                  ? "bound"
+                  : "unbound"}
+            </Badge>
+          </div>
+          <input
+            ref={modelFilesInput}
+            type="file"
+            multiple
+            accept=".onnx,.data,.bin,.json,.yaml,.yml,application/json,text/yaml"
+            className="sr-only"
+            disabled={disabled || modelPackage.importing}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              if (files.length > 0) {
+                onModelPackageFiles(files, `${files.length} selected files`);
+              }
+            }}
+          />
+          <input
+            ref={modelDirectoryInput}
+            type="file"
+            multiple
+            {...{ webkitdirectory: "" }}
+            className="sr-only"
+            disabled={disabled || modelPackage.importing}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              if (files.length > 0) {
+                const root = files[0]?.webkitRelativePath.split("/")[0];
+                onModelPackageFiles(files, root || "Local model folder");
+              }
+            }}
+          />
+          {config.modelBinding
+            ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <Workflow className="size-4 shrink-0 text-emerald-700" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-zinc-800">
+                      {modelPackage.label ?? "Embedded model package"}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {modelPackage.result
+                        ? `${modelPackage.result.models.length} ONNX · ${modelPackage.result.metadata.components.length} components`
+                        : `${config.modelBinding.modelFingerprints.length} ONNX · ${config.modelBinding.componentCount} components`}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {availableSpeculativeFamilies.length > 0
+                        ? `Spec: ${availableSpeculativeFamilies.join(", ")}`
+                        : "Target-only pipeline"}
+                    </div>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        aria-label="Replace model folder"
+                        disabled={disabled || modelPackage.importing}
+                        onClick={() => modelDirectoryInput.current?.click()}
+                      >
+                        <FolderOpen className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Replace model folder</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        aria-label="Remove model binding"
+                        disabled={disabled || modelPackage.importing}
+                        onClick={onClearModelPackage}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Remove model binding</TooltipContent>
+                  </Tooltip>
+                </div>
+              )
+            : (
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={disabled || modelPackage.importing}
+                    onClick={() => modelDirectoryInput.current?.click()}
+                  >
+                    <FolderOpen className="size-4" />
+                    Folder
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={disabled || modelPackage.importing}
+                    onClick={() => modelFilesInput.current?.click()}
+                  >
+                    <Upload className="size-4" />
+                    Files
+                  </Button>
+                </div>
+              )}
+          {modelPackage.result
+            && (
+              modelPackage.result.metadata.edges.length > 0
+              || modelPackage.result.metadata.warnings.length > 0
+            )
+            ? (
+                <div className="mt-2 text-[11px] leading-4 text-zinc-500">
+                  {modelPackage.result.metadata.edges.length} pipeline edges
+                  {modelPackage.result.metadata.warnings.length > 0
+                    ? ` · ${modelPackage.result.metadata.warnings.join("; ")}`
+                    : ""}
+                </div>
+              )
+            : null}
+          {modelPackage.error
+            ? (
+                <div className="mt-2 text-xs leading-4 text-rose-700">
+                  {modelPackage.error}
+                </div>
+              )
+            : null}
         </div>
 
         {config.mode === "serving" && config.serving.compareTopologies
@@ -2090,7 +2363,12 @@ function ConfigurationPanel({
         >
         <TabsList className="mb-4 w-full grid-cols-3">
           <TabsTrigger value="serving">Serving</TabsTrigger>
-          <TabsTrigger value="speculative" aria-label="Speculative">
+          <TabsTrigger
+            value="speculative"
+            aria-label="Speculative"
+            disabled={config.modelBinding !== undefined
+              && speculativeOptions.length === 0}
+          >
             Spec
           </TabsTrigger>
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
@@ -2135,7 +2413,7 @@ function ConfigurationPanel({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="target_only">Target only</SelectItem>
-                {SPECULATIVE_FAMILIES.map((family) => (
+                {speculativeOptions.map((family) => (
                   <SelectItem key={family.value} value={family.value}>
                     {family.label}
                   </SelectItem>
@@ -2459,7 +2737,7 @@ function ConfigurationPanel({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {SPECULATIVE_FAMILIES.map((family) => (
+                        {speculativeOptions.map((family) => (
                           <SelectItem key={family.value} value={family.value}>
                             {family.label}
                           </SelectItem>
@@ -3620,6 +3898,167 @@ function RunProgress({ state }: { readonly state: RunState }): React.JSX.Element
         <span className="tabular-nums text-sky-700">{state.progress}%</span>
       </div>
       <Progress value={state.progress} />
+    </div>
+  );
+}
+
+function ModelPackageOverview({
+  modelPackage,
+}: {
+  readonly modelPackage: ImportedModelPackage;
+}): React.JSX.Element {
+  const components = modelPackage.metadata.components.length > 0
+    ? modelPackage.metadata.components
+    : modelPackage.models.map((model) => ({
+        id: model.fileName,
+        filename: model.fileName,
+        type: "model",
+      }));
+  return (
+    <div className="space-y-5">
+      <div className="border-b border-zinc-200 pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-bold">Model pipeline</h1>
+            <p className="mt-1 text-xs text-zinc-500">
+              {modelPackage.metadataFileName ?? "ONNX package without inference metadata"}
+            </p>
+          </div>
+          <Badge variant={modelPackage.metadata.pipelineStrategy
+            ? "success"
+            : "neutral"}
+          >
+            {modelPackage.metadata.pipelineStrategy ?? "single model"}
+          </Badge>
+        </div>
+      </div>
+      <section>
+        <h2 className="mb-3 text-sm font-bold">Components</h2>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {components.map((component) => {
+            const model = modelPackage.models.find((candidate) => (
+              candidate.fileName === component.filename
+            ));
+            return (
+              <div
+                key={component.id}
+                className="metric-card"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">
+                      {component.id}
+                    </div>
+                    <div className="truncate text-xs text-zinc-500">
+                      {component.filename}
+                    </div>
+                  </div>
+                  <Badge variant="neutral">{component.type}</Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                  <DiagnosticValue
+                    label="Nodes"
+                    value={String(model?.manifest.graph.nodeCount ?? 0)}
+                  />
+                  <DiagnosticValue
+                    label="Weights"
+                    value={formatBytes(
+                      model?.manifest.totals.initializerLogicalBytes ?? 0,
+                    )}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+      <section className="border-t border-zinc-200 pt-4">
+        <h2 className="mb-3 text-sm font-bold">Dataflow</h2>
+        {modelPackage.metadata.edges.length === 0
+          ? (
+              <div className="text-xs text-zinc-500">
+                No inter-component edges declared.
+              </div>
+            )
+          : (
+              <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+                {modelPackage.metadata.edges.map((edge) => (
+                  <div
+                    key={`${edge.from}->${edge.to}`}
+                    className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 py-3 text-xs"
+                  >
+                    <span className="truncate font-medium">{edge.from}</span>
+                    <span className="text-zinc-400">→</span>
+                    <span className="truncate font-medium">{edge.to}</span>
+                    <span className="col-span-3 text-[11px] text-zinc-500">
+                      {edge.dtype ?? "dtype unspecified"}
+                      {edge.deviceTransfer === true
+                        ? " · device transfer"
+                        : edge.deviceTransfer === false
+                          ? " · same-device preferred"
+                          : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+      </section>
+    </div>
+  );
+}
+
+function ModelPackageInspector({
+  modelPackage,
+}: {
+  readonly modelPackage: ImportedModelPackage;
+}): React.JSX.Element {
+  const families = modelPackage.metadata.speculative.availableFamilies;
+  return (
+    <div>
+      <h2 className="text-sm font-bold">Package evidence</h2>
+      <div className="mt-4 space-y-4">
+        <InspectorRow label="Files" value={String(modelPackage.fileCount)} />
+        <InspectorRow
+          label="Package size"
+          value={formatBytes(modelPackage.packageByteLength)}
+        />
+        <InspectorRow
+          label="ONNX models"
+          value={String(modelPackage.models.length)}
+        />
+        <InspectorRow
+          label="Speculative"
+          value={families.length > 0 ? families.join(", ") : "target only"}
+        />
+        {modelPackage.models.map((model) => (
+          <div key={model.fileName} className="border-t border-zinc-200 pt-3">
+            <div className="truncate text-xs font-semibold">
+              {model.fileName}
+            </div>
+            <div className="mt-1 truncate text-[11px] text-zinc-500">
+              {model.manifest.manifestFingerprint}
+            </div>
+            <div className="mt-1 text-[11px] text-zinc-500">
+              {model.manifest.externalDataFiles.length} external files
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InspectorRow({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.JSX.Element {
+  return (
+    <div className="flex items-start justify-between gap-3 text-xs">
+      <span className="text-zinc-500">{label}</span>
+      <span className="min-w-0 text-right font-medium break-words">{value}</span>
     </div>
   );
 }

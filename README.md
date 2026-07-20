@@ -116,6 +116,15 @@ and inside the Worker, and exposes shadcn controls for hardware, runtime dtypes,
 sequence shape, TP/PP/EP, and offload. Its model view reports per-device memory,
 capacity feasibility, heuristic throughput, architecture inventory, and every
 profile assumption.
+The serving workbench can also import a local model folder or a selected set
+of package files without uploading them. A dedicated browser Worker decodes
+each ONNX protobuf, incrementally hashes external-data sidecars, parses
+`inference_metadata.yaml|json`, validates multi-model component and dataflow
+references, and displays the resulting pipeline. Imported model fingerprints
+and declared speculative families are bound into deterministic run input.
+Target-only is the only decode mode enabled when metadata does not provide
+specific speculative evidence; unknown proposal methods remain visible as
+diagnostics and are never coerced to a similar simulator family.
 `onnx-search` exhaustively ranks a bounded, explicitly declared static search
 space across topology, runtime dtype, batch, sequence shape, TP/PP/EP/DP, and
 offload. It reports declared, evaluated, eligible, returned, and per-reason
@@ -148,7 +157,10 @@ rings through the public core scenario builder. Each rank owns independent
 VRAM, cache, workspace, PCIe, and ring-link resources; the Worker rejects
 unrecognized rank counts instead of coercing them.
 The speculative controls use the shared core family contract; design-only
-self-speculative results are labeled explicitly. The workbench can import the
+self-speculative results are labeled explicitly. With no imported model these
+controls are an unbound design exploration; once a local package is bound,
+both the UI and Worker enforce its declared proposer families. The workbench
+can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it
 before execution, reruns the fit inside the Worker, and displays its stable
 fingerprint plus compute and transport NRMSE/P95 diagnostics.

@@ -227,6 +227,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       "scenarioName",
       "multiGpuRanks",
       "customScenario",
+      "modelBinding",
       "mode",
       "seed",
       "calibration",
@@ -272,6 +273,9 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     const speculative = parseSpeculativeConfig(config.speculative);
     const serving = parseServingConfig(config.serving);
     const expertCache = parseExpertCacheConfig(config.expertCache);
+    const modelBinding = config.modelBinding === undefined
+      ? undefined
+      : parseModelBinding(config.modelBinding);
     const calibration = config.calibration === undefined
       ? undefined
       : config.calibration as CalibrationDataset;
@@ -282,6 +286,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       scenarioName,
       multiGpuRanks,
       ...(customScenario === undefined ? {} : { customScenario }),
+      ...(modelBinding === undefined ? {} : { modelBinding }),
       mode,
       seed,
       speculative,
@@ -292,6 +297,57 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
   } catch (error) {
     throw new Error(`invalid dashboard artifact input: ${errorMessage(error)}`);
   }
+}
+
+function parseModelBinding(
+  input: unknown,
+): NonNullable<DashboardRunConfig["modelBinding"]> {
+  const binding = requireRecord(input, "modelBinding");
+  assertOnlyKeys(binding, [
+    "source",
+    "modelFingerprints",
+    "componentCount",
+    "pipelineStrategy",
+    "speculativeFamilies",
+  ], "modelBinding");
+  const modelFingerprints = requireStringArray(
+    binding.modelFingerprints,
+    "modelBinding modelFingerprints",
+  );
+  if (modelFingerprints.length === 0) {
+    throw new Error("modelBinding modelFingerprints must not be empty");
+  }
+  const speculativeFamilies = requireArray(
+    binding.speculativeFamilies,
+    "modelBinding speculativeFamilies",
+  ).map((family) => requireFamily(
+    family,
+    "modelBinding speculative family",
+  ));
+  if (new Set(speculativeFamilies).size !== speculativeFamilies.length) {
+    throw new Error(
+      "modelBinding speculativeFamilies must not contain duplicates",
+    );
+  }
+  const pipelineStrategy = binding.pipelineStrategy === undefined
+    ? undefined
+    : requireString(binding.pipelineStrategy, "modelBinding pipelineStrategy");
+  return {
+    source: requireEnum(
+      binding.source,
+      ["local_model_package"] as const,
+      "modelBinding source",
+    ),
+    modelFingerprints,
+    componentCount: requireInteger(
+      binding.componentCount,
+      0,
+      512,
+      "modelBinding componentCount",
+    ),
+    ...(pipelineStrategy === undefined ? {} : { pipelineStrategy }),
+    speculativeFamilies,
+  };
 }
 
 function parseSpeculativeConfig(
@@ -532,6 +588,8 @@ function assertOnlyKeys(
   const required = keys.filter((key) => (
     key !== "calibration"
     && key !== "customScenario"
+    && key !== "modelBinding"
+    && key !== "pipelineStrategy"
     && key !== "trace"
     && !(key in record)
   ));
@@ -541,6 +599,30 @@ function assertOnlyKeys(
       required.length > 0 ? `missing keys ${required.join(", ")}` : "",
     ].filter(Boolean).join("; ").replace(/^/, `${label}: `));
   }
+}
+
+function requireArray(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  return value;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value;
+}
+
+function requireStringArray(value: unknown, label: string): string[] {
+  const result = requireArray(value, label).map((entry, index) => (
+    requireString(entry, `${label}[${index}]`)
+  ));
+  if (new Set(result).size !== result.length) {
+    throw new Error(`${label} must not contain duplicates`);
+  }
+  return result;
 }
 
 function requireEnum<T extends string | number>(

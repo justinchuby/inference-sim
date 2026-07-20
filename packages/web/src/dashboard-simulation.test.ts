@@ -55,6 +55,25 @@ const base: DashboardRunConfig = {
 };
 
 describe("simulateDashboard", () => {
+  it("enforces imported model speculative capabilities at execution", () => {
+    const config: DashboardRunConfig = {
+      ...base,
+      modelBinding: {
+        source: "local_model_package",
+        modelFingerprints: ["fnv1a32:12345678"],
+        componentCount: 1,
+        speculativeFamilies: ["mtp"],
+      },
+      speculative: {
+        ...base.speculative,
+        family: "draft_model",
+      },
+    };
+    expect(() => simulateDashboard(config)).toThrow(
+      "does not declare speculative family draft_model",
+    );
+  });
+
   it("runs bounded speculative simulation with paged KV metrics", () => {
     const result = simulateDashboard(base);
 

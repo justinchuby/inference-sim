@@ -43,6 +43,7 @@ export function simulateDashboardExecution(
   reportProgress: WorkerRunProgressReporter = () => {},
 ): DashboardArtifactOutput {
   reportProgress({ progress: 10, phase: "Validating dashboard input" });
+  validateModelCapabilityBinding(config);
   if (config.calibration !== undefined) {
     reportProgress({ progress: 18, phase: "Fitting calibration evidence" });
   }
@@ -171,6 +172,26 @@ export function simulateDashboardExecution(
       topology,
     },
   };
+}
+
+function validateModelCapabilityBinding(config: DashboardRunConfig): void {
+  const binding = config.modelBinding;
+  if (binding === undefined) {
+    return;
+  }
+  const selectedFamily = config.mode === "speculative"
+    ? config.speculative.family
+    : config.mode === "serving" && config.serving.decodeMode !== "target_only"
+      ? config.serving.decodeMode
+      : undefined;
+  if (
+    selectedFamily !== undefined
+    && !binding.speculativeFamilies.includes(selectedFamily)
+  ) {
+    throw new Error(
+      `model package does not declare speculative family ${selectedFamily}`,
+    );
+  }
 }
 
 function buildSelectedScenario(config: DashboardRunConfig) {

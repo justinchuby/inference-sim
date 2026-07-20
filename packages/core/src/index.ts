@@ -64,6 +64,15 @@ export {
   parseSimulationScenario,
 } from "./scenario-parser.js";
 export {
+  InferenceMetadataError,
+  parseInferenceMetadata,
+  type InferenceMetadataSpeculativeEvidence,
+  type InferenceMetadataSummary,
+  type InferencePipelineComponent,
+  type InferencePipelineEdge,
+  type InferencePipelineStage,
+} from "./inference-metadata.js";
+export {
   ONNX_MODEL_MANIFEST_KIND,
   ONNX_MODEL_MANIFEST_REVISION,
   OnnxModelManifestError,

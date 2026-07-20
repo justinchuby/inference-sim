@@ -38,6 +38,14 @@ import type {
 
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
 
+export interface DashboardModelBinding {
+  readonly source: "local_model_package";
+  readonly modelFingerprints: readonly string[];
+  readonly componentCount: number;
+  readonly pipelineStrategy?: string;
+  readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
+}
+
 export interface DashboardRunConfig {
   readonly scenarioName:
     | "cpu-only"
@@ -49,6 +57,7 @@ export interface DashboardRunConfig {
     | "custom";
   readonly multiGpuRanks: 2 | 4 | 8;
   readonly customScenario?: SimulationScenario;
+  readonly modelBinding?: DashboardModelBinding;
   readonly mode: WorkloadMode;
   readonly seed: number;
   readonly calibration?: CalibrationDataset;
