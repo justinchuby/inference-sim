@@ -1201,6 +1201,17 @@ simulation:
 Machine output includes scenario hash, schema/contract revisions, confidence
 labels, assumptions, protocol/decision traces, snapshots, and summary metrics.
 
+Browser result artifact revision 1 packages the exact dashboard input,
+wall-clock-independent summary, and complete mode-specific core evidence in one
+JSON envelope. Its contract map names every schema/state-machine revision
+needed to interpret the evidence. Canonical key ordering and separate input,
+output, and envelope FNV-1a fingerprints over UTF-8 JSON make byte-stable
+reproduction and tamper detection explicit. These fingerprints are not
+cryptographic signatures, and validating one does not replace replay or
+re-execution.
+Non-finite numbers, non-JSON objects, cycles, excessive nesting, unknown
+envelope fields, and fingerprint mismatches fail closed.
+
 Product views retained from the original design:
 
 - memory timeline per physical domain and category;
@@ -1501,13 +1512,19 @@ that serving run.
 Multi-GPU runs additionally select 2, 4, or 8 ranks and delegate topology
 construction to the validated core builder; the UI does not synthesize
 placements or links.
+Completed browser runs export a revision-1 deterministic result artifact that
+contains the selected configuration, summary, and complete speculative,
+expert-cache, serving, or six-topology comparison evidence. The Worker creates
+the artifact from the same execution shown on screen. Contract revisions and
+canonical fingerprints are owned by the shared core artifact contract;
+wall-clock Worker duration is UI-only and excluded from the envelope.
 The browser can compare all six serving topologies with a ranked latency chart,
 fastest-topology detail view, and comparison inspector. General configuration
-search, FrozenPlan file execution/export, ONNX import, trace export, and richer
-progress phases remain. Calibration YAML/JSON import shares the core parser and
-fit contract with the CLI, enforces a 1 MiB input limit, refits in the Worker,
-and reports the dataset fingerprint, compute diagnostics, and transport-curve
-diagnostics in the result view.
+search, standalone FrozenPlan file execution/export, ONNX import, artifact
+import/re-execution, and richer progress phases remain. Calibration YAML/JSON
+import shares the core parser and fit contract with the CLI, enforces a 1 MiB
+input limit, refits in the Worker, and reports the dataset fingerprint, compute
+diagnostics, and transport-curve diagnostics in the result view.
 
 New browser controls must extend the existing React and shadcn/Radix component
 layer. Core placement, routing, replay, and timing semantics remain in

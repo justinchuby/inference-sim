@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
+import {
+  parseSimulationResultArtifact,
+  serializeSimulationResultArtifact,
+} from "@inference-sim/core";
 import { parseCalibrationFileText } from "./calibration-import.js";
+import {
+  createDashboardArtifact,
+  dashboardArtifactFileName,
+} from "./dashboard-artifact.js";
 import { parseTokenTraceFileText } from "./token-trace-import.js";
 import { cachePartitionRows } from "./ResultCharts.js";
-import { simulateDashboard } from "./dashboard-simulation.js";
+import {
+  simulateDashboard,
+  simulateDashboardExecution,
+} from "./dashboard-simulation.js";
 import type { DashboardRunConfig } from "./types.js";
 
 const base: DashboardRunConfig = {
@@ -53,6 +64,92 @@ describe("simulateDashboard", () => {
     expect(result.topology.confidence).toBe("heuristic");
     expect(result.topology.metrics.totalDurationNs).toBeGreaterThan(0);
     expect(result.topology.operationCounts.collective).toBeGreaterThan(0);
+  });
+
+  it("exports deterministic full protocol evidence without wall-clock timing", () => {
+    const first = createDashboardArtifact(
+      base,
+      simulateDashboardExecution(base),
+    );
+    const second = createDashboardArtifact(
+      base,
+      simulateDashboardExecution(base),
+    );
+    const serialized = serializeSimulationResultArtifact(first, true);
+    const parsed = parseSimulationResultArtifact(JSON.parse(serialized));
+
+    expect(first).toEqual(second);
+    expect(first.output.evidence.kind).toBe("speculative");
+    if (first.output.evidence.kind !== "speculative") {
+      throw new Error("expected speculative artifact evidence");
+    }
+    expect(first.output.evidence.workload.iterations.length).toBeGreaterThan(0);
+    expect(first.output.evidence.topology.execution.trace.operations.length)
+      .toBeGreaterThan(0);
+    expect(serialized).not.toContain("\"durationMs\"");
+    expect(parsed.artifactFingerprint).toBe(first.artifactFingerprint);
+    expect(dashboardArtifactFileName(first)).toMatch(
+      /^inference-sim-multi-gpu-speculative-[0-9a-f]{8}\.json$/,
+    );
+  });
+
+  it("exports replay evidence for expert, serving, and comparison modes", () => {
+    const compactServing = {
+      ...base.serving,
+      requestCount: 2,
+      promptTokens: 32,
+      outputTokens: 4,
+      maxBatchSize: 2,
+      maxBatchTokens: 16,
+      prefillChunkTokens: 16,
+    };
+    const configs: DashboardRunConfig[] = [
+      { ...base, mode: "expert-cache" },
+      {
+        ...base,
+        mode: "serving",
+        serving: { ...compactServing, useExpertCache: true },
+      },
+      {
+        ...base,
+        mode: "serving",
+        serving: {
+          ...compactServing,
+          compareTopologies: true,
+          useExpertCache: false,
+        },
+      },
+    ];
+
+    const artifacts = configs.map((config) => createDashboardArtifact(
+      config,
+      simulateDashboardExecution(config),
+    ));
+    expect(artifacts.map((artifact) => artifact.output.evidence.kind)).toEqual([
+      "expert_cache",
+      "serving",
+      "serving_comparison",
+    ]);
+    for (const artifact of artifacts) {
+      expect(() => parseSimulationResultArtifact(JSON.parse(
+        serializeSimulationResultArtifact(artifact),
+      ))).not.toThrow();
+    }
+    const serving = artifacts[1].output.evidence;
+    if (serving.kind !== "serving") {
+      throw new Error("expected serving artifact evidence");
+    }
+    expect(serving.serving.serving.trace.length).toBeGreaterThan(0);
+    expect(serving.serving.physical?.execution.trace.operations.length)
+      .toBeGreaterThan(0);
+    const comparison = artifacts[2].output.evidence;
+    if (comparison.kind !== "serving_comparison") {
+      throw new Error("expected serving-comparison artifact evidence");
+    }
+    expect(comparison.comparison.runs).toHaveLength(6);
+    expect(comparison.comparison.runs.every(
+      (run) => run.result.serving.trace.length > 0,
+    )).toBe(true);
   });
 
   it("runs every selectable proposer family through the shared core contract", () => {

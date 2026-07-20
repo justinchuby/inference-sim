@@ -24,11 +24,21 @@ import {
   type TopologyCostModel,
   type TopologyServingExpertCacheConfig,
 } from "@inference-sim/core";
-import type { DashboardResult, DashboardRunConfig } from "./types.js";
+import type {
+  DashboardArtifactOutput,
+  DashboardResult,
+  DashboardRunConfig,
+} from "./types.js";
 
 export function simulateDashboard(
   config: DashboardRunConfig,
 ): Omit<DashboardResult, "durationMs"> {
+  return simulateDashboardExecution(config).summary;
+}
+
+export function simulateDashboardExecution(
+  config: DashboardRunConfig,
+): DashboardArtifactOutput {
   const calibration = config.calibration === undefined
     ? undefined
     : fitTopologyCostModel(config.calibration);
@@ -64,46 +74,78 @@ export function simulateDashboard(
     const scenario = buildScenarioPreset(
       fastest.result.scenarioId as ScenarioPresetName,
     );
-    return attachCalibration(servingDashboardResult(
-      config,
-      scenario,
-      fastest.result,
-      comparison,
-    ));
+    return {
+      summary: attachCalibration(servingDashboardResult(
+        config,
+        scenario,
+        fastest.result,
+        comparison,
+      )),
+      evidence: {
+        kind: "serving_comparison",
+        comparison,
+      },
+    };
   }
   const scenario = buildSelectedScenario(config);
   const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
     const workload = runSpeculative(config);
-    return attachCalibration({
-      scenario: scenarioSummary,
-      mode: config.mode,
-      topology: summarizeTopology(simulateTopologyWorkload(
-        scenario,
-        topologyProfileFromSpeculative(workload.result),
-        costModel,
-      )),
-      speculative: workload.dashboard,
-    });
+    const topology = simulateTopologyWorkload(
+      scenario,
+      topologyProfileFromSpeculative(workload.result),
+      costModel,
+    );
+    return {
+      summary: attachCalibration({
+        scenario: scenarioSummary,
+        mode: config.mode,
+        topology: summarizeTopology(topology),
+        speculative: workload.dashboard,
+      }),
+      evidence: {
+        kind: "speculative",
+        workload: workload.result,
+        topology,
+      },
+    };
   }
   if (config.mode === "serving") {
     const serving = runServing(config, scenario, costModel);
-    return attachCalibration(servingDashboardResult(config, scenario, serving));
+    return {
+      summary: attachCalibration(servingDashboardResult(
+        config,
+        scenario,
+        serving,
+      )),
+      evidence: {
+        kind: "serving",
+        serving,
+      },
+    };
   }
   const workload = runExpertCache(config, scenario);
-  return attachCalibration({
-    scenario: scenarioSummary,
-    mode: config.mode,
-    topology: summarizeTopology(simulateTopologyWorkload(
-      scenario,
-      topologyProfileFromExpertCache(
-        workload.result,
-        config.expertCache.placementStrategy,
-      ),
-      costModel,
-    )),
-    expertCache: workload.dashboard,
-  });
+  const topology = simulateTopologyWorkload(
+    scenario,
+    topologyProfileFromExpertCache(
+      workload.result,
+      config.expertCache.placementStrategy,
+    ),
+    costModel,
+  );
+  return {
+    summary: attachCalibration({
+      scenario: scenarioSummary,
+      mode: config.mode,
+      topology: summarizeTopology(topology),
+      expertCache: workload.dashboard,
+    }),
+    evidence: {
+      kind: "expert_cache",
+      workload: workload.result,
+      topology,
+    },
+  };
 }
 
 function buildSelectedScenario(config: DashboardRunConfig) {

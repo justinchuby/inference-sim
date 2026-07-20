@@ -28,6 +28,15 @@ export { GPU_PRESETS, buildTopology, listPresets } from "./presets.js";
 export { MODEL_PRESETS, buildModelProfile, listModelPresets } from "./models.js";
 export { analyzeStatic } from "./static-analysis.js";
 export {
+  SIMULATION_RESULT_ARTIFACT_KIND,
+  SIMULATION_RESULT_ARTIFACT_REVISION,
+  SimulationResultArtifactError,
+  createSimulationResultArtifact,
+  parseSimulationResultArtifact,
+  serializeSimulationResultArtifact,
+  type SimulationResultArtifact,
+} from "./result-artifact.js";
+export {
   DiscreteEventSimulator,
   SimulationError,
   type ScheduledEvent,

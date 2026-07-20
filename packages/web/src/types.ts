@@ -7,16 +7,22 @@ import type {
   ExpertCacheMetrics,
   ExpertCachePartitionSnapshot,
   ExpertRouteResult,
+  ExpertCacheWorkloadResult,
   ScenarioMemoryLedgerEntry,
+  SimulationResultArtifact,
   SpeculativeWorkloadIteration,
   SpeculativeWorkloadMetrics,
+  SpeculativeWorkloadResult,
   SpeculativeProposerFamily,
   SpeculativeTokenMismatch,
   SpeculativeTokenTrace,
   ServingMetrics,
   ServingRequestResult,
+  TopologyServingComparisonResult,
+  TopologyServingResult,
   TopologyResourceUtilization,
   TopologyWorkloadMetrics,
+  TopologyWorkloadResult,
 } from "@inference-sim/core";
 
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
@@ -163,6 +169,42 @@ export interface DashboardResult {
   }[];
 }
 
+export type DashboardCoreEvidence =
+  | {
+      readonly kind: "speculative";
+      readonly workload: SpeculativeWorkloadResult;
+      readonly topology: TopologyWorkloadResult;
+    }
+  | {
+      readonly kind: "expert_cache";
+      readonly workload: ExpertCacheWorkloadResult;
+      readonly topology: TopologyWorkloadResult;
+    }
+  | {
+      readonly kind: "serving";
+      readonly serving: TopologyServingResult;
+    }
+  | {
+      readonly kind: "serving_comparison";
+      readonly comparison: TopologyServingComparisonResult;
+    };
+
+export interface DashboardArtifactOutput {
+  readonly summary: Omit<DashboardResult, "durationMs">;
+  readonly evidence: DashboardCoreEvidence;
+}
+
+export type DashboardArtifact = SimulationResultArtifact<
+  DashboardRunConfig,
+  DashboardArtifactOutput
+>;
+
+export interface DashboardArtifactDownload {
+  readonly blob: Blob;
+  readonly fileName: string;
+  readonly artifactFingerprint: string;
+}
+
 export type WorkerRequest = {
   readonly type: "run";
   readonly runId: number;
@@ -179,7 +221,9 @@ export type WorkerResponse =
   | {
       readonly type: "result";
       readonly runId: number;
-      readonly result: DashboardResult;
+      readonly summary: Omit<DashboardResult, "durationMs">;
+      readonly artifact: DashboardArtifactDownload;
+      readonly durationMs: number;
     }
   | {
       readonly type: "error";

@@ -1,6 +1,11 @@
 /// <reference lib="webworker" />
 
-import { simulateDashboard } from "./dashboard-simulation.js";
+import { serializeSimulationResultArtifact } from "@inference-sim/core";
+import {
+  createDashboardArtifact,
+  dashboardArtifactFileName,
+} from "./dashboard-artifact.js";
+import { simulateDashboardExecution } from "./dashboard-simulation.js";
 import type { WorkerRequest, WorkerResponse } from "./types.js";
 
 const worker = self as DedicatedWorkerGlobalScope;
@@ -29,7 +34,7 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
           : "Fitting calibration and running workload",
     });
 
-    const base = simulateDashboard(config);
+    const output = simulateDashboardExecution(config);
     post({
       type: "progress",
       runId,
@@ -38,13 +43,20 @@ worker.onmessage = (event: MessageEvent<WorkerRequest>) => {
         ? "Checking token and state parity"
         : "Checking replay",
     });
+    const artifact = createDashboardArtifact(config, output);
     post({
       type: "result",
       runId,
-      result: {
-        ...base,
-        durationMs: performance.now() - startedAt,
+      summary: output.summary,
+      artifact: {
+        blob: new Blob(
+          [serializeSimulationResultArtifact(artifact, true)],
+          { type: "application/json" },
+        ),
+        fileName: dashboardArtifactFileName(artifact),
+        artifactFingerprint: artifact.artifactFingerprint,
       },
+      durationMs: performance.now() - startedAt,
     });
   } catch (error) {
     post({

@@ -12,6 +12,7 @@ import {
   Clock3,
   Cpu,
   Database,
+  Download,
   FileDiff,
   FileCheck2,
   Gauge,
@@ -64,6 +65,7 @@ import {
   TooltipTrigger,
 } from "./components/ui/tooltip.js";
 import type {
+  DashboardArtifactDownload,
   DashboardResult,
   DashboardRunConfig,
   WorkerResponse,
@@ -151,6 +153,7 @@ interface RunState {
   readonly progress: number;
   readonly phase: string;
   readonly result?: DashboardResult;
+  readonly artifact?: DashboardArtifactDownload;
   readonly error?: string;
 }
 
@@ -350,13 +353,18 @@ export function App(): React.JSX.Element {
         workerRef.current = undefined;
         return;
       }
+      const result: DashboardResult = {
+        ...message.summary,
+        durationMs: message.durationMs,
+      };
       const tokenMismatch =
-        message.result.speculative?.tokenTrace?.matchesTargetOnly === false;
+        result.speculative?.tokenTrace?.matchesTargetOnly === false;
       setRunState({
         status: tokenMismatch ? "mismatch" : "complete",
         progress: 100,
         phase: tokenMismatch ? "Token mismatch" : "Replay verified",
-        result: message.result,
+        result,
+        artifact: message.artifact,
       });
       worker.terminate();
       workerRef.current = undefined;
@@ -439,7 +447,7 @@ export function App(): React.JSX.Element {
           <main className="min-w-0 overflow-y-auto p-4 sm:p-5">
             <RunProgress state={runState} />
             {result
-              ? <Results result={result} />
+              ? <Results result={result} artifact={runState.artifact} />
               : <EmptyState state={runState} />}
           </main>
 
@@ -1211,7 +1219,13 @@ function ConfigurationPanel({
   );
 }
 
-function Results({ result }: { readonly result: DashboardResult }): React.JSX.Element {
+function Results({
+  result,
+  artifact,
+}: {
+  readonly result: DashboardResult;
+  readonly artifact?: DashboardArtifactDownload;
+}): React.JSX.Element {
   const metrics = result.mode === "speculative"
     ? speculativeMetrics(result)
     : result.mode === "serving"
@@ -1235,6 +1249,23 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
             : null}
         </div>
         <div className="flex items-center gap-2">
+          {artifact
+            ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Export verified result"
+                      onClick={() => downloadArtifact(artifact)}
+                    >
+                      <Download className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Export verified result</TooltipContent>
+                </Tooltip>
+              )
+            : null}
           {result.comparison
             ? (
                 <>
@@ -1432,6 +1463,18 @@ function DiagnosticValue({
       <div className="text-xs font-bold tabular-nums text-zinc-800">{value}</div>
     </div>
   );
+}
+
+function downloadArtifact(artifact: DashboardArtifactDownload): void {
+  const url = URL.createObjectURL(artifact.blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = artifact.fileName;
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function Inspector({ result }: { readonly result?: DashboardResult }): React.JSX.Element {

@@ -110,6 +110,11 @@ self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it
 before execution, reruns the fit inside the Worker, and displays its stable
 fingerprint plus compute and transport NRMSE/P95 diagnostics.
+Every completed browser run can export a revision-1 deterministic result
+artifact. The artifact binds the dashboard input, summary, complete
+mode-specific core evidence, and applicable contract revisions with canonical
+fingerprints. Browser wall-clock execution time is intentionally excluded, so
+identical simulation input and evidence serialize identically.
 The Spec view primarily imports a pair of independently emitted target-only and
 speculative runtime captures. It binds their provenance, reconstructs and
 checks every speculative commit, then derives the revisioned token trace used
