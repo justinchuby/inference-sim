@@ -15,9 +15,23 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useMemo, useState } from "react";
+import { Move, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type WheelEvent as ReactWheelEvent,
+} from "react";
 import type { DashboardResult } from "./types.js";
 import { interpretRoofline } from "./roofline-interpretation.js";
+import {
+  panLogDomain,
+  zoomLogDomain,
+  type LogDomain,
+} from "./roofline-viewport.js";
 
 export default function ResultCharts({
   result,
@@ -111,12 +125,26 @@ function RooflineChart({
     ...new Set(roofline.points.map((point) => point.phase)),
   ], [roofline.points]);
   const [phase, setPhase] = useState("all");
+  const [viewport, setViewport] = useState<{
+    readonly x: LogDomain;
+    readonly y: LogDomain;
+  } | null>(null);
+  const drag = useRef<{
+    readonly x: number;
+    readonly y: number;
+    readonly viewport: { readonly x: LogDomain; readonly y: LogDomain };
+  } | null>(null);
+  const frame = useRef<HTMLDivElement>(null);
   const selectedRoof = roofline.bandwidthRoofs.find(
     (roof) => roof.id === roofId,
   ) ?? roofline.bandwidthRoofs[0];
   const points = roofline.points.filter((point) => (
     phase === "all" || point.phase === phase
   ));
+  useEffect(() => {
+    setViewport(null);
+    drag.current = null;
+  }, [roofId, phase, roofline]);
   if (roofline.status === "unavailable" || selectedRoof === undefined) {
     return (
       <div className="border-l-2 border-amber-600 bg-amber-50 px-3 py-3 text-sm text-amber-950">
@@ -128,7 +156,8 @@ function RooflineChart({
   const allX = points.map((point) => point.arithmeticIntensity);
   const minX = Math.max(1e-3, Math.min(...allX) / 4);
   const maxX = Math.max(minX * 100, Math.max(...allX) * 4);
-  const samples = logSamples(minX, maxX, 48).map((intensity) => ({
+  const automaticX: LogDomain = [minX, maxX];
+  const automaticSamples = logSamples(minX, maxX, 48).map((intensity) => ({
     intensity,
     bandwidth: selectedRoof.bytesPerSecond * intensity,
     ...(roofline.computeRoof === undefined
@@ -142,19 +171,116 @@ function RooflineChart({
   }));
   const yValues = [
     ...data.map((point) => point.rate),
-    ...samples.map((sample) => Math.min(
+    ...automaticSamples.map((sample) => Math.min(
       sample.bandwidth,
       sample.compute ?? Infinity,
     )),
   ].filter(Number.isFinite);
   const minY = Math.max(1, Math.min(...yValues) / 4);
   const maxY = Math.max(minY * 100, Math.max(...yValues) * 2);
+  const automaticY: LogDomain = [minY, maxY];
+  const xDomain = viewport?.x ?? automaticX;
+  const yDomain = viewport?.y ?? automaticY;
+  const samples = logSamples(xDomain[0], xDomain[1], 64).map((intensity) => ({
+    intensity,
+    bandwidth: selectedRoof.bytesPerSecond * intensity,
+    ...(roofline.computeRoof === undefined
+      ? {}
+      : { compute: roofline.computeRoof.flopsPerSecond }),
+  }));
   const interpretation = interpretRoofline(roofline, selectedRoof, points);
   const interpretationTone = interpretation.tone === "danger"
     ? "border-rose-600 bg-rose-50 text-rose-950"
     : interpretation.tone === "warning"
       ? "border-amber-600 bg-amber-50 text-amber-950"
       : "border-sky-700 bg-sky-50 text-sky-950";
+  const setZoom = (factor: number): void => {
+    setViewport((current) => ({
+      x: zoomLogDomain(current?.x ?? automaticX, factor),
+      y: zoomLogDomain(current?.y ?? automaticY, factor),
+    }));
+  };
+  const handlePointerDown = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): void => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = {
+      x: event.clientX,
+      y: event.clientY,
+      viewport: { x: xDomain, y: yDomain },
+    };
+  };
+  const handlePointerMove = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): void => {
+    const start = drag.current;
+    const bounds = frame.current?.getBoundingClientRect();
+    if (start === null || bounds === undefined) return;
+    setViewport({
+      x: panLogDomain(
+        start.viewport.x,
+        -(event.clientX - start.x) / Math.max(1, bounds.width),
+      ),
+      y: panLogDomain(
+        start.viewport.y,
+        (event.clientY - start.y) / Math.max(1, bounds.height),
+      ),
+    });
+  };
+  const handlePointerEnd = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ): void => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    drag.current = null;
+  };
+  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    const bounds = frame.current?.getBoundingClientRect();
+    if (bounds === undefined) return;
+    const xAnchor = Math.min(1, Math.max(
+      0,
+      (event.clientX - bounds.left) / Math.max(1, bounds.width),
+    ));
+    const yAnchor = 1 - Math.min(1, Math.max(
+      0,
+      (event.clientY - bounds.top) / Math.max(1, bounds.height),
+    ));
+    const factor = event.deltaY > 0 ? 1.18 : 0.84;
+    setViewport((current) => ({
+      x: zoomLogDomain(current?.x ?? automaticX, factor, xAnchor),
+      y: zoomLogDomain(current?.y ?? automaticY, factor, yAnchor),
+    }));
+  };
+  const handleKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ): void => {
+    const current = viewport ?? { x: automaticX, y: automaticY };
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      setZoom(0.7);
+    } else if (event.key === "-") {
+      event.preventDefault();
+      setZoom(1.4);
+    } else if (event.key === "0") {
+      event.preventDefault();
+      setViewport(null);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      setViewport({
+        x: panLogDomain(current.x, event.key === "ArrowLeft" ? -0.1 : 0.1),
+        y: current.y,
+      });
+    } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      setViewport({
+        x: current.x,
+        y: panLogDomain(current.y, event.key === "ArrowUp" ? 0.1 : -0.1),
+      });
+    }
+  };
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
@@ -206,29 +332,55 @@ function RooflineChart({
           <p className="mt-1 text-xs leading-5">{interpretation.nextStep}</p>
         </div>
       </div>
-      <div className="roofline-frame" role="img" aria-describedby="roofline-description" aria-label="Logarithmic hierarchical roofline chart">
+      <div className="flex items-center justify-end gap-1" role="toolbar" aria-label="Roofline view controls">
+        <Move className="mr-1 size-3.5 text-zinc-400" aria-hidden="true" />
+        <button type="button" className="roofline-tool-button" aria-label="Zoom in" title="Zoom in" onClick={() => setZoom(0.7)}>
+          <ZoomIn className="size-4" />
+        </button>
+        <button type="button" className="roofline-tool-button" aria-label="Zoom out" title="Zoom out" onClick={() => setZoom(1.4)}>
+          <ZoomOut className="size-4" />
+        </button>
+        <button type="button" className="roofline-tool-button" aria-label="Reset view" title="Reset view" disabled={viewport === null} onClick={() => setViewport(null)}>
+          <RotateCcw className="size-4" />
+        </button>
+      </div>
+      <div
+        ref={frame}
+        className={`roofline-frame ${drag.current === null ? "cursor-grab" : "cursor-grabbing"}`}
+        role="application"
+        tabIndex={0}
+        aria-describedby="roofline-description"
+        aria-label="Interactive logarithmic hierarchical roofline chart"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onWheel={handleWheel}
+        onKeyDown={handleKeyDown}
+      >
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart margin={{ left: 22, right: 22, top: 10, bottom: 8 }}>
+          <ComposedChart margin={{ left: 12, right: 34, top: 18, bottom: 30 }}>
             <CartesianGrid stroke="#e4e4e7" />
             <XAxis
               type="number"
               dataKey="intensity"
               scale="log"
-              domain={[minX, maxX]}
+              domain={xDomain}
               allowDataOverflow
               tickFormatter={formatLogNumber}
               tick={{ fill: "#71717a", fontSize: 11 }}
-              label={{ value: "Arithmetic intensity (FLOP/byte)", position: "insideBottom", offset: -4, fontSize: 11, fill: "#52525b" }}
+              height={54}
+              label={{ value: "Arithmetic intensity (FLOP/byte)", position: "insideBottom", offset: -12, fontSize: 11, fill: "#52525b" }}
             />
             <YAxis
               type="number"
               dataKey="rate"
               scale="log"
-              domain={[minY, maxY]}
+              domain={yDomain}
               allowDataOverflow
-              tickFormatter={formatFlops}
+              tickFormatter={formatAxisFlops}
               tick={{ fill: "#71717a", fontSize: 11 }}
-              width={72}
+              width={84}
             />
             <ChartTooltip content={<RooflineTooltip roof={selectedRoof} />} />
             <Legend verticalAlign="top" height={28} wrapperStyle={{ fontSize: 11 }} />
@@ -317,6 +469,18 @@ function formatFlops(value: number): string {
   if (value >= 1e12) return `${(value / 1e12).toFixed(1)} TFLOP/s`;
   if (value >= 1e9) return `${(value / 1e9).toFixed(1)} GFLOP/s`;
   return `${formatLogNumber(value)} FLOP/s`;
+}
+
+function formatAxisFlops(value: number): string {
+  if (value >= 1e15) return `${formatAxisNumber(value / 1e15)}P`;
+  if (value >= 1e12) return `${formatAxisNumber(value / 1e12)}T`;
+  if (value >= 1e9) return `${formatAxisNumber(value / 1e9)}G`;
+  if (value >= 1e6) return `${formatAxisNumber(value / 1e6)}M`;
+  return formatAxisNumber(value);
+}
+
+function formatAxisNumber(value: number): string {
+  return value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "");
 }
 
 function formatLogNumber(value: number): string {
