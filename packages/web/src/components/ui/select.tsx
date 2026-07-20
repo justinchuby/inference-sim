@@ -4,6 +4,34 @@ import { cn } from "../../lib/utils.js";
 
 export const Select = SelectPrimitive.Root;
 export const SelectValue = SelectPrimitive.Value;
+export const SelectGroup = SelectPrimitive.Group;
+
+export function SelectLabel({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Label>): React.JSX.Element {
+  return (
+    <SelectPrimitive.Label
+      className={cn(
+        "px-2 py-1.5 text-[11px] font-semibold text-zinc-500",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export function SelectSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Separator>): React.JSX.Element {
+  return (
+    <SelectPrimitive.Separator
+      className={cn("my-1 h-px bg-zinc-200", className)}
+      {...props}
+    />
+  );
+}
 
 export function SelectTrigger({
   className,

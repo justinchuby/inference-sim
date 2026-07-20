@@ -31,7 +31,21 @@ export const SCENARIO_PRESET_NAMES = [
   "multi-node",
 ] as const;
 
-export type ScenarioPresetName = typeof SCENARIO_PRESET_NAMES[number];
+export const COMPUTER_PRESET_NAMES = [
+  "rtx-4090-desktop",
+  "rtx-5090-desktop",
+  "mac-mini-m4-pro-64gb",
+  "mac-studio-m3-ultra-512gb",
+  "ryzen-ai-max-395-128gb",
+] as const;
+
+export const ALL_SCENARIO_PRESET_NAMES = [
+  ...COMPUTER_PRESET_NAMES,
+  ...SCENARIO_PRESET_NAMES,
+] as const;
+
+export type ScenarioPresetName =
+  typeof ALL_SCENARIO_PRESET_NAMES[number];
 
 const PRESET_FACTORIES: Readonly<
   Record<ScenarioPresetName, () => SimulationScenario>
@@ -42,18 +56,288 @@ const PRESET_FACTORIES: Readonly<
   "gpu-npu": buildGpuNpu,
   "unified-memory": buildUnified,
   "multi-node": buildMultiNode,
+  "rtx-4090-desktop": () => buildDiscreteComputer({
+    id: "rtx-4090-desktop",
+    gpuId: "desktop:rtx4090",
+    hostCapacityBytes: 64 * GiB,
+    hostResourceLimitBytes: 56 * GiB,
+    hostBandwidthBytesPerSec: 83 * GBps,
+    vramCapacityBytes: 24 * GiB,
+    vramResourceLimitBytes: 22 * GiB,
+    vramBandwidthBytesPerSec: 1_008 * GBps,
+    pcieBandwidthBytesPerSec: 32 * GBps,
+    storageCapacityBytes: 2 * TiB,
+  }),
+  "rtx-5090-desktop": () => buildDiscreteComputer({
+    id: "rtx-5090-desktop",
+    gpuId: "desktop:rtx5090",
+    hostCapacityBytes: 128 * GiB,
+    hostResourceLimitBytes: 112 * GiB,
+    hostBandwidthBytesPerSec: 90 * GBps,
+    vramCapacityBytes: 32 * GiB,
+    vramResourceLimitBytes: 30 * GiB,
+    vramBandwidthBytesPerSec: 1_792 * GBps,
+    pcieBandwidthBytesPerSec: 64 * GBps,
+    storageCapacityBytes: 4 * TiB,
+  }),
+  "mac-mini-m4-pro-64gb": () => buildUnifiedComputer({
+    id: "mac-mini-m4-pro-64gb",
+    nodeId: "mac-mini",
+    gpuId: "mac-mini:m4-pro-gpu",
+    npuId: "mac-mini:m4-pro-neural-engine",
+    capacityBytes: 64 * GiB,
+    resourceLimitBytes: 56 * GiB,
+    bandwidthBytesPerSec: 273 * GBps,
+    storageCapacityBytes: 2 * TiB,
+    executionProvider: "CoreMLExecutionProvider",
+  }),
+  "mac-studio-m3-ultra-512gb": () => buildUnifiedComputer({
+    id: "mac-studio-m3-ultra-512gb",
+    nodeId: "mac-studio",
+    gpuId: "mac-studio:m3-ultra-gpu",
+    npuId: "mac-studio:m3-ultra-neural-engine",
+    capacityBytes: 512 * GiB,
+    resourceLimitBytes: 480 * GiB,
+    bandwidthBytesPerSec: 819 * GBps,
+    storageCapacityBytes: 8 * TiB,
+    executionProvider: "CoreMLExecutionProvider",
+  }),
+  "ryzen-ai-max-395-128gb": () => buildUnifiedComputer({
+    id: "ryzen-ai-max-395-128gb",
+    nodeId: "ryzen-ai",
+    gpuId: "ryzen-ai:radeon-8060s",
+    npuId: "ryzen-ai:xdna2-npu",
+    capacityBytes: 128 * GiB,
+    resourceLimitBytes: 112 * GiB,
+    bandwidthBytesPerSec: 256 * GBps,
+    storageCapacityBytes: 2 * TiB,
+    executionProvider: "DirectMLExecutionProvider",
+  }),
 };
 
 export function buildScenarioPreset(name: ScenarioPresetName): SimulationScenario {
   const factory = PRESET_FACTORIES[name];
   if (!factory) {
     throw new Error(
-      `unknown scenario preset ${String(name)}; available: ${SCENARIO_PRESET_NAMES.join(", ")}`,
+      `unknown scenario preset ${String(name)}; available: ${ALL_SCENARIO_PRESET_NAMES.join(", ")}`,
     );
   }
   const scenario = factory();
   assertValidScenario(scenario);
   return scenario;
+}
+
+interface DiscreteComputerConfig {
+  readonly id: string;
+  readonly gpuId: string;
+  readonly hostCapacityBytes: number;
+  readonly hostResourceLimitBytes: number;
+  readonly hostBandwidthBytesPerSec: number;
+  readonly vramCapacityBytes: number;
+  readonly vramResourceLimitBytes: number;
+  readonly vramBandwidthBytesPerSec: number;
+  readonly pcieBandwidthBytesPerSec: number;
+  readonly storageCapacityBytes: number;
+}
+
+function buildDiscreteComputer(
+  config: DiscreteComputerConfig,
+): SimulationScenario {
+  const nodeId = "desktop";
+  const hostDomainId = `${nodeId}:host`;
+  const vramDomainId = `${config.gpuId}:vram`;
+  const cpu = device(
+    `${nodeId}:cpu`,
+    nodeId,
+    "cpu",
+    "CPUExecutionProvider",
+    [hostDomainId],
+    ["copy", "sampling"],
+  );
+  const gpu = device(
+    config.gpuId,
+    nodeId,
+    "gpu",
+    "CUDAExecutionProvider",
+    [vramDomainId, hostDomainId],
+    ["attention", "ffn", "collective", "copy", "sampling", "draft"],
+  );
+  return scenario({
+    id: config.id,
+    family: "single_discrete",
+    storageCapacityBytes: config.storageCapacityBytes,
+    domains: [
+      {
+        ...domain(
+          hostDomainId,
+          nodeId,
+          "host",
+          config.hostCapacityBytes,
+          config.hostBandwidthBytesPerSec,
+          ["pageable", "pinned"],
+          [cpu.id, gpu.id],
+          { kind: "host", nodeId },
+        ),
+        resourceLimitBytes: config.hostResourceLimitBytes,
+      },
+      {
+        ...domain(
+          vramDomainId,
+          nodeId,
+          "device",
+          config.vramCapacityBytes,
+          config.vramBandwidthBytesPerSec,
+          ["device"],
+          [gpu.id],
+          { kind: "device", deviceId: gpu.id },
+        ),
+        resourceLimitBytes: config.vramResourceLimitBytes,
+      },
+    ],
+    devices: [cpu, gpu],
+    links: bidirectionalLink(
+      `${nodeId}:pcie`,
+      hostDomainId,
+      vramDomainId,
+      "pcie",
+      config.pcieBandwidthBytesPerSec,
+      1_500,
+    ),
+    placements: [
+      placement("target", gpu.id, ["attention", "ffn"], [
+        allocation(
+          "target-weights",
+          vramDomainId,
+          8 * GiB,
+          "device",
+          "weights",
+        ),
+        allocation("target-kv", vramDomainId, 2 * GiB, "device", "kv"),
+        allocation(
+          "target-workspace",
+          vramDomainId,
+          256 * MiB,
+          "device",
+          "workspace",
+        ),
+        allocation(
+          "offload-staging",
+          hostDomainId,
+          2 * GiB,
+          "pinned",
+          "staging",
+        ),
+      ]),
+    ],
+    transfers: [
+      transfer("offload-to-gpu", hostDomainId, vramDomainId, 2 * GiB),
+    ],
+    groups: [group("world", [[0, gpu.id]])],
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 1,
+      expert: 1,
+      data: 1,
+    },
+  });
+}
+
+interface UnifiedComputerConfig {
+  readonly id: string;
+  readonly nodeId: string;
+  readonly gpuId: string;
+  readonly npuId: string;
+  readonly capacityBytes: number;
+  readonly resourceLimitBytes: number;
+  readonly bandwidthBytesPerSec: number;
+  readonly storageCapacityBytes: number;
+  readonly executionProvider: string;
+}
+
+function buildUnifiedComputer(
+  config: UnifiedComputerConfig,
+): SimulationScenario {
+  const unifiedDomainId = `${config.nodeId}:unified`;
+  const cpu = device(
+    `${config.nodeId}:cpu`,
+    config.nodeId,
+    "cpu",
+    "CPUExecutionProvider",
+    [unifiedDomainId],
+    ["attention", "ffn", "copy", "sampling", "draft"],
+  );
+  const gpu = device(
+    config.gpuId,
+    config.nodeId,
+    "gpu",
+    config.executionProvider,
+    [unifiedDomainId],
+    ["attention", "ffn", "copy", "sampling", "draft"],
+  );
+  const npu = device(
+    config.npuId,
+    config.nodeId,
+    "npu",
+    config.executionProvider,
+    [unifiedDomainId],
+    ["attention", "copy", "draft"],
+  );
+  return scenario({
+    id: config.id,
+    family: "unified",
+    storageCapacityBytes: config.storageCapacityBytes,
+    domains: [
+      {
+        ...domain(
+          unifiedDomainId,
+          config.nodeId,
+          "unified",
+          config.capacityBytes,
+          config.bandwidthBytesPerSec,
+          ["unified"],
+          [cpu.id, gpu.id, npu.id],
+          { kind: "host", nodeId: config.nodeId },
+          true,
+        ),
+        resourceLimitBytes: config.resourceLimitBytes,
+      },
+    ],
+    devices: [cpu, gpu, npu],
+    placements: [
+      placement("target", gpu.id, ["attention", "ffn"], [
+        allocation(
+          "target-weights",
+          unifiedDomainId,
+          Math.min(60 * GiB, config.capacityBytes / 2),
+          "unified",
+          "weights",
+        ),
+        allocation(
+          "target-kv",
+          unifiedDomainId,
+          Math.min(16 * GiB, config.capacityBytes / 8),
+          "unified",
+          "kv",
+        ),
+        allocation(
+          "target-workspace",
+          unifiedDomainId,
+          256 * MiB,
+          "unified",
+          "workspace",
+        ),
+      ]),
+    ],
+    groups: [group("world", [[0, gpu.id]])],
+    parallelism: {
+      composition: "cartesian",
+      tensor: 1,
+      pipeline: 1,
+      expert: 1,
+      data: 1,
+    },
+  });
 }
 
 function buildCpuOnly(): SimulationScenario {
@@ -727,6 +1011,8 @@ interface ScenarioParts {
   transfers?: readonly TransferRequirement[];
   groups: readonly CommunicatorGroupSpec[];
   parallelism: SimulationScenario["execution"]["parallelism"];
+  storageCapacityBytes?: number;
+  storageBandwidthBytesPerSec?: number;
 }
 
 function scenario(parts: ScenarioParts): SimulationScenario {
@@ -830,9 +1116,9 @@ function storageTiers(parts: ScenarioParts): {
       id: storageDomainId,
       nodeId,
       kind: "storage",
-      capacityBytes: 2 * TiB,
-      resourceLimitBytes: 2 * TiB,
-      bandwidthBytesPerSec: 7 * GBps,
+      capacityBytes: parts.storageCapacityBytes ?? 2 * TiB,
+      resourceLimitBytes: parts.storageCapacityBytes ?? 2 * TiB,
+      bandwidthBytesPerSec: parts.storageBandwidthBytesPerSec ?? 7 * GBps,
       latencyNs: 50_000,
       coherent: false,
       allocationClasses: ["storage"],
@@ -849,7 +1135,7 @@ function storageTiers(parts: ScenarioParts): {
       storageDomainId,
       warmDomain.id,
       "storage",
-      7 * GBps,
+      parts.storageBandwidthBytesPerSec ?? 7 * GBps,
       50_000,
     ));
     placements.push(placement(

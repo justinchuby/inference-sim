@@ -1342,12 +1342,16 @@ second graph parser.
 
 Current repository state:
 
-- topology and model presets;
+- six protocol-oriented topology templates, five mainstream computer presets,
+  and model presets;
 - static memory/throughput approximation;
 - four static-analysis tests.
 
-Known limitation: several presets and formulas are heuristic and lack
-provenance.
+Computer presets preserve physical RAM/VRAM/unified-memory capacity separately
+from conservative default resource-manager limits. Vendor-published component
+capacity and bandwidth are combined with provenance-labeled heuristic host,
+PCIe, storage, latency, and reserved-memory assumptions; see
+`COMPUTER_PRESETS.md`. These presets do not become calibration evidence.
 
 ### Phase 1: Deterministic Protocol Vertical Slice
 

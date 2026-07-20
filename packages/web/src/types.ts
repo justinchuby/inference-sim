@@ -70,6 +70,11 @@ export interface DashboardModelExecutionProfile {
 
 export interface DashboardRunConfig {
   readonly scenarioName:
+    | "rtx-4090-desktop"
+    | "rtx-5090-desktop"
+    | "mac-mini-m4-pro-64gb"
+    | "mac-studio-m3-ultra-512gb"
+    | "ryzen-ai-max-395-128gb"
     | "cpu-only"
     | "single-gpu-cpu"
     | "multi-gpu"

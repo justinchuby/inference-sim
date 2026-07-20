@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  ALL_SCENARIO_PRESET_NAMES,
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   SCENARIO_SCHEMA_VERSION,
@@ -112,7 +113,7 @@ export async function runCli(
         return 0;
       case "presets":
         printJson(io, {
-          scenarios: SCENARIO_PRESET_NAMES,
+          scenarios: ALL_SCENARIO_PRESET_NAMES,
           parameterizedScenario: "multi-gpu-ring-<2..64>",
           customScenario: "<scenario.yaml|json>",
           hardware: listPresets(),
@@ -609,7 +610,7 @@ async function resolveScenarioTarget(
   if (value === undefined) {
     throw new Error(`${command} requires a scenario target`);
   }
-  if (SCENARIO_PRESET_NAMES.includes(value as ScenarioPresetName)) {
+  if (ALL_SCENARIO_PRESET_NAMES.includes(value as ScenarioPresetName)) {
     return buildScenarioPreset(value as ScenarioPresetName);
   }
   const ringMatch = /^multi-gpu-ring-([1-9]\d*)$/.exec(value);

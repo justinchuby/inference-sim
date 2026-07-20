@@ -98,7 +98,10 @@ import { Progress } from "./components/ui/progress.js";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select.js";
@@ -132,7 +135,24 @@ import type {
   WorkloadMode,
 } from "./types.js";
 
-const SCENARIOS: ReadonlyArray<{
+const COMPUTER_SCENARIOS: ReadonlyArray<{
+  readonly value: DashboardRunConfig["scenarioName"];
+  readonly label: string;
+}> = [
+  { value: "rtx-5090-desktop", label: "RTX 5090 desktop · 32GB" },
+  { value: "rtx-4090-desktop", label: "RTX 4090 desktop · 24GB" },
+  { value: "mac-mini-m4-pro-64gb", label: "Mac mini M4 Pro · 64GB" },
+  {
+    value: "mac-studio-m3-ultra-512gb",
+    label: "Mac Studio M3 Ultra · 512GB",
+  },
+  {
+    value: "ryzen-ai-max-395-128gb",
+    label: "Ryzen AI Max+ 395 · 128GB",
+  },
+];
+
+const TOPOLOGY_SCENARIOS: ReadonlyArray<{
   readonly value: DashboardRunConfig["scenarioName"];
   readonly label: string;
 }> = [
@@ -2252,17 +2272,35 @@ function ConfigurationPanel({
                       }}
                     >
                       <SelectTrigger
-                        className="min-w-0 flex-1"
+                        className="min-w-0 flex-1 text-xs [&>span]:truncate"
                         aria-label="Device topology"
                       >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {SCENARIOS.map((scenario) => (
-                          <SelectItem key={scenario.value} value={scenario.value}>
-                            {scenario.label}
-                          </SelectItem>
-                        ))}
+                        <SelectGroup>
+                          <SelectLabel>Computer presets</SelectLabel>
+                          {COMPUTER_SCENARIOS.map((computer) => (
+                            <SelectItem
+                              key={computer.value}
+                              value={computer.value}
+                            >
+                              {computer.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel>Topology templates</SelectLabel>
+                          {TOPOLOGY_SCENARIOS.map((scenario) => (
+                            <SelectItem
+                              key={scenario.value}
+                              value={scenario.value}
+                            >
+                              {scenario.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
                       </SelectContent>
                     </Select>
                     <Tooltip>

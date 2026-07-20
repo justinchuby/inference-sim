@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import {
+  COMPUTER_PRESET_NAMES,
   buildScenarioPreset,
   parseSimulationResultArtifact,
   serializeSimulationResultArtifact,
@@ -56,6 +57,33 @@ const base: DashboardRunConfig = {
 };
 
 describe("simulateDashboard", () => {
+  it("runs the default bound model on every computer preset", () => {
+    const modelBinding = createBuiltinModelBinding("llama-3-8b");
+    for (const scenarioName of COMPUTER_PRESET_NAMES) {
+      const result = simulateDashboard({
+        ...base,
+        scenarioName,
+        modelBinding,
+        mode: "serving",
+        serving: {
+          ...base.serving,
+          compareTopologies: false,
+          useExpertCache: false,
+          decodeMode: "target_only",
+          requestCount: 1,
+          promptTokens: 16,
+          outputTokens: 2,
+          maxBatchSize: 1,
+          maxBatchTokens: 16,
+          prefillChunkTokens: 16,
+        },
+      });
+      expect(result.scenario.id).toBe(scenarioName);
+      expect(result.serving?.metrics.outputTokens).toBe(2);
+      expect(result.topology.metrics.totalDurationNs).toBeGreaterThan(0);
+    }
+  });
+
   it("enforces imported model speculative capabilities at execution", () => {
     const config: DashboardRunConfig = {
       ...base,

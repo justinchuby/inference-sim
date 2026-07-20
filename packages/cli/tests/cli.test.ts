@@ -72,6 +72,8 @@ describe("CLI", () => {
       models: string[];
     };
     expect(output.scenarios).toContain("gpu-npu");
+    expect(output.scenarios).toContain("mac-mini-m4-pro-64gb");
+    expect(output.scenarios).toContain("rtx-5090-desktop");
     expect(output.parameterizedScenario).toBe("multi-gpu-ring-<2..64>");
     expect(output.customScenario).toBe("<scenario.yaml|json>");
     expect(output.hardware.topologies).toContain("dgx-h100");

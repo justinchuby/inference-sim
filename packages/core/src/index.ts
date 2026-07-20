@@ -312,6 +312,8 @@ export {
   validateScenario,
 } from "./scenario.js";
 export {
+  ALL_SCENARIO_PRESET_NAMES,
+  COMPUTER_PRESET_NAMES,
   SCENARIO_PRESET_NAMES,
   buildMultiGpuRingScenario,
   buildScenarioPreset,

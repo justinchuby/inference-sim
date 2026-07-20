@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPUTER_PRESET_NAMES,
   SCENARIO_PRESET_NAMES,
   ScenarioValidationError,
   assertValidScenario,
@@ -101,6 +102,66 @@ describe("scenario presets", () => {
       "unified",
       "multi_node",
     ]);
+  });
+
+  it("materializes mainstream computer presets with physical limits", () => {
+    const scenarios = new Map(COMPUTER_PRESET_NAMES.map((name) => {
+      const scenario = buildScenarioPreset(name);
+      expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
+      return [name, scenario] as const;
+    }));
+
+    const rtx4090 = scenarios.get("rtx-4090-desktop")!;
+    expect(rtx4090.memoryDomains.find(
+      (domain) => domain.id === "desktop:rtx4090:vram",
+    )).toMatchObject({
+      capacityBytes: 24 * 1024 ** 3,
+      resourceLimitBytes: 22 * 1024 ** 3,
+      bandwidthBytesPerSec: 1_008_000_000_000,
+    });
+
+    const rtx5090 = scenarios.get("rtx-5090-desktop")!;
+    expect(rtx5090.memoryDomains.find(
+      (domain) => domain.id === "desktop:rtx5090:vram",
+    )).toMatchObject({
+      capacityBytes: 32 * 1024 ** 3,
+      bandwidthBytesPerSec: 1_792_000_000_000,
+    });
+
+    const macMini = scenarios.get("mac-mini-m4-pro-64gb")!;
+    expect(macMini.memoryDomains.find(
+      (domain) => domain.kind === "unified",
+    )).toMatchObject({
+      capacityBytes: 64 * 1024 ** 3,
+      resourceLimitBytes: 56 * 1024 ** 3,
+      bandwidthBytesPerSec: 273_000_000_000,
+      coherent: true,
+    });
+    expect(macMini.devices.map((device) => device.id)).toEqual([
+      "mac-mini:cpu",
+      "mac-mini:m4-pro-gpu",
+      "mac-mini:m4-pro-neural-engine",
+    ]);
+
+    const macStudio = scenarios.get("mac-studio-m3-ultra-512gb")!;
+    expect(macStudio.memoryDomains.find(
+      (domain) => domain.kind === "unified",
+    )?.capacityBytes).toBe(512 * 1024 ** 3);
+    expect(macStudio.memoryDomains.find(
+      (domain) => domain.kind === "storage",
+    )?.capacityBytes).toBe(8 * 1024 ** 4);
+
+    const ryzen = scenarios.get("ryzen-ai-max-395-128gb")!;
+    expect(ryzen.memoryDomains.find(
+      (domain) => domain.kind === "unified",
+    )).toMatchObject({
+      capacityBytes: 128 * 1024 ** 3,
+      resourceLimitBytes: 112 * 1024 ** 3,
+      bandwidthBytesPerSec: 256_000_000_000,
+    });
+    expect(ryzen.devices.some(
+      (device) => device.id === "ryzen-ai:xdna2-npu",
+    )).toBe(true);
   });
 
   it("rejects scenarios from the previous routing contract revision", () => {
