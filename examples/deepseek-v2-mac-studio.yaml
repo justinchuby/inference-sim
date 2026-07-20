@@ -1,0 +1,37 @@
+# DeepSeek-V2 on 4× Mac Studio M4 Max (Thunderbolt mesh)
+# Demonstrates: partial offload, expert cache pressure, slow interconnect
+hardware:
+  preset: 4x-mac-studio-m4
+
+model:
+  preset: deepseek-v2
+
+quantization:
+  weights: int4
+  kv_cache: fp8
+  activations: fp16
+
+pipeline:
+  batch_size: 1
+  input_seq_len: 4096
+  output_seq_len: 2048
+  parallelism:
+    tensor_parallel: 1
+    pipeline_parallel: 4
+    expert_parallel: 1
+    data_parallel: 1
+
+memory:
+  kv_cache_budget: 0.25
+  expert_cache_budget: 0.45
+  pinned_pool: 0.05
+  offload: partial
+  prefetch_ahead: 4
+  pressure_threshold: 0.75
+
+simulation:
+  mode: full
+  tokens: 500
+  warmup: 50
+  seed: 42
+  snapshot_interval: 25

@@ -1,0 +1,33 @@
+# Llama-3-70B on 2× RTX 4090 (PCIe, consumer setup)
+# Demonstrates: infeasible without offload at FP16, needs quantization
+hardware:
+  preset: rtx-4090-2x
+
+model:
+  preset: llama-3-70b
+
+quantization:
+  weights: int4
+  kv_cache: fp8
+  activations: fp16
+
+pipeline:
+  batch_size: 1
+  input_seq_len: 2048
+  output_seq_len: 512
+  parallelism:
+    tensor_parallel: 2
+    pipeline_parallel: 1
+    expert_parallel: 1
+    data_parallel: 1
+
+memory:
+  kv_cache_budget: 0.35
+  expert_cache_budget: 0
+  pinned_pool: 0.05
+  offload: partial
+  prefetch_ahead: 0
+  pressure_threshold: 0.9
+
+simulation:
+  mode: static

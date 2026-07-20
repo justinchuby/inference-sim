@@ -1,0 +1,36 @@
+# Mixtral-8x22B on DGX-H100 (8×H100 SXM, NVLink)
+hardware:
+  preset: dgx-h100
+
+model:
+  preset: mixtral-8x22b
+
+quantization:
+  weights: fp8
+  kv_cache: fp8
+  activations: fp16
+
+pipeline:
+  batch_size: 32
+  input_seq_len: 4096
+  output_seq_len: 2048
+  parallelism:
+    tensor_parallel: 4
+    pipeline_parallel: 1
+    expert_parallel: 2
+    data_parallel: 1
+
+memory:
+  kv_cache_budget: 0.4
+  expert_cache_budget: 0.3
+  pinned_pool: 0.1
+  offload: none
+  prefetch_ahead: 2
+  pressure_threshold: 0.85
+
+simulation:
+  mode: full
+  tokens: 1000
+  warmup: 100
+  seed: 42
+  snapshot_interval: 50
