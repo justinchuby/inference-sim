@@ -59,6 +59,10 @@ import {
   parseRuntimeCapturePairFileTexts,
   type ParsedRuntimeCapturePair,
 } from "./runtime-capture-import.js";
+import {
+  MAX_SCENARIO_FILE_BYTES,
+  parseScenarioFileText,
+} from "./scenario-import.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -114,6 +118,7 @@ const SCENARIOS: ReadonlyArray<{
   { value: "gpu-npu", label: "GPU + NPU" },
   { value: "unified-memory", label: "Unified memory" },
   { value: "multi-node", label: "Multi-node" },
+  { value: "custom", label: "Custom scenario" },
 ];
 
 const MULTI_GPU_RANKS: readonly DashboardRunConfig["multiGpuRanks"][] = [
@@ -260,6 +265,11 @@ interface OnnxManifestSelection {
   readonly artifactText: string;
 }
 
+interface ScenarioSelection {
+  readonly fileName?: string;
+  readonly error?: string;
+}
+
 export function App(): React.JSX.Element {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [runState, setRunState] = useState<RunState>({
@@ -269,6 +279,7 @@ export function App(): React.JSX.Element {
   });
   const [calibration, setCalibration] = useState<CalibrationSelection>({});
   const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
+  const [customScenario, setCustomScenario] = useState<ScenarioSelection>({});
   const [onnxManifest, setOnnxManifest] =
     useState<OnnxManifestSelection | undefined>(undefined);
   const [onnxConfig, setOnnxConfig] = useState(DEFAULT_ONNX_CONFIG);
@@ -415,10 +426,49 @@ export function App(): React.JSX.Element {
     setTokenTrace({});
   }, [changeConfig, config]);
 
+  const importCustomScenario = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_SCENARIO_FILE_BYTES) {
+        throw new Error("scenario file exceeds the 4 MiB limit");
+      }
+      const parsed = await parseScenarioFileText(await file.text(), file.name);
+      changeConfig({
+        ...config,
+        scenarioName: "custom",
+        customScenario: parsed.scenario,
+        serving: {
+          ...config.serving,
+          compareTopologies: false,
+        },
+      });
+      setCustomScenario({ fileName: file.name });
+    } catch (error) {
+      setCustomScenario((current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [changeConfig, config]);
+
+  const clearCustomScenario = useCallback((
+    scenarioName: Exclude<
+      DashboardRunConfig["scenarioName"],
+      "custom"
+    > = "single-gpu-cpu",
+  ) => {
+    const { customScenario: _customScenario, ...withoutCustomScenario } = config;
+    changeConfig({
+      ...withoutCustomScenario,
+      scenarioName,
+    });
+    setCustomScenario({});
+  }, [changeConfig, config]);
+
   const reset = useCallback(() => {
     changeConfig(DEFAULT_CONFIG);
     setCalibration({});
     setTokenTrace({});
+    setCustomScenario({});
     setOnnxManifest(undefined);
     setOnnxConfig(DEFAULT_ONNX_CONFIG);
     setOnnxSearchConfig(DEFAULT_ONNX_SEARCH_CONFIG);
@@ -556,6 +606,9 @@ export function App(): React.JSX.Element {
             fileName: `${fileName} / embedded token trace`,
             parsed: parsed.tokenTrace,
           }
+        : {});
+      setCustomScenario(parsed.config.customScenario
+        ? { fileName: `${fileName} / embedded scenario` }
         : {});
       setOnnxManifest(undefined);
       run(parsed.config, parsed.expectation);
@@ -1102,8 +1155,11 @@ export function App(): React.JSX.Element {
               : (
                   <ConfigurationPanel
                     config={config}
+                    customScenario={customScenario}
                     disabled={runState.status === "running"}
                     onChange={changeConfig}
+                    onCustomScenarioFile={importCustomScenario}
+                    onClearCustomScenario={clearCustomScenario}
                     calibration={calibration}
                     onCalibrationFile={importCalibration}
                     onClearCalibration={clearCalibration}
@@ -1727,8 +1783,11 @@ function CompactParallelismSelect({
 
 function ConfigurationPanel({
   config,
+  customScenario,
   disabled,
   onChange,
+  onCustomScenarioFile,
+  onClearCustomScenario,
   calibration,
   onCalibrationFile,
   onClearCalibration,
@@ -1741,8 +1800,16 @@ function ConfigurationPanel({
   running,
 }: {
   readonly config: DashboardRunConfig;
+  readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
+  readonly onCustomScenarioFile: (file: File) => void;
+  readonly onClearCustomScenario: (
+    scenarioName?: Exclude<
+      DashboardRunConfig["scenarioName"],
+      "custom"
+    >,
+  ) => void;
   readonly calibration: CalibrationSelection;
   readonly onCalibrationFile: (file: File) => void;
   readonly onClearCalibration: () => void;
@@ -1755,6 +1822,7 @@ function ConfigurationPanel({
   readonly running: boolean;
 }): React.JSX.Element {
   const calibrationInput = useRef<HTMLInputElement | null>(null);
+  const scenarioInput = useRef<HTMLInputElement | null>(null);
   const tokenTraceInput = useRef<HTMLInputElement | null>(null);
   const runtimeCaptureInput = useRef<HTMLInputElement | null>(null);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
@@ -1770,15 +1838,41 @@ function ConfigurationPanel({
           ? null
           : (
               <>
+                <input
+                  ref={scenarioInput}
+                  type="file"
+                  accept=".yaml,.yml,.json,application/json,text/yaml"
+                  className="sr-only"
+                  disabled={disabled}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) {
+                      onCustomScenarioFile(file);
+                    }
+                  }}
+                />
                 <Field label="Device topology">
                   <Select
                     value={config.scenarioName}
                     disabled={disabled}
-                    onValueChange={(scenarioName) => onChange({
-                      ...config,
-                      scenarioName:
-                        scenarioName as DashboardRunConfig["scenarioName"],
-                    })}
+                    onValueChange={(scenarioName) => {
+                      if (
+                        scenarioName === "custom"
+                        && config.customScenario === undefined
+                      ) {
+                        scenarioInput.current?.click();
+                        return;
+                      }
+                      if (scenarioName === "custom") {
+                        onChange(config);
+                      } else {
+                        onClearCustomScenario(scenarioName as Exclude<
+                          DashboardRunConfig["scenarioName"],
+                          "custom"
+                        >);
+                      }
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -1792,6 +1886,73 @@ function ConfigurationPanel({
                     </SelectContent>
                   </Select>
                 </Field>
+                {config.scenarioName === "custom" && config.customScenario
+                  ? (
+                      <div className="mb-4 flex min-w-0 items-center gap-2 border-y border-zinc-200 bg-zinc-50 px-2 py-2">
+                        <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-semibold text-zinc-800">
+                            {config.customScenario.id}
+                          </div>
+                          <div className="truncate text-[11px] text-zinc-500">
+                            {customScenario.fileName ?? "Embedded scenario"} ·{" "}
+                            {config.customScenario.devices.length} devices ·{" "}
+                            {config.customScenario.links.length} links
+                          </div>
+                        </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              aria-label="Replace custom scenario"
+                              disabled={disabled}
+                              onClick={() => scenarioInput.current?.click()}
+                            >
+                              <Upload className="size-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Replace custom scenario</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-8"
+                              aria-label="Remove custom scenario"
+                              disabled={disabled}
+                              onClick={() => onClearCustomScenario()}
+                            >
+                              <X className="size-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove custom scenario</TooltipContent>
+                        </Tooltip>
+                      </div>
+                    )
+                  : (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="mb-4 w-full"
+                        disabled={disabled}
+                        onClick={() => scenarioInput.current?.click()}
+                      >
+                        <Upload className="size-4" />
+                        Import custom scenario
+                      </Button>
+                    )}
+                {customScenario.error
+                  ? (
+                      <div className="mb-4 text-xs leading-4 text-rose-700">
+                        {customScenario.error}
+                      </div>
+                    )
+                  : null}
                 {config.scenarioName === "multi-gpu"
                   ? (
                       <Field label="GPU ranks">

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import {
+  buildScenarioPreset,
   createSimulationResultArtifact,
   serializeSimulationResultArtifact,
 } from "@inference-sim/core";
@@ -124,6 +125,34 @@ describe("dashboard result artifact import", () => {
     expect(replay.actualArtifactFingerprint).toBe(
       artifact.artifactFingerprint,
     );
+  });
+
+  it("binds and revalidates a complete custom scenario", () => {
+    const customScenario = {
+      ...buildScenarioPreset("single-gpu-cpu"),
+      id: "custom-single-gpu",
+      family: "custom" as const,
+    };
+    const customConfig: DashboardRunConfig = {
+      ...config,
+      scenarioName: "custom",
+      customScenario,
+    };
+    const artifact = createDashboardArtifact(
+      customConfig,
+      simulateDashboardExecution(customConfig),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "custom.json",
+    );
+
+    expect(parsed.config.customScenario).toEqual(customScenario);
+    expect(parsed.config.scenarioName).toBe("custom");
+    expect(executeDashboardWorkerRun(
+      parsed.config,
+      parsed.expectation,
+    ).artifactReplay?.matches).toBe(true);
   });
 
   it("replays all dashboard modes through the Worker execution boundary", async () => {

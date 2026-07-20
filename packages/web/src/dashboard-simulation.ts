@@ -10,6 +10,7 @@ import {
   defaultSpeculativeEligibility,
   expertCacheConfigForTopology,
   fitTopologyCostModel,
+  parseSimulationScenario,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateSpeculativeTokenTrace,
@@ -49,6 +50,7 @@ export function simulateDashboardExecution(
     ? undefined
     : fitTopologyCostModel(config.calibration);
   const costModel = calibration?.costModel ?? DEFAULT_TOPOLOGY_COST_MODEL;
+  const configuredScenario = buildSelectedScenario(config);
   const attachCalibration = (
     result: Omit<DashboardResult, "durationMs" | "calibration">,
   ): Omit<DashboardResult, "durationMs"> => ({
@@ -97,7 +99,7 @@ export function simulateDashboardExecution(
     };
   }
   reportProgress({ progress: 26, phase: "Building selected scenario" });
-  const scenario = buildSelectedScenario(config);
+  const scenario = configuredScenario;
   const scenarioSummary = summarizeScenario(scenario);
   if (config.mode === "speculative") {
     reportProgress({
@@ -172,6 +174,17 @@ export function simulateDashboardExecution(
 }
 
 function buildSelectedScenario(config: DashboardRunConfig) {
+  if (config.scenarioName === "custom") {
+    if (config.customScenario === undefined) {
+      throw new Error("dashboard custom scenario is missing");
+    }
+    return parseSimulationScenario(config.customScenario);
+  }
+  if (config.customScenario !== undefined) {
+    throw new Error(
+      "dashboard custom scenario must only be set when scenarioName is custom",
+    );
+  }
   if (config.scenarioName === "multi-gpu") {
     if (
       config.multiGpuRanks !== 2

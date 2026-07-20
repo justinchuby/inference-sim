@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import {
+  buildScenarioPreset,
   parseSimulationResultArtifact,
   serializeSimulationResultArtifact,
 } from "@inference-sim/core";
@@ -187,6 +188,48 @@ describe("simulateDashboard", () => {
         base.speculative.outputTokens,
       );
     }
+  });
+
+  it("runs a strictly embedded custom device scenario", () => {
+    const customScenario = {
+      ...buildScenarioPreset("gpu-npu"),
+      id: "custom-gpu-npu",
+      family: "custom" as const,
+    };
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario,
+    });
+
+    expect(result.scenario).toMatchObject({
+      id: "custom-gpu-npu",
+      family: "custom",
+      deviceCount: customScenario.devices.length,
+      linkCount: customScenario.links.length,
+    });
+    expect(result.topology.metrics.committedTokens).toBe(
+      base.speculative.outputTokens,
+    );
+  });
+
+  it("rejects missing, irrelevant, and malformed custom scenarios", () => {
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+    })).toThrow("dashboard custom scenario is missing");
+    expect(() => simulateDashboard({
+      ...base,
+      customScenario: buildScenarioPreset("cpu-only"),
+    })).toThrow("must only be set when scenarioName is custom");
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario: {
+        ...buildScenarioPreset("cpu-only"),
+        family: "invented" as "custom",
+      },
+    })).toThrow("family: must be one of");
   });
 
   it("rejects an untrusted dashboard GPU-rank value", () => {

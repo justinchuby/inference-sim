@@ -33,6 +33,7 @@ import type {
   QuantType,
   StaticSearchObjective,
   StaticSearchResult,
+  SimulationScenario,
 } from "@inference-sim/core";
 
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
@@ -44,8 +45,10 @@ export interface DashboardRunConfig {
     | "multi-gpu"
     | "gpu-npu"
     | "unified-memory"
-    | "multi-node";
+    | "multi-node"
+    | "custom";
   readonly multiGpuRanks: 2 | 4 | 8;
+  readonly customScenario?: SimulationScenario;
   readonly mode: WorkloadMode;
   readonly seed: number;
   readonly calibration?: CalibrationDataset;

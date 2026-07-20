@@ -1627,6 +1627,11 @@ layer, using its primitives instead of duplicating controls. Core placement,
 routing, replay, and timing semantics remain in
 `@inference-sim/core`; the UI may select declared contracts but must not
 reimplement owner assignment or simulation state.
+The topology selector also accepts a bounded revision-4 scenario YAML/JSON
+file. The main thread performs a strict structural and semantic parse for
+immediate feedback, the Worker repeats that parse before simulation, and
+dashboard artifacts bind the complete scenario. Local filenames remain UI
+metadata and are excluded from deterministic fingerprints.
 
 ## 16. Testing and Delivery Gates
 

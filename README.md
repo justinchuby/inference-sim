@@ -133,7 +133,11 @@ enter deterministic simulation evidence.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer rather than duplicating UI primitives. Worker progress is tied to actual
 validation, execution, replay, search, and artifact boundaries and remains
-outside deterministic evidence. Its expert-placement selector and the CLI's
+outside deterministic evidence. The topology selector accepts a bounded local
+revision-4 scenario YAML/JSON file, validates it before selection, repeats the
+same strict parse in the Worker, and embeds the complete scenario in exported
+run evidence. The local filename is UI metadata only. Its expert-placement
+selector and the CLI's
 `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
 reimplements owner semantics. Cache slot controls are per EP owner for hot

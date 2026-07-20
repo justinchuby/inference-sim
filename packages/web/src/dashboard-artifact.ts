@@ -14,6 +14,7 @@ import {
   createSimulationResultArtifact,
   fitTopologyCostModel,
   parseSimulationResultArtifact,
+  parseSimulationScenario,
   simulateSpeculativeTokenTrace,
   type CalibrationDataset,
   type SpeculativeProposerFamily,
@@ -225,6 +226,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     assertOnlyKeys(config, [
       "scenarioName",
       "multiGpuRanks",
+      "customScenario",
       "mode",
       "seed",
       "calibration",
@@ -241,6 +243,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
         "gpu-npu",
         "unified-memory",
         "multi-node",
+        "custom",
       ] as const,
       "artifact input scenarioName",
     );
@@ -249,6 +252,17 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       [2, 4, 8] as const,
       "artifact input multiGpuRanks",
     );
+    const customScenario = config.customScenario === undefined
+      ? undefined
+      : parseSimulationScenario(config.customScenario);
+    if (scenarioName === "custom" && customScenario === undefined) {
+      throw new Error("artifact input customScenario is required");
+    }
+    if (scenarioName !== "custom" && customScenario !== undefined) {
+      throw new Error(
+        "artifact input customScenario requires scenarioName custom",
+      );
+    }
     const mode = requireEnum(
       config.mode,
       ["serving", "speculative", "expert-cache"] as const,
@@ -267,6 +281,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     return {
       scenarioName,
       multiGpuRanks,
+      ...(customScenario === undefined ? {} : { customScenario }),
       mode,
       seed,
       speculative,
@@ -516,6 +531,7 @@ function assertOnlyKeys(
   const unknown = Object.keys(record).filter((key) => !allowed.has(key));
   const required = keys.filter((key) => (
     key !== "calibration"
+    && key !== "customScenario"
     && key !== "trace"
     && !(key in record)
   ));

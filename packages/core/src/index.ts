@@ -56,10 +56,13 @@ export {
   FrozenPlanArtifactError,
   createFrozenPlanArtifact,
   parseFrozenPlanArtifact,
-  parseSimulationScenario,
   serializeFrozenPlanArtifact,
   type FrozenPlanArtifact,
 } from "./frozen-plan-artifact.js";
+export {
+  ScenarioParseError,
+  parseSimulationScenario,
+} from "./scenario-parser.js";
 export {
   ONNX_MODEL_MANIFEST_KIND,
   ONNX_MODEL_MANIFEST_REVISION,
