@@ -335,12 +335,15 @@ export {
   type TransportCalibrationObservation,
 } from "./calibration.js";
 export {
+  ALL_TO_ALL_TRAFFIC_SIGNATURE_PREFIX,
   COLLECTIVE_CALIBRATION_ALGORITHM,
   EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
   DEFAULT_TOPOLOGY_COST_MODEL,
   TRANSFER_CALIBRATION_ALGORITHM,
   TOPOLOGY_COST_MODEL_REVISION,
   TopologyWorkloadError,
+  assertCanonicalAllToAllTrafficSignature,
+  canonicalAllToAllTrafficSignature,
   compareTopologyWorkloads,
   compileTopologyExpertLoadPlan,
   compileTopologyWorkloadPlan,

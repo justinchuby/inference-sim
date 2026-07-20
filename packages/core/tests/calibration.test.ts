@@ -3,6 +3,7 @@ import {
   CALIBRATION_DATASET_REVISION,
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
+  canonicalAllToAllTrafficSignature,
   fitTopologyCostModel,
   parseCalibrationDataset,
   simulateTopologyWorkload,
@@ -143,36 +144,99 @@ describe("topology cost calibration", () => {
     );
   });
 
-  it("rejects calibrated AllToAllV without a traffic signature", () => {
+  it("canonicalizes proportional AllToAllV traffic matrices", () => {
+    expect(canonicalAllToAllTrafficSignature([
+      [2, 4],
+      [0, 0],
+    ])).toBe("all_to_all_v_matrix_v1:[[1,2],[0,0]]");
+    expect(canonicalAllToAllTrafficSignature([
+      [1, 2],
+      [0, 0],
+    ])).toBe("all_to_all_v_matrix_v1:[[1,2],[0,0]]");
+    expect(() => canonicalAllToAllTrafficSignature([
+      [0, 0],
+      [0, 0],
+    ])).toThrow("at least one positive cell");
+  });
+
+  it("rejects revision 2 and malformed traffic-signature contracts", () => {
+    const dataset = calibrationDataset("measured");
+    expect(() => fitTopologyCostModel({
+      ...dataset,
+      revision: 2 as typeof dataset.revision,
+    })).toThrow("unsupported calibration dataset revision 2");
+
+    const observations = allToAllObservations();
+    expect(() => fitTopologyCostModel({
+      ...dataset,
+      transportObservations: [
+        ...dataset.transportObservations,
+        ...observations.map((observation) => ({
+          ...observation,
+          trafficSignature: "all_to_all_v_matrix_v1:[[2,2],[0,0]]",
+        })),
+      ],
+    })).toThrow("traffic signature is not canonical");
+
+    expect(() => fitTopologyCostModel({
+      ...dataset,
+      transportObservations: dataset.transportObservations.map(
+        (observation) => ({
+          ...observation,
+          trafficSignature: "all_to_all_v_matrix_v1:[[0,1],[1,0]]",
+        }),
+      ),
+    })).toThrow("cannot declare a traffic signature");
+  });
+
+  it("matches calibrated AllToAllV by canonical traffic signature", () => {
+    const dataset = calibrationDataset("measured");
+    const fit = fitTopologyCostModel({
+      ...dataset,
+      transportObservations: [
+        ...dataset.transportObservations,
+        ...allToAllObservations(),
+      ],
+    });
+    const result = simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      routedCalibrationProfile(),
+      fit.costModel,
+    );
+    const allToAllDurations = result.plan.steps.flatMap((step) => (
+      step.operation.kind === "collective"
+      && step.operation.algorithm === "all_to_all_v"
+        ? [step.operation.durationNs]
+        : []
+    ));
+
+    expect(allToAllDurations).toEqual([2_000, 2_200]);
+    expect(result.execution.status).toBe("succeeded");
+  });
+
+  it("rejects a calibrated AllToAllV traffic-shape mismatch", () => {
+    const dataset = calibrationDataset("measured");
+    const fit = fitTopologyCostModel({
+      ...dataset,
+      transportObservations: [
+        ...dataset.transportObservations,
+        ...allToAllObservations(),
+      ],
+    });
     expect(() => simulateTopologyWorkload(
       buildScenarioPreset("multi-gpu"),
       {
-        id: "calibrated-routed",
-        batchSize: 1,
-        expertPlacement: {
-          strategy: "contiguous",
-          expertIds: ["e0", "e1", "e2", "e3"],
-        },
-        expertTokenPlacement: "round_robin",
+        ...routedCalibrationProfile(),
         units: [{
-          id: "route-0",
-          targetTokenWidth: 1,
-          committedTokens: 1,
-          draftTokens: 0,
-          activeExperts: 2,
-          expertRouted: true,
+          ...routedCalibrationProfile().units[0],
           routedExperts: [
-            { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
-            { expertId: "e2", sourceTier: "hot", loadBytes: 0 },
+            { expertId: "e2", sourceTier: "hot" as const, loadBytes: 0 },
+            { expertId: "e3", sourceTier: "hot" as const, loadBytes: 0 },
           ],
-          warmLoadBytes: 0,
-          coldLoadBytes: 0,
         }],
       },
-      fitTopologyCostModel(calibrationDataset("measured")).costModel,
-    )).toThrow(
-      "calibrated all_to_all_v requires a traffic-signature calibration contract",
-    );
+      fit.costModel,
+    )).toThrow("no calibrated transport curve");
   });
 
   it("keeps synthetic imports heuristic", () => {
@@ -337,6 +401,94 @@ describe("topology cost calibration", () => {
     })).toThrow("median duration must be non-decreasing");
   });
 });
+
+function routedCalibrationProfile() {
+  return {
+    id: "calibrated-routed",
+    batchSize: 1,
+    expertPlacement: {
+      strategy: "contiguous" as const,
+      expertIds: ["e0", "e1", "e2", "e3"],
+    },
+    expertTokenPlacement: "round_robin" as const,
+    units: [{
+      id: "route-0",
+      targetTokenWidth: 1,
+      committedTokens: 1,
+      draftTokens: 0,
+      activeExperts: 2,
+      expertRouted: true,
+      routedExperts: [
+        { expertId: "e0", sourceTier: "hot" as const, loadBytes: 0 },
+        { expertId: "e2", sourceTier: "hot" as const, loadBytes: 0 },
+      ],
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
+    }],
+  };
+}
+
+function allToAllObservations(): TransportCalibrationObservation[] {
+  const dispatchSignature = canonicalAllToAllTrafficSignature([
+    [1, 1],
+    [0, 0],
+  ]);
+  const gatherSignature = canonicalAllToAllTrafficSignature([
+    [1, 0],
+    [1, 0],
+  ]);
+  return [
+    allToAllObservation(
+      "dispatch-small",
+      "node0:nvlink:forward",
+      dispatchSignature,
+      1024 ** 2,
+      1_000,
+    ),
+    allToAllObservation(
+      "dispatch-large",
+      "node0:nvlink:forward",
+      dispatchSignature,
+      4 * 1024 ** 2,
+      4_000,
+    ),
+    allToAllObservation(
+      "gather-small",
+      "node0:nvlink:reverse",
+      gatherSignature,
+      1024 ** 2,
+      1_200,
+    ),
+    allToAllObservation(
+      "gather-large",
+      "node0:nvlink:reverse",
+      gatherSignature,
+      4 * 1024 ** 2,
+      4_200,
+    ),
+  ];
+}
+
+function allToAllObservation(
+  id: string,
+  linkId: string,
+  trafficSignature: string,
+  bytes: number,
+  center: number,
+): TransportCalibrationObservation {
+  return {
+    id,
+    scenarioId: "multi-gpu",
+    operation: "collective",
+    linkIds: [linkId],
+    participantCount: 2,
+    algorithm: "all_to_all_v",
+    trafficSignature,
+    bytes,
+    durationsNs: [center - 1, center, center + 1],
+    regime: "two-rank routed traffic fixture",
+  };
+}
 
 function twoTokenVerificationProfile() {
   return {
@@ -503,6 +655,7 @@ function externalDataset(dataset: CalibrationDataset): unknown {
           link_ids: observation.linkIds,
           participant_count: observation.participantCount,
           algorithm: observation.algorithm,
+          traffic_signature: observation.trafficSignature,
           bytes: observation.bytes,
           durations_ns: observation.durationsNs,
           regime: observation.regime,

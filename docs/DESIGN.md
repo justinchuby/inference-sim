@@ -958,9 +958,8 @@ directed link. The FrozenPlan collective reserves the union of all phase links
 for its full duration, which is conservative for contention with other
 operations. A missing directed path fails compilation. Imported end-to-end
 collective calibration replaces this duration fallback but not the declared
-resource reservation. Calibration revision 2 supports the all-reduce identity;
-it rejects AllToAllV until the observation contract includes a traffic
-signature.
+resource reservation. Calibration revision 3 supports all-reduce directly and
+AllToAllV by binding each curve to a canonical traffic signature.
 
 ### 11.2 Provenance
 
@@ -1000,7 +999,8 @@ coefficient overrides. A dataset records:
 - repeated duration observations for invocation, attention, FFN, draft, and
   lookup work;
 - repeated transfer and collective observations scoped to an exact scenario,
-  ordered link path, participant count, algorithm, and message size;
+  ordered link path, participant count, algorithm, optional AllToAllV traffic
+  signature, and message size;
 - the work-item regime for every observation point;
 - activation, collective, and cold-load model constants; and
 - minimum sample count plus normalized-RMSE and P95-relative-error gates.
@@ -1038,10 +1038,11 @@ than extrapolated under a `calibrated` label. A stable dataset fingerprint is
 included for replay and result attribution. It identifies normalized dataset
 content but is not a cryptographic integrity signature.
 
-Calibration dataset revision 2 groups communication observations by:
+Calibration dataset revision 3 groups communication observations by:
 
 ```text
-(scenario_id, operation, ordered_link_ids, participant_count, algorithm)
+(scenario_id, operation, ordered_link_ids, participant_count, algorithm,
+ traffic_signature?)
 ```
 
 Every group requires at least two distinct positive message-size points and at
@@ -1055,20 +1056,24 @@ curves name exactly one directed link and two endpoints. The current topology
 compiler identifies dense tensor collectives as `all_reduce_ring`. Routed
 expert units on an overlap-capable topology emit one tensor all-reduce followed
 by `all_to_all_v` dispatch, owner-local FFN compute, and `all_to_all_v` gather.
-Calibration revision 2 cannot identify an AllToAllV source/destination traffic
-matrix. It may retain legacy `all_to_all_v` observations for dataset
-compatibility and diagnostics, but calibrated routed execution rejects them. A
-later dataset revision must add a canonical traffic signature before those
-measurements can become executable exact-path evidence.
+AllToAllV observations require
+`all_to_all_v_matrix_v1:<matrix-json>`. The matrix uses immutable communicator
+rank order, includes local diagonal cells, contains non-negative safe integers,
+and is divided by the GCD of all non-zero cells before serialization. This
+normalizes proportional traffic shapes across message sizes while preserving
+dispatch/gather direction, local fraction, and owner skew. Missing,
+dimension-mismatched, malformed, or further-reducible signatures are rejected;
+non-AllToAllV observations cannot declare one.
 For every communicator size, all-reduce uses the ordered neighbor ring and
 AllToAllV enumerates every pairwise phase offset; the plan reserves the stable
 union of their directed physical paths. Every supported
 algorithm/path/participant-count combination requires its own observations.
 This arbitrary-rank phase model and EP-owner behavior is preserved in topology
-cost-model revision 8. Revision 8 charges AllToAllV from the explicit
-token-source to expert-owner matrix, including per-message route selection,
-shared-link service, zero-byte phases, and owner-local traffic. Revision 7
-models are rejected.
+cost-model revision 9. Revision 9 binds AllToAllV curves to the canonical
+traffic signature generated from the actual token-source to expert-owner
+matrix. Curve selection must match scenario, operation, ordered links,
+participants, algorithm, signature, and byte range. Revision 8 cost models are
+rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
@@ -1079,7 +1084,7 @@ scenario device, memory, and link evidence. Built-in topology presets remain
 heuristic, so importing measured kernel timings alone does not turn their
 latency rankings into hardware predictions.
 
-When revision 2 exact-path communication curves are present, declared link
+When revision 3 exact-path communication curves are present, declared link
 bandwidth and latency do not determine the selected path's final duration, but
 they still determine which physical path is selected for the message size.
 Their provenance therefore remains part of end-to-end confidence. The
@@ -1087,14 +1092,14 @@ calibration curve applies only after routing and must exactly match the
 selected ordered link path, scenario, operation, participant count, algorithm,
 and byte range. The simulator does not search for an alternate calibrated path
 when the declared minimum-duration route lacks a curve; it fails closed. A
-future calibration contract may model route selection directly, but revision 2
+future calibration contract may model route selection directly, but revision 3
 does not.
 
 The current compute fit is deliberately linear and device-kind scoped.
 Transport and collective timing is measured-curve scoped, but the model does
 not yet fit compute roofline knees, sequence-length effects, cache-tier
 distributions, or per-product device overrides. Those require a later
-calibration revision rather than weakening revision 2 applicability.
+calibration revision rather than weakening revision 3 applicability.
 
 ## 12. Static Analysis Requirements
 
@@ -1357,14 +1362,15 @@ Speculative and expert-cache logical traces now compile into FrozenPlan
 resources across all six required topology families. Physical routes minimize
 declared directed-link latency plus message-size service time with stable
 ordered-link tie-breaking and no domain revisits. Default link duration uses
-those same declarations; imported revision 2 calibration instead supplies the
+those same declarations; imported revision 3 calibration instead supplies the
 selected exact path's transfer or collective duration with fail-closed
 identity and message-range checks. Link provenance remains relevant because
 the declarations still select the path. Compute coefficients remain
 provenance-tagged. Routed expert dispatch and gather use an explicit
 round-robin token-source to owner traffic matrix, so network service reflects
-expert skew and omits owner-local bytes. Calibration revision 2 fails closed
-for AllToAllV until a traffic signature is versioned. Routed expert profiles
+expert skew and omits owner-local bytes. Calibration revision 3 canonicalizes
+that matrix into the exact curve identity, enabling measured AllToAllV without
+collapsing different skew shapes. Routed expert profiles
 on multi-GPU and multi-node presets
 execute TP attention, bidirectional all-reduce, AllToAllV dispatch, owner-local
 FFN, and AllToAllV gather; demand loads and prefetches target the same explicit

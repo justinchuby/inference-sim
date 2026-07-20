@@ -324,7 +324,7 @@ describe("simulateDashboard", () => {
       fitConfidence: "heuristic",
     });
     expect(result.calibration?.diagnostics).toHaveLength(15);
-    expect(result.calibration?.transportDiagnostics).toHaveLength(18);
+    expect(result.calibration?.transportDiagnostics).toHaveLength(20);
     expect(result.topology.assumptions[0]).toContain(
       calibration.fit.datasetFingerprint,
     );
@@ -355,7 +355,7 @@ describe("simulateDashboard", () => {
     );
   });
 
-  it("rejects routed calibration without an AllToAllV traffic signature", async () => {
+  it("rejects a revision-3 AllToAllV observation without a traffic signature", async () => {
     const text = await readFile(new URL(
       "../../../examples/calibration-synthetic.yaml",
       import.meta.url,
@@ -367,9 +367,17 @@ describe("simulateDashboard", () => {
     expect(() => simulateDashboard({
       ...base,
       mode: "expert-cache",
-      calibration: calibration.dataset,
+      calibration: {
+        ...calibration.dataset,
+        transportObservations:
+          calibration.dataset.transportObservations.map((observation) => (
+            observation.algorithm === "all_to_all_v"
+              ? { ...observation, trafficSignature: undefined }
+              : observation
+          )),
+      },
     })).toThrow(
-      "calibrated all_to_all_v requires a traffic-signature calibration contract",
+      "requires an AllToAllV traffic signature",
     );
   });
 
@@ -420,7 +428,7 @@ describe("simulateDashboard", () => {
           ),
       },
     })).toThrow(
-      "calibrated all_to_all_v requires a traffic-signature calibration contract",
+      "no calibrated transport curve",
     );
   });
 

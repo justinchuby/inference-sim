@@ -850,7 +850,7 @@ function calibrationConfig(scenarioIds: readonly string[]) {
   ]);
   return {
     calibration: {
-      revision: 2,
+      revision: 3,
       id: "cli-calibration-fixture",
       provenance: {
         kind: "synthetic",

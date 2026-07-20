@@ -177,15 +177,15 @@ the heuristic built-in topology presets: end-to-end timing uses the weakest
 confidence among the performance inputs actually used. Exact-path
 communication curves replace declared link performance only for the selected
 path's duration.
-Calibration revision 2 scopes communication curves to an exact scenario,
-ordered directed-link path, participant count, algorithm, and observed byte
-range. Imported calibration never silently falls back to topology bandwidth or
-extrapolates beyond that range. Declared link latency and bandwidth still
-select the physical path for each message size, so their provenance remains
-part of end-to-end confidence even when an exact-path curve supplies the
-selected path's duration. Revision 2 cannot identify an AllToAllV traffic
-matrix, so routed calibrated execution fails closed until a later calibration
-contract adds a canonical traffic signature.
+Calibration revision 3 scopes communication curves to an exact scenario,
+ordered directed-link path, participant count, algorithm, optional canonical
+AllToAllV traffic signature, and observed byte range. Imported calibration
+never silently falls back to topology bandwidth or extrapolates beyond that
+range. Declared link latency and bandwidth still select the physical path for
+each message size, so their provenance remains part of end-to-end confidence
+even when an exact-path curve supplies the selected path's duration.
+AllToAllV signatures use the GCD-reduced source-rank to expert-owner matrix, so
+proportional message sizes share a curve while different skew shapes do not.
 
 CLI commands that take one scenario accept either a listed preset or
 `multi-gpu-ring-N` for `N=2..64`. `compare` and `serving-compare` intentionally

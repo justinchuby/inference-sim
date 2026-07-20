@@ -33,10 +33,12 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 8;
+export const TOPOLOGY_COST_MODEL_REVISION = 9;
 export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
 export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
 export const EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM = "all_to_all_v";
+export const ALL_TO_ALL_TRAFFIC_SIGNATURE_PREFIX =
+  "all_to_all_v_matrix_v1:";
 
 export interface TopologyWorkUnit {
   readonly id: string;
@@ -126,6 +128,7 @@ export interface TransportCalibrationCurve {
   readonly linkIds: readonly string[];
   readonly participantCount: number;
   readonly algorithm: string;
+  readonly trafficSignature?: string;
   readonly points: readonly TransportCalibrationPoint[];
 }
 
@@ -1350,6 +1353,9 @@ class WorkloadPlanCompiler {
       algorithm,
       bytes,
       phases,
+      allToAllTraffic === undefined
+        ? undefined
+        : canonicalAllToAllTrafficSignature(allToAllTraffic),
     );
     const commSequenceId =
       this.collectiveSequenceByGroup.get(group.id) ?? 0;
@@ -2148,7 +2154,14 @@ class WorkloadPlanCompiler {
     algorithm: string,
     bytes: number,
     collectivePhases?: CollectivePhases,
+    trafficSignature?: string,
   ): number {
+    if (
+      algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+      && linkIds.length === 0
+    ) {
+      return 0;
+    }
     const curves = this.costModel.transportCurves;
     if (curves === undefined) {
       return operation === "transfer"
@@ -2164,7 +2177,10 @@ class WorkloadPlanCompiler {
             algorithm,
           );
     }
-    if (algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM) {
+    if (
+      algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+      && trafficSignature === undefined
+    ) {
       throw new TopologyWorkloadError(
         "calibrated all_to_all_v requires a traffic-signature calibration contract",
       );
@@ -2174,6 +2190,7 @@ class WorkloadPlanCompiler {
       && candidate.operation === operation
       && candidate.participantCount === participantCount
       && candidate.algorithm === algorithm
+      && candidate.trafficSignature === trafficSignature
       && arraysEqual(candidate.linkIds, linkIds)
     ));
     const identity = [
@@ -2182,6 +2199,7 @@ class WorkloadPlanCompiler {
       algorithm,
       `${participantCount} participants`,
       linkIds.join("->"),
+      trafficSignature ?? "no-traffic-signature",
     ].join("/");
     if (!curve) {
       throw new TopologyWorkloadError(
@@ -2430,6 +2448,89 @@ function balancedAllToAllTraffic(
   ));
 }
 
+export function canonicalAllToAllTrafficSignature(
+  traffic: readonly (readonly number[])[],
+): string {
+  if (
+    traffic.length < 2
+    || traffic.some((row) => row.length !== traffic.length)
+  ) {
+    throw new TopologyWorkloadError(
+      "all-to-all traffic signature requires a square matrix with at least two ranks",
+    );
+  }
+  const values = traffic.flat();
+  if (values.some((bytes) => (
+    !Number.isSafeInteger(bytes) || bytes < 0
+  ))) {
+    throw new TopologyWorkloadError(
+      "all-to-all traffic signature requires non-negative safe integers",
+    );
+  }
+  const positive = values.filter((bytes) => bytes > 0);
+  if (positive.length === 0) {
+    throw new TopologyWorkloadError(
+      "all-to-all traffic signature requires at least one positive cell",
+    );
+  }
+  const divisor = positive.reduce(greatestCommonDivisor);
+  const reduced = traffic.map((row) => (
+    row.map((bytes) => bytes / divisor)
+  ));
+  return `${ALL_TO_ALL_TRAFFIC_SIGNATURE_PREFIX}${JSON.stringify(reduced)}`;
+}
+
+export function assertCanonicalAllToAllTrafficSignature(
+  signature: string,
+  participantCount: number,
+): void {
+  if (!signature.startsWith(ALL_TO_ALL_TRAFFIC_SIGNATURE_PREFIX)) {
+    throw new TopologyWorkloadError(
+      `invalid AllToAllV traffic signature ${JSON.stringify(signature)}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(signature.slice(
+      ALL_TO_ALL_TRAFFIC_SIGNATURE_PREFIX.length,
+    ));
+  } catch {
+    throw new TopologyWorkloadError(
+      `invalid AllToAllV traffic signature ${JSON.stringify(signature)}`,
+    );
+  }
+  if (
+    !Array.isArray(parsed)
+    || parsed.length !== participantCount
+    || parsed.some((row) => (
+      !Array.isArray(row) || row.length !== participantCount
+    ))
+  ) {
+    throw new TopologyWorkloadError(
+      `AllToAllV traffic signature must be ${participantCount}x${participantCount}`,
+    );
+  }
+  const canonical = canonicalAllToAllTrafficSignature(
+    parsed as readonly (readonly number[])[],
+  );
+  if (canonical !== signature) {
+    throw new TopologyWorkloadError(
+      "AllToAllV traffic signature is not canonical",
+    );
+  }
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let dividend = left;
+  let divisor = right;
+  while (divisor !== 0) {
+    const remainder = dividend % divisor;
+    dividend = divisor;
+    divisor = remainder;
+  }
+  return dividend;
+}
+
 function transposeTraffic(
   traffic: readonly (readonly number[])[],
 ): readonly (readonly number[])[] {
@@ -2653,6 +2754,24 @@ function validateInputs(
       if (curve.algorithm.trim().length === 0) {
         throw new TopologyWorkloadError(
           `transport curve ${identity} algorithm must be non-empty`,
+        );
+      }
+      if (
+        curve.operation === "collective"
+        && curve.algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+      ) {
+        if (curve.trafficSignature === undefined) {
+          throw new TopologyWorkloadError(
+            `transport curve ${identity} requires an AllToAllV traffic signature`,
+          );
+        }
+        assertCanonicalAllToAllTrafficSignature(
+          curve.trafficSignature,
+          curve.participantCount,
+        );
+      } else if (curve.trafficSignature !== undefined) {
+        throw new TopologyWorkloadError(
+          `transport curve ${identity} cannot declare a traffic signature`,
         );
       }
       if (curve.points.length < 2) {
@@ -2926,6 +3045,7 @@ function transportCurveIdentity(curve: TransportCalibrationCurve): string {
     algorithm: curve.algorithm,
     participantCount: curve.participantCount,
     linkIds: curve.linkIds,
+    trafficSignature: curve.trafficSignature,
   });
 }
 

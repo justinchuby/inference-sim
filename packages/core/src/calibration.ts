@@ -3,14 +3,16 @@ import type {
   SimDeviceKind,
 } from "./scenario-types.js";
 import {
+  EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
   TOPOLOGY_COST_MODEL_REVISION,
+  assertCanonicalAllToAllTrafficSignature,
   type DeviceCapabilityCost,
   type TopologyCostModel,
   type TransportCalibrationCurve,
   type TransportOperationKind,
 } from "./topology-workload.js";
 
-export const CALIBRATION_DATASET_REVISION = 2;
+export const CALIBRATION_DATASET_REVISION = 3;
 
 export type CalibrationEvidenceKind = "measured" | "synthetic";
 export type CalibratedCapability =
@@ -62,6 +64,7 @@ export interface TransportCalibrationObservation {
   readonly linkIds: readonly string[];
   readonly participantCount: number;
   readonly algorithm: string;
+  readonly trafficSignature?: string;
   readonly bytes: number;
   readonly durationsNs: readonly number[];
   readonly regime: string;
@@ -105,6 +108,7 @@ export interface TransportCalibrationFitDiagnostic {
   readonly linkIds: readonly string[];
   readonly participantCount: number;
   readonly algorithm: string;
+  readonly trafficSignature?: string;
   readonly observationPoints: number;
   readonly samples: number;
   readonly minBytes: number;
@@ -292,6 +296,7 @@ export function parseCalibrationDataset(input: unknown): CalibrationDataset {
           context,
         ),
         algorithm: requireString(observation, "algorithm", context),
+        ...optionalTransportTrafficSignature(observation, context),
         bytes: requireNumber(observation, "bytes", context),
         durationsNs: requireNumberArray(
           observation,
@@ -657,6 +662,30 @@ export function validateCalibrationDataset(
       observation.algorithm,
       `transport observation ${observation.id} algorithm`,
     );
+    if (
+      observation.operation === "collective"
+      && observation.algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM
+    ) {
+      if (observation.trafficSignature === undefined) {
+        throw new CalibrationError(
+          `transport observation ${observation.id} requires an AllToAllV traffic signature`,
+        );
+      }
+      try {
+        assertCanonicalAllToAllTrafficSignature(
+          observation.trafficSignature,
+          observation.participantCount,
+        );
+      } catch (error) {
+        throw new CalibrationError(
+          `transport observation ${observation.id}: ${errorMessage(error)}`,
+        );
+      }
+    } else if (observation.trafficSignature !== undefined) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} cannot declare a traffic signature`,
+      );
+    }
     assertNonEmpty(
       observation.regime,
       `transport observation ${observation.id} regime`,
@@ -822,6 +851,9 @@ function fitTransportCurves(dataset: CalibrationDataset): {
       linkIds: [...first.linkIds],
       participantCount: first.participantCount,
       algorithm: first.algorithm,
+      ...(first.trafficSignature === undefined
+        ? {}
+        : { trafficSignature: first.trafficSignature }),
       points,
     });
     diagnostics.push({
@@ -830,6 +862,9 @@ function fitTransportCurves(dataset: CalibrationDataset): {
       linkIds: [...first.linkIds],
       participantCount: first.participantCount,
       algorithm: first.algorithm,
+      ...(first.trafficSignature === undefined
+        ? {}
+        : { trafficSignature: first.trafficSignature }),
       observationPoints: observations.length,
       samples: sampleCount,
       minBytes: points[0].bytes,
@@ -905,6 +940,7 @@ function fingerprintDataset(dataset: CalibrationDataset): string {
         linkIds: [...observation.linkIds],
         participantCount: observation.participantCount,
         algorithm: observation.algorithm,
+        trafficSignature: observation.trafficSignature,
         bytes: observation.bytes,
         durationsNs: [...observation.durationsNs].sort((left, right) => (
           left - right
@@ -953,7 +989,24 @@ function transportObservationIdentity(
     algorithm: observation.algorithm,
     participantCount: observation.participantCount,
     linkIds: observation.linkIds,
+    trafficSignature: observation.trafficSignature,
   });
+}
+
+function optionalTransportTrafficSignature(
+  observation: Record<string, unknown>,
+  context: string,
+): { readonly trafficSignature?: string } {
+  const trafficSignature = optionalString(
+    observation,
+    "traffic_signature",
+    context,
+  );
+  return trafficSignature === undefined ? {} : { trafficSignature };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function assertPositiveSafeInteger(value: number, label: string): void {

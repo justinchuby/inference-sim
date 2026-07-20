@@ -34,9 +34,9 @@ describe("topology-aware workload execution", () => {
       targetOnlyTopologyProfile(1),
       {
         ...DEFAULT_TOPOLOGY_COST_MODEL,
-        revision: 7 as typeof DEFAULT_TOPOLOGY_COST_MODEL.revision,
+        revision: 8 as typeof DEFAULT_TOPOLOGY_COST_MODEL.revision,
       },
-    )).toThrow("unsupported topology cost revision 7");
+    )).toThrow("unsupported topology cost revision 8");
   });
 
   it("rejects an empty target-only profile before plan execution", () => {
