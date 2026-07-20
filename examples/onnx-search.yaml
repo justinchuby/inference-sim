@@ -1,0 +1,31 @@
+search:
+  objective: decode_throughput
+  top_k: 10
+  max_candidates: 10000
+  require_feasible: true
+  maximum_device_used_fraction: 0.9
+
+hardware:
+  presets: [dgx-h100, dgx-h200, a100-4x, rtx-4090-2x]
+
+quantization:
+  kv_cache: [fp16, fp8]
+  activations: [fp16]
+
+pipeline:
+  batch_sizes: [1, 4, 16]
+  input_seq_lens: [2048, 8192]
+  output_seq_lens: [512]
+  parallelism:
+    tensor_parallel: [1, 2, 4, 8]
+    pipeline_parallel: [1, 2]
+    expert_parallel: [1, 2, 4, 8]
+    data_parallel: [1]
+
+memory:
+  kv_cache_budget: 0.35
+  expert_cache_budget: 0.25
+  pinned_pool: 0.05
+  offload: [none, partial]
+  prefetch_ahead: 2
+  pressure_threshold: 0.9

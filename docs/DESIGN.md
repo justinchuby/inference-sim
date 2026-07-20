@@ -1482,6 +1482,18 @@ sequence, parallelism, and offload controls and do not masquerade as replayable
 serving/speculative dashboard artifacts. The result exposes per-device
 weights, expert residency, KV, activation, and free capacity alongside the
 manifest inventory and profile assumptions.
+
+Static configuration search is a deterministic Cartesian enumeration of only
+the caller-declared finite axes. `maxCandidates` is checked before evaluation;
+empty or duplicate axes, duplicate topology identities, non-finite
+constraints, empty topologies, and unsafe candidate counts fail closed.
+Structurally invalid TP/PP/EP/DP candidates and candidates excluded by fit,
+headroom, TTFT, or ITL constraints are counted by reason. Eligible candidates
+are ranked by the selected static objective with a stable candidate-identity
+tie-break. Output includes declared, evaluated, eligible, returned, and
+rejected counts. The ranking inherits the model profile's evidence and the
+static analyzer's roofline assumptions; it describes the declared search space
+and is not a global optimum claim.
 All CLI commands that consume one scenario resolve a shared scenario-target
 grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
 materialization, workload execution, serving, runtime-capture verification,

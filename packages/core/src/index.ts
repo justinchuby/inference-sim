@@ -29,6 +29,16 @@ export { GPU_PRESETS, buildTopology, listPresets } from "./presets.js";
 export { MODEL_PRESETS, buildModelProfile, listModelPresets } from "./models.js";
 export { analyzeStatic } from "./static-analysis.js";
 export {
+  searchStaticConfigurations,
+  type StaticSearchCandidate,
+  type StaticSearchConstraints,
+  type StaticSearchObjective,
+  type StaticSearchRequest,
+  type StaticSearchResult,
+  type StaticSearchSpace,
+  type StaticSearchTopology,
+} from "./static-search.js";
+export {
   SIMULATION_RESULT_ARTIFACT_KIND,
   SIMULATION_RESULT_ARTIFACT_REVISION,
   SimulationResultArtifactError,

@@ -221,6 +221,98 @@ describe("CLI", () => {
     expect(output.analysis.feasible).toBe(true);
   });
 
+  it("exhaustively ranks a bounded ONNX configuration space", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-search-"));
+    const modelPath = join(directory, "model.onnx");
+    const metadataPath = join(directory, "manifest.json");
+    const configPath = join(directory, "search.json");
+    await writeFile(modelPath, tinyOnnxModel("model.onnx.data", 16));
+    await writeFile(
+      join(directory, "model.onnx.data"),
+      new Uint8Array(16).fill(5),
+    );
+    await writeFile(metadataPath, JSON.stringify({
+      architecture: "TinyCausalLM",
+      vocab_size: 8,
+      hidden_size: 2,
+      intermediate_size: 4,
+      num_hidden_layers: 1,
+      num_attention_heads: 1,
+      num_key_value_heads: 1,
+      head_dim: 2,
+    }));
+    await writeFile(configPath, JSON.stringify({
+      search: {
+        objective: "decode_throughput",
+        top_k: 3,
+        max_candidates: 16,
+        require_feasible: true,
+        maximum_device_used_fraction: 0.9,
+      },
+      hardware: { presets: ["dgx-h100", "rtx-4090-2x"] },
+      quantization: {
+        kv_cache: ["fp16", "fp8"],
+        activations: ["fp16"],
+      },
+      pipeline: {
+        batch_sizes: [1, 4],
+        input_seq_lens: [128],
+        output_seq_lens: [32],
+        parallelism: {
+          tensor_parallel: [1, 2],
+          pipeline_parallel: [1],
+          expert_parallel: [1],
+          data_parallel: [1],
+        },
+      },
+      memory: {
+        kv_cache_budget: 0.3,
+        expert_cache_budget: 0,
+        pinned_pool: 0.05,
+        offload: ["none"],
+        prefetch_ahead: 0,
+        pressure_threshold: 0.9,
+      },
+    }));
+    const first = captureIo();
+    const second = captureIo();
+
+    expect(await runCli(
+      ["onnx-search", configPath, modelPath, metadataPath],
+      first.io,
+    )).toBe(0);
+    expect(await runCli(
+      ["onnx-search", configPath, modelPath, metadataPath],
+      second.io,
+    )).toBe(0);
+    expect(first.stdout()).toBe(second.stdout());
+    const output = JSON.parse(first.stdout()) as {
+      manifest: { fingerprint: string };
+      search: {
+        exhaustive: boolean;
+        declaredCandidateCount: number;
+        evaluatedCandidateCount: number;
+        eligibleCandidateCount: number;
+        candidates: Array<{
+          rank: number;
+          candidateId: string;
+          feasible: boolean;
+        }>;
+      };
+    };
+    expect(output.manifest.fingerprint).toMatch(/^fnv1a32:/);
+    expect(output.search).toMatchObject({
+      exhaustive: true,
+      declaredCandidateCount: 16,
+      evaluatedCandidateCount: 16,
+      eligibleCandidateCount: 16,
+    });
+    expect(output.search.candidates.map((candidate) => candidate.rank))
+      .toEqual([1, 2, 3]);
+    expect(output.search.candidates.every((candidate) => candidate.feasible))
+      .toBe(true);
+  });
+
   it("rejects unsafe or truncated ONNX external-data references", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-"));
     const modelPath = join(directory, "model.onnx");

@@ -37,6 +37,7 @@ import {
   replayPlanTrace,
   serializeFrozenPlanArtifact,
   serializeOnnxModelManifest,
+  searchStaticConfigurations,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -47,6 +48,8 @@ import {
   type ParallelismConfig,
   type PipelineConfig,
   type QuantType,
+  type StaticSearchObjective,
+  type StaticSearchRequest,
   type ScenarioPresetName,
   type SimulationScenario,
   type SpeculativeAcceptanceModel,
@@ -260,6 +263,49 @@ export async function runCli(
           },
           model,
           analysis: analyzeStatic(topology, model, pipeline),
+        });
+        return 0;
+      }
+      case "onnx-search": {
+        const config = await loadRequiredConfig(argument, "onnx-search");
+        if (secondArgument === undefined) {
+          throw new Error("onnx-search requires an ONNX model path");
+        }
+        const metadata = thirdArgument === undefined
+          ? undefined
+          : await readConfigFile(thirdArgument);
+        const manifest = await inspectOnnxModel(secondArgument, metadata);
+        const baseQuantization = requireRecord(
+          config.quantization,
+          "quantization",
+        );
+        const model = resolveOnnxModelProfile(manifest, {
+          kvCacheQuantization: requireQuantType(
+            requireStringArray(
+              baseQuantization,
+              "kv_cache",
+              "quantization",
+            )[0],
+          ),
+          activationQuantization: requireQuantType(
+            requireStringArray(
+              baseQuantization,
+              "activations",
+              "quantization",
+            )[0],
+          ),
+        });
+        printJson(io, {
+          manifest: {
+            fingerprint: manifest.manifestFingerprint,
+            modelFileName: manifest.source.modelFileName,
+            initializerLogicalBytes:
+              manifest.totals.initializerLogicalBytes,
+          },
+          search: searchStaticConfigurations(
+            model,
+            parseOnnxSearchConfig(config),
+          ),
         });
         return 0;
       }
@@ -728,6 +774,145 @@ function parseOnnxStaticConfig(config: Record<string, unknown>) {
     activationQuantization: requireQuantType(
       optionalString(quantization, "activations", "fp16", "quantization"),
     ),
+  };
+}
+
+function parseOnnxSearchConfig(
+  config: Record<string, unknown>,
+): StaticSearchRequest {
+  const search = requireRecord(config.search, "search");
+  const hardware = requireRecord(config.hardware, "hardware");
+  const quantization = requireRecord(config.quantization, "quantization");
+  const pipeline = requireRecord(config.pipeline, "pipeline");
+  const parallelism = requireRecord(
+    pipeline.parallelism,
+    "pipeline.parallelism",
+  );
+  const memory = requireRecord(config.memory, "memory");
+  const offloadStrategies = requireStringArray(
+    memory,
+    "offload",
+    "memory",
+  ).map(requireOffloadStrategy);
+  return {
+    objective: requireStaticSearchObjective(
+      requireString(search, "objective", "search"),
+    ),
+    topK: requireNumber(search, "top_k", "search"),
+    maxCandidates: requireNumber(search, "max_candidates", "search"),
+    constraints: {
+      requireFeasible: optionalBoolean(
+        search,
+        "require_feasible",
+        true,
+        "search",
+      ),
+      ...(search.maximum_device_used_fraction === undefined
+        ? {}
+        : {
+            maximumDeviceUsedFraction: requireNumber(
+              search,
+              "maximum_device_used_fraction",
+              "search",
+            ),
+          }),
+      ...(search.maximum_ttft_ms === undefined
+        ? {}
+        : {
+            maximumTimeToFirstTokenMs: requireNumber(
+              search,
+              "maximum_ttft_ms",
+              "search",
+            ),
+          }),
+      ...(search.maximum_itl_ms === undefined
+        ? {}
+        : {
+            maximumInterTokenLatencyMs: requireNumber(
+              search,
+              "maximum_itl_ms",
+              "search",
+            ),
+          }),
+    },
+    space: {
+      topologies: requireStringArray(
+        hardware,
+        "presets",
+        "hardware",
+      ).map((id) => ({ id, topology: buildTopology(id) })),
+      kvCacheQuantizations: requireStringArray(
+        quantization,
+        "kv_cache",
+        "quantization",
+      ).map(requireQuantType),
+      activationQuantizations: requireStringArray(
+        quantization,
+        "activations",
+        "quantization",
+      ).map(requireQuantType),
+      batchSizes: requireNumberArray(
+        pipeline,
+        "batch_sizes",
+        "pipeline",
+      ),
+      inputSeqLens: requireNumberArray(
+        pipeline,
+        "input_seq_lens",
+        "pipeline",
+      ),
+      outputSeqLens: requireNumberArray(
+        pipeline,
+        "output_seq_lens",
+        "pipeline",
+      ),
+      tensorParallel: requireNumberArray(
+        parallelism,
+        "tensor_parallel",
+        "pipeline.parallelism",
+      ),
+      pipelineParallel: requireNumberArray(
+        parallelism,
+        "pipeline_parallel",
+        "pipeline.parallelism",
+      ),
+      expertParallel: requireNumberArray(
+        parallelism,
+        "expert_parallel",
+        "pipeline.parallelism",
+      ),
+      dataParallel: requireNumberArray(
+        parallelism,
+        "data_parallel",
+        "pipeline.parallelism",
+      ),
+      memoryPolicies: offloadStrategies.map((offloadStrategy) => ({
+        kvCacheBudgetFraction: requireNumber(
+          memory,
+          "kv_cache_budget",
+          "memory",
+        ),
+        expertCacheBudgetFraction: requireNumber(
+          memory,
+          "expert_cache_budget",
+          "memory",
+        ),
+        pinnedPoolFraction: requireNumber(memory, "pinned_pool", "memory"),
+        offloadStrategy,
+        prefetchAhead: requireNumber(memory, "prefetch_ahead", "memory"),
+        pressureThreshold: requireNumber(
+          memory,
+          "pressure_threshold",
+          "memory",
+        ),
+        reclaimBatchSize: optionalNumber(
+          memory,
+          "reclaim_batch_size",
+          4,
+          "memory",
+        ),
+      })),
+    },
   };
 }
 
@@ -1615,6 +1800,22 @@ function requireQuantType(value: string): QuantType {
   return value as QuantType;
 }
 
+function requireStaticSearchObjective(
+  value: string,
+): StaticSearchObjective {
+  const objectives: readonly StaticSearchObjective[] = [
+    "decode_throughput",
+    "prefill_throughput",
+    "time_to_first_token",
+    "inter_token_latency",
+    "device_headroom",
+  ];
+  if (!objectives.includes(value as StaticSearchObjective)) {
+    throw new Error(`unsupported static search objective ${value}`);
+  }
+  return value as StaticSearchObjective;
+}
+
 function requireLoadTarget(value: string): ExpertLoadTarget {
   if (value !== "hot" && value !== "warm") {
     throw new Error(`unsupported expert load target ${value}`);
@@ -1645,6 +1846,7 @@ Usage:
   inference-sim calibrate <calibration.yaml|json>
   inference-sim onnx-inspect <model.onnx> [metadata.yaml|json]
   inference-sim onnx-static <config.yaml|json> <model.onnx> [metadata.yaml|json]
+  inference-sim onnx-search <search.yaml|json> <model.onnx> [metadata.yaml|json]
   inference-sim serving <scenario-target> <config.yaml|json> [calibration.yaml|json]
   inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
   inference-sim run <scenario-target> <workload.yaml|json> [calibration.yaml|json]

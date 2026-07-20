@@ -116,6 +116,11 @@ and inside the Worker, and exposes shadcn controls for hardware, runtime dtypes,
 sequence shape, TP/PP/EP, and offload. Its model view reports per-device memory,
 capacity feasibility, heuristic throughput, architecture inventory, and every
 profile assumption.
+`onnx-search` exhaustively ranks a bounded, explicitly declared static search
+space across topology, runtime dtype, batch, sequence shape, TP/PP/EP/DP, and
+offload. It reports declared, evaluated, eligible, returned, and per-reason
+rejected counts with stable candidate IDs. The result is an evidence-labeled
+ranking of that finite space, never an unexplained claim of a global optimum.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface
