@@ -326,6 +326,16 @@ describe("topology-aware workload execution", () => {
         transfer.startNs < event.finishNs
         && event.startNs < transfer.finishNs
       )))).toBe(true);
+      const foreground = result.execution.trace.operations.find(
+        (event) => event.stepId === result.foregroundTerminalStepId,
+      );
+      expect(foreground?.finishNs).toBe(
+        result.metrics.foregroundDurationNs,
+      );
+      expect(result.metrics.backgroundDrainNs).toBe(
+        result.metrics.totalDurationNs - result.metrics.foregroundDurationNs,
+      );
+      expect(result.metrics.backgroundDrainNs).toBeGreaterThanOrEqual(0);
       if (name === "multi-node") {
         const node0 = storageTransfers.find((event) => (
           result.plan.steps[event.stepId].operation.kind === "transfer"

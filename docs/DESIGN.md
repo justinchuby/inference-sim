@@ -668,7 +668,11 @@ residency.
 
 Adaptive background prefetch is deliberately rejected in composed serving.
 Standalone expert-cache plans can overlap a bounded prefetch with later units,
-but a per-batch plan currently drains before the next batch. Claiming cross-
+and topology results identify the final foreground workload step separately
+from total plan drain. `foregroundDurationNs` is taken from that step's
+replayed trace event; `backgroundDrainNs` is the remaining quiescence tail.
+However, a per-batch serving plan currently drains before the next batch.
+Claiming cross-
 batch in-flight prefetch would therefore be false until serving batches share
 one global resource event loop and the cache accepts physical transfer
 completion timestamps from that loop.

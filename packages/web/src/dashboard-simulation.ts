@@ -479,6 +479,14 @@ function summarizeServingTopology(
     },
     metrics: {
       totalDurationNs: result.metrics.totalDurationNs,
+      foregroundDurationNs: result.batches.reduce(
+        (sum, batch) => sum + batch.topology.metrics.foregroundDurationNs,
+        0,
+      ),
+      backgroundDrainNs: result.batches.reduce(
+        (sum, batch) => sum + batch.topology.metrics.backgroundDrainNs,
+        0,
+      ),
       committedTokens: result.serving.metrics.outputTokens,
       tokensPerSecond: result.serving.metrics.throughputTokensPerSecond,
       computeServiceNs: result.metrics.computeServiceNs,

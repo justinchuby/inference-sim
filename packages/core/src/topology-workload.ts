@@ -129,6 +129,8 @@ export interface TopologyResourceUtilization {
 
 export interface TopologyWorkloadMetrics {
   readonly totalDurationNs: number;
+  readonly foregroundDurationNs: number;
+  readonly backgroundDrainNs: number;
   readonly committedTokens: number;
   readonly tokensPerSecond: number;
   readonly computeServiceNs: number;
@@ -143,6 +145,7 @@ export interface TopologyWorkloadResult {
   readonly profileId: string;
   readonly confidence: ConfidenceClass;
   readonly assumptions: readonly string[];
+  readonly foregroundTerminalStepId: number;
   readonly plan: FrozenPlan;
   readonly execution: FrozenPlanExecutionResult;
   readonly metrics: TopologyWorkloadMetrics;
@@ -308,9 +311,24 @@ export function compileTopologyWorkloadPlan(
   profile: TopologyWorkloadProfile,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
 ): FrozenPlan {
+  return compileTopologyWorkload(scenario, profile, costModel).plan;
+}
+
+function compileTopologyWorkload(
+  scenario: SimulationScenario,
+  profile: TopologyWorkloadProfile,
+  costModel: TopologyCostModel,
+): {
+  readonly plan: FrozenPlan;
+  readonly foregroundTerminalStepId: number;
+} {
   validateInputs(scenario, profile, costModel);
   const compiler = new WorkloadPlanCompiler(scenario, profile, costModel);
-  return compiler.compile();
+  const plan = compiler.compile();
+  return {
+    plan,
+    foregroundTerminalStepId: compiler.foregroundTerminalStepId(),
+  };
 }
 
 export function simulateTopologyWorkload(
@@ -318,10 +336,21 @@ export function simulateTopologyWorkload(
   profile: TopologyWorkloadProfile,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
 ): TopologyWorkloadResult {
-  const plan = compileTopologyWorkloadPlan(scenario, profile, costModel);
+  const compiled = compileTopologyWorkload(scenario, profile, costModel);
+  const { plan, foregroundTerminalStepId } = compiled;
   const execution = executeFrozenPlan(scenario, plan);
   replayPlanTrace(scenario, plan, execution.trace);
   const totalDurationNs = execution.completedAtNs;
+  const foregroundEvent = execution.trace.operations.find(
+    (event) => event.stepId === foregroundTerminalStepId,
+  );
+  if (foregroundEvent === undefined) {
+    throw new TopologyWorkloadError(
+      `foreground terminal step ${foregroundTerminalStepId} did not execute`,
+    );
+  }
+  const foregroundDurationNs = foregroundEvent.finishNs;
+  const backgroundDrainNs = totalDurationNs - foregroundDurationNs;
   const committedTokens = profile.units.reduce(
     (sum, unit) => checkedAdd(sum, unit.committedTokens, "committed tokens"),
     0,
@@ -347,11 +376,15 @@ export function simulateTopologyWorkload(
         : "transport timing uses exact-path calibration curves without extrapolation",
       "expert-load bytes are evenly sharded across FFN placements",
       "warm and cold expert loads originate in each FFN placement's local host domain",
+      "foreground completion is the final workload-unit terminal; independent background transfers may drain afterward",
     ],
+    foregroundTerminalStepId,
     plan,
     execution,
     metrics: {
       totalDurationNs,
+      foregroundDurationNs,
+      backgroundDrainNs,
       committedTokens,
       tokensPerSecond: totalDurationNs === 0
         ? 0
@@ -484,6 +517,15 @@ class WorkloadPlanCompiler {
       topologyEpoch: this.scenario.execution.topologyEpoch,
       steps: this.steps,
     };
+  }
+
+  foregroundTerminalStepId(): number {
+    if (this.previousTerminalStepId === undefined) {
+      throw new TopologyWorkloadError(
+        `profile ${this.profile.id} has no foreground terminal step`,
+      );
+    }
+    return this.previousTerminalStepId;
   }
 
   private compileBackgroundPrefetches(
