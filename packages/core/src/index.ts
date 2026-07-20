@@ -156,6 +156,9 @@ export {
   type FrozenPlanExecutionResult,
   type PlanExecutionOptions,
   type PlanExecutionTrace,
+  type PlanFault,
+  type PlanFaultCampaignCase,
+  type PlanFaultCampaignResult,
   type PlanOperation,
   type PlanReplayResult,
   type PlanResourceReservation,
@@ -176,6 +179,7 @@ export {
   assertValidFrozenPlan,
   executeFrozenPlan,
   replayPlanTrace,
+  runPlanFaultCampaign,
   validateFrozenPlan,
 } from "./frozen-plan.js";
 export {

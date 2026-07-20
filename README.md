@@ -27,7 +27,9 @@ Phase 2 is in progress:
 - independent plan-trace replay with rank-local success/failure/abort
   quiescence; and
 - workload-to-FrozenPlan compilation with device compute, directed transfers,
-  tensor collectives, and topology-aware heuristic timing.
+  tensor collectives, and topology-aware heuristic timing; and
+- time-anchored device/link/topology-epoch fault injection, submission closure,
+  quiescence, independent replay, and deterministic per-resource campaigns.
 
 Phase 3 has an initial speculative workload slice:
 
@@ -81,6 +83,7 @@ pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
+pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm dev:web
 ```
 

@@ -2,10 +2,12 @@ import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
   type FrozenPlanExecutionResult,
+  type PlanFault,
   type PlanOperation,
   type PlanExecutionOptions,
   type PlanExecutionTrace,
   type PlanResourceReservation,
+  type PlanFaultCampaignResult,
   type PlanReplayResult,
   type PlanStep,
   type PlanTerminalEvent,
@@ -218,7 +220,10 @@ export function executeFrozenPlan(
   const rankCompletions = new Map<string, number>();
   const leaseTimeline = new AllocationLeaseTimeline();
   const scheduledStepIds = new Set<number>();
-  const simulator = new DiscreteEventSimulator<{ readonly stepId: number }>();
+  const simulator = new DiscreteEventSimulator<
+    | { readonly kind: "completion"; readonly stepId: number }
+    | { readonly kind: "fault" }
+  >();
   const planOrder = new Map(plan.steps.map((step, index) => [step.id, index]));
   const remainingDependencies = new Map(
     plan.steps.map((step) => [step.id, step.dependencies.length]),
@@ -235,6 +240,12 @@ export function executeFrozenPlan(
     .filter((step) => step.dependencies.length === 0)
     .map((step) => step.id);
   const injection = options.injectTerminalBeforeStep;
+  const fault = options.injectFault;
+  if (injection && fault) {
+    throw new FrozenPlanExecutionError(
+      "terminal and fault injection are mutually exclusive",
+    );
+  }
   if (
     injection
     && (
@@ -247,15 +258,21 @@ export function executeFrozenPlan(
       `invalid terminal injection before step ${injection.stepId}`,
     );
   }
+  if (fault) {
+    validatePlanFault(scenario, plan, fault);
+  }
 
   let terminalInjection:
     | {
         status: "failed" | "aborted";
-        step: PlanStep;
+        step?: PlanStep;
         failureAtNs: number;
         reason: string;
+        failedRankIds: readonly string[];
+        fault?: PlanFault;
       }
     | undefined;
+  const completedStepIds = new Set<number>();
 
   const sortReady = (): void => {
     ready.sort((left, right) => (
@@ -278,6 +295,9 @@ export function executeFrozenPlan(
           step,
           failureAtNs: submittedAtNs,
           reason: injection.reason,
+          failedRankIds: injection.status === "failed"
+            ? step.participants
+            : [],
         };
         ready.length = 0;
         return;
@@ -323,12 +343,46 @@ export function executeFrozenPlan(
           resources,
         ),
       );
-      simulator.scheduleAt(finishNs, { stepId: step.id });
+      simulator.scheduleAt(finishNs, {
+        kind: "completion",
+        stepId: step.id,
+      });
     }
   };
 
-  submitReady(0);
+  const activateFault = (injectedFault: PlanFault): void => {
+    terminalInjection = {
+      status: injectedFault.kind === "topology_epoch_change"
+        ? "aborted"
+        : "failed",
+      failureAtNs: injectedFault.atNs,
+      reason: injectedFault.reason,
+      failedRankIds: failedRanksForFault(
+        scenario,
+        plan,
+        trace,
+        injectedFault,
+      ),
+      fault: injectedFault,
+    };
+    ready.length = 0;
+  };
+
+  if (fault?.atNs === 0) {
+    activateFault(fault);
+  } else {
+    if (fault) {
+      simulator.scheduleAt(fault.atNs, { kind: "fault" });
+    }
+    submitReady(0);
+  }
   simulator.run((event, simulation) => {
+    if (event.payload.kind === "fault") {
+      if (completedStepIds.size !== plan.steps.length && fault) {
+        activateFault(fault);
+      }
+      return;
+    }
     const step = stepMap.get(event.payload.stepId);
     if (!step) {
       throw new FrozenPlanExecutionError(
@@ -341,6 +395,7 @@ export function executeFrozenPlan(
         Math.max(rankCompletions.get(rankId) ?? 0, simulation.nowNs),
       );
     }
+    completedStepIds.add(step.id);
     if (terminalInjection) {
       return;
     }
@@ -354,17 +409,25 @@ export function executeFrozenPlan(
     submitReady(simulation.nowNs);
   }, { maxEvents: scenario.execution.maxEvents });
 
-  const completedAtNs = simulator.nowNs;
+  const operationQuiescenceNs = Math.max(
+    0,
+    ...trace.map((event) => event.finishNs),
+  );
+  const completedAtNs = terminalInjection
+    ? Math.max(operationQuiescenceNs, terminalInjection.failureAtNs)
+    : operationQuiescenceNs;
   if (terminalInjection) {
     const rankStates = deriveRankStates(
       plan,
       scheduledStepIds,
       rankCompletions,
-      terminalInjection.status,
-      terminalInjection.step,
+      terminalInjection.failedRankIds,
       terminalInjection.failureAtNs,
       completedAtNs,
     );
+    const unsubmittedStepIds = plan.steps
+      .filter((step) => !scheduledStepIds.has(step.id))
+      .map((step) => step.id);
     return {
       status: terminalInjection.status,
       executionId: plan.executionId,
@@ -375,9 +438,11 @@ export function executeFrozenPlan(
         terminalInjection.status,
         completedAtNs,
         rankStates,
-        terminalInjection.step.id,
+        terminalInjection.step?.id,
         terminalInjection.failureAtNs,
         terminalInjection.reason,
+        terminalInjection.fault,
+        unsubmittedStepIds,
       ),
       rankCompletions: successfulRankCompletions(rankStates),
       rankStates,
@@ -429,9 +494,9 @@ export function replayPlanTrace(
   }
   if (
     trace.terminal.status !== "succeeded"
-    && operations.length >= plan.steps.length
+    && operations.length > plan.steps.length
   ) {
-    throw new PlanReplayError("non-success terminal must stop before a plan step");
+    throw new PlanReplayError("non-success trace has more events than plan steps");
   }
 
   const stepMap = new Map(plan.steps.map((step) => [step.id, step]));
@@ -567,16 +632,13 @@ export function replayPlanTrace(
     }
   }
 
-  const expectedNextStepId = trace.terminal.status === "succeeded"
-    ? undefined
-    : trace.terminal.beforeStepId;
   let terminal: PlanTerminalEvent;
   try {
     terminal = validateAndReplayTerminal(
+      scenario,
       plan,
       trace.terminal,
       operations,
-      expectedNextStepId,
       stepMap,
       eventByStep,
       rankCompletions,
@@ -594,17 +656,126 @@ export function replayPlanTrace(
   };
 }
 
+export function runPlanFaultCampaign(
+  scenario: SimulationScenario,
+  plan: FrozenPlan,
+): PlanFaultCampaignResult {
+  const baseline = executeFrozenPlan(scenario, plan);
+  const baselineReplay = replayPlanTrace(scenario, plan, baseline.trace);
+  const rankDevices = buildRankDeviceMap(scenario.groups);
+  const faults: Array<{ readonly id: string; readonly fault: PlanFault }> = [];
+  const participatingDevices = [...new Set(
+    plan.steps.flatMap((step) => step.participants)
+      .map((rankId) => rankDevices.get(rankId))
+      .filter((deviceId): deviceId is string => deviceId !== undefined),
+  )].sort();
+  for (const deviceId of participatingDevices) {
+    const event = baseline.trace.operations.find((candidate) => (
+      candidate.finishNs > candidate.startNs
+      &&
+      candidate.participants.some(
+        (rankId) => rankDevices.get(rankId) === deviceId,
+      )
+    ));
+    if (event) {
+      faults.push({
+        id: `device:${deviceId}`,
+        fault: {
+          kind: "device_failure",
+          atNs: eventMidpoint(event),
+          deviceId,
+          reason: `campaign device failure ${deviceId}`,
+        },
+      });
+    }
+  }
+  const usedLinks = [...new Set(plan.steps.flatMap((step) => (
+    step.operation.kind === "transfer"
+      ? [step.operation.linkId]
+      : step.operation.kind === "collective"
+        ? step.operation.linkIds
+        : []
+  )))].sort();
+  for (const linkId of usedLinks) {
+    const event = baseline.trace.operations.find((candidate) => (
+      candidate.finishNs > candidate.startNs
+      &&
+      operationUsesLink(
+        plan.steps.find((step) => step.id === candidate.stepId)?.operation,
+        linkId,
+      )
+    ));
+    if (event) {
+      faults.push({
+        id: `link:${linkId}`,
+        fault: {
+          kind: "link_failure",
+          atNs: eventMidpoint(event),
+          linkId,
+          reason: `campaign link failure ${linkId}`,
+        },
+      });
+    }
+  }
+  const firstEvent = baseline.trace.operations.find(
+    (event) => event.finishNs > event.startNs,
+  );
+  if (firstEvent) {
+    faults.push({
+      id: `epoch:${plan.topologyEpoch + 1}`,
+      fault: {
+        kind: "topology_epoch_change",
+        atNs: eventMidpoint(firstEvent),
+        nextTopologyEpoch: plan.topologyEpoch + 1,
+        reason: "campaign topology membership change",
+      },
+    });
+  }
+
+  return {
+    baseline,
+    baselineReplay,
+    cases: faults.map(({ id, fault }) => {
+      const execution = executeFrozenPlan(scenario, plan, {
+        injectFault: fault,
+      });
+      return {
+        id,
+        fault,
+        execution,
+        replay: replayPlanTrace(scenario, plan, execution.trace),
+      };
+    }),
+  };
+}
+
 export class CollectiveSubmitSequencer {
   private readonly executions = new Map<
     string,
     Map<string, { expected: number; submitted: number }>
   >();
   private readonly groupQueues = new Map<string, string[]>();
+  private topologyEpoch = 0;
+  private epochPoisoned = false;
 
   registerExecution(
     executionId: string,
+    topologyEpoch: number,
     expectedCollectivesByGroup: Readonly<Record<string, number>>,
   ): void {
+    if (
+      !Number.isSafeInteger(topologyEpoch)
+      || topologyEpoch !== this.topologyEpoch
+    ) {
+      throw new FrozenPlanExecutionError(
+        `execution ${executionId} epoch ${topologyEpoch} does not match sequencer epoch ${this.topologyEpoch}`,
+      );
+    }
+    if (this.epochPoisoned) {
+      throw new FrozenPlanExecutionError(
+        `sequencer epoch ${this.topologyEpoch} is poisoned and must advance`,
+      );
+    }
     if (executionId.length === 0 || this.executions.has(executionId)) {
       throw new FrozenPlanExecutionError(
         `execution id must be non-empty and unique; got ${executionId}`,
@@ -675,6 +846,74 @@ export class CollectiveSubmitSequencer {
       );
     }
     this.executions.delete(executionId);
+  }
+
+  abortExecution(executionId: string): readonly string[] {
+    if (!this.executions.has(executionId)) {
+      throw new FrozenPlanExecutionError(`unknown execution ${executionId}`);
+    }
+    const impacted = new Set<string>([executionId]);
+    const poisonedGroups = new Set<string>();
+    const pending = [executionId];
+    while (pending.length > 0) {
+      const currentId = pending.shift();
+      const groups = currentId === undefined
+        ? undefined
+        : this.executions.get(currentId);
+      if (!groups) {
+        continue;
+      }
+      for (const [groupId, progress] of groups) {
+        if (progress.submitted === 0 || poisonedGroups.has(groupId)) {
+          continue;
+        }
+        poisonedGroups.add(groupId);
+        for (const queuedId of this.groupQueues.get(groupId) ?? []) {
+          if (!impacted.has(queuedId)) {
+            impacted.add(queuedId);
+            pending.push(queuedId);
+          }
+        }
+      }
+    }
+
+    for (const impactedId of impacted) {
+      this.executions.delete(impactedId);
+    }
+    for (const [groupId, queue] of this.groupQueues) {
+      const survivors = queue.filter((queuedId) => !impacted.has(queuedId));
+      if (survivors.length === 0) {
+        this.groupQueues.delete(groupId);
+      } else {
+        this.groupQueues.set(groupId, survivors);
+      }
+    }
+    if (poisonedGroups.size > 0) {
+      this.epochPoisoned = true;
+    }
+    return [...impacted].sort();
+  }
+
+  advanceTopologyEpoch(nextTopologyEpoch: number): void {
+    if (
+      !Number.isSafeInteger(nextTopologyEpoch)
+      || nextTopologyEpoch <= this.topologyEpoch
+    ) {
+      throw new FrozenPlanExecutionError(
+        `next topology epoch must be greater than ${this.topologyEpoch}`,
+      );
+    }
+    if (this.executions.size > 0 || this.groupQueues.size > 0) {
+      throw new FrozenPlanExecutionError(
+        "cannot advance topology epoch with registered executions",
+      );
+    }
+    this.topologyEpoch = nextTopologyEpoch;
+    this.epochPoisoned = false;
+  }
+
+  currentTopologyEpoch(): number {
+    return this.topologyEpoch;
   }
 }
 
@@ -1087,6 +1326,120 @@ function resourceIdsFor(operation: PlanOperation): readonly string[] {
   }
 }
 
+function validatePlanFault(
+  scenario: SimulationScenario,
+  plan: FrozenPlan,
+  fault: PlanFault,
+): void {
+  if (
+    !Number.isSafeInteger(fault.atNs)
+    || fault.atNs < 0
+    || typeof fault.reason !== "string"
+    || fault.reason.length === 0
+  ) {
+    throw new FrozenPlanExecutionError(
+      "fault time must be a non-negative safe integer and reason must be non-empty",
+    );
+  }
+  switch (fault.kind) {
+    case "device_failure": {
+      if (
+        typeof fault.deviceId !== "string"
+        || !scenario.devices.some((device) => device.id === fault.deviceId)
+      ) {
+        throw new FrozenPlanExecutionError(
+          `fault references unknown device ${fault.deviceId}`,
+        );
+      }
+      const rankDevices = buildRankDeviceMap(scenario.groups);
+      if (!plan.steps.some((step) => (
+        step.operation.kind === "compute"
+          ? step.operation.deviceId === fault.deviceId
+          : step.participants.some(
+              (rankId) => rankDevices.get(rankId) === fault.deviceId,
+            )
+      ))) {
+        throw new FrozenPlanExecutionError(
+          `device ${fault.deviceId} does not participate in the plan`,
+        );
+      }
+      return;
+    }
+    case "link_failure":
+      if (
+        typeof fault.linkId !== "string"
+        || !scenario.links.some((link) => link.id === fault.linkId)
+      ) {
+        throw new FrozenPlanExecutionError(
+          `fault references unknown link ${fault.linkId}`,
+        );
+      }
+      if (!plan.steps.some((step) => operationUsesLink(
+        step.operation,
+        fault.linkId,
+      ))) {
+        throw new FrozenPlanExecutionError(
+          `link ${fault.linkId} is not used by the plan`,
+        );
+      }
+      return;
+    case "topology_epoch_change":
+      if (
+        !Number.isSafeInteger(fault.nextTopologyEpoch)
+        || fault.nextTopologyEpoch <= plan.topologyEpoch
+      ) {
+        throw new FrozenPlanExecutionError(
+          `next topology epoch must be greater than ${plan.topologyEpoch}`,
+        );
+      }
+      return;
+    default:
+      throw new FrozenPlanExecutionError(
+        `unsupported fault kind ${String((fault as { kind?: unknown }).kind)}`,
+      );
+  }
+}
+
+function failedRanksForFault(
+  scenario: SimulationScenario,
+  plan: FrozenPlan,
+  operations: readonly PlanTraceEvent[],
+  fault: PlanFault,
+): string[] {
+  if (fault.kind === "topology_epoch_change") {
+    return [];
+  }
+  if (fault.kind === "device_failure") {
+    const rankDevices = buildRankDeviceMap(scenario.groups);
+    return planRanks(plan).filter(
+      (rankId) => rankDevices.get(rankId) === fault.deviceId,
+    );
+  }
+  const stepMap = new Map(plan.steps.map((step) => [step.id, step]));
+  return [...new Set(operations
+    .filter((event) => (
+      event.submittedAtNs < fault.atNs
+      && event.finishNs >= fault.atNs
+      && operationUsesLink(
+        stepMap.get(event.stepId)?.operation,
+        fault.linkId,
+      )
+    ))
+    .flatMap((event) => event.participants))]
+    .sort();
+}
+
+function operationUsesLink(
+  operation: PlanOperation | undefined,
+  linkId: string,
+): boolean {
+  return operation?.kind === "transfer"
+    ? operation.linkId === linkId
+    : operation?.kind === "collective"
+      ? operation.linkIds.includes(linkId)
+      : false;
+}
+
 function selectResourceReservations(
   operation: PlanOperation,
   resourceLanes: ReadonlyMap<string, readonly number[]>,
@@ -1176,6 +1529,8 @@ function terminalTrace(
   beforeStepId?: number,
   failureAtNs?: number,
   reason?: string,
+  fault?: PlanFault,
+  unsubmittedStepIds?: readonly number[],
 ): PlanExecutionTrace {
   return {
     operations: operations.map((event) => ({
@@ -1196,6 +1551,10 @@ function terminalTrace(
       ...(beforeStepId === undefined ? {} : { beforeStepId }),
       ...(failureAtNs === undefined ? {} : { failureAtNs }),
       ...(reason === undefined ? {} : { reason }),
+      ...(fault === undefined ? {} : { fault: { ...fault } }),
+      ...(unsubmittedStepIds === undefined
+        ? {}
+        : { unsubmittedStepIds: [...unsubmittedStepIds] }),
       rankStates: rankStates.map((state) => ({ ...state })),
     },
   };
@@ -1216,18 +1575,31 @@ function deriveRankStates(
   plan: FrozenPlan,
   scheduledStepIds: ReadonlySet<number>,
   rankCompletions: ReadonlyMap<string, number>,
-  terminalStatus: "failed" | "aborted",
-  terminalStep: PlanStep,
+  failedRankIds: readonly string[],
   failureAtNs: number,
   quiescedAtNs: number,
 ): RankTerminalState[] {
+  const failedRanks = new Set(failedRankIds);
   return planRanks(plan).map((rankId) => {
     const rankStepIds = plan.steps
       .filter((step) => step.participants.includes(rankId))
       .map((step) => step.id);
+    const allStepsScheduled = rankStepIds.every(
+      (stepId) => scheduledStepIds.has(stepId),
+    );
+    const completedAtNs = rankCompletions.get(rankId) ?? 0;
     if (
-      terminalStatus === "failed"
-      && terminalStep.participants.includes(rankId)
+      allStepsScheduled
+      && completedAtNs < failureAtNs
+    ) {
+      return {
+        rankId,
+        status: "succeeded" as const,
+        terminalAtNs: completedAtNs,
+      };
+    }
+    if (
+      failedRanks.has(rankId)
     ) {
       return {
         rankId,
@@ -1235,11 +1607,11 @@ function deriveRankStates(
         terminalAtNs: failureAtNs,
       };
     }
-    if (rankStepIds.every((stepId) => scheduledStepIds.has(stepId))) {
+    if (allStepsScheduled) {
       return {
         rankId,
         status: "succeeded" as const,
-        terminalAtNs: rankCompletions.get(rankId) ?? 0,
+        terminalAtNs: completedAtNs,
       };
     }
     return {
@@ -1251,10 +1623,10 @@ function deriveRankStates(
 }
 
 function validateAndReplayTerminal(
+  scenario: SimulationScenario,
   plan: FrozenPlan,
   terminal: PlanTerminalEvent,
   operations: readonly PlanTraceEvent[],
-  expectedNextStepId: number | undefined,
   stepMap: ReadonlyMap<number, PlanStep>,
   eventByStep: ReadonlyMap<number, PlanTraceEvent>,
   rankCompletions: ReadonlyMap<string, number>,
@@ -1280,14 +1652,19 @@ function validateAndReplayTerminal(
     0,
     ...operations.map((event) => event.finishNs),
   );
+  const submittedStepIds = new Set(operations.map((event) => event.stepId));
+  const expectedUnsubmittedStepIds = plan.steps
+    .filter((step) => !submittedStepIds.has(step.id))
+    .map((step) => step.id);
   let expectedRankStates: RankTerminalState[];
   let expectedTimestamp: number;
   if (terminal.status === "succeeded") {
     if (
-      expectedNextStepId !== undefined
-      || terminal.beforeStepId !== undefined
+      terminal.beforeStepId !== undefined
       || terminal.failureAtNs !== undefined
       || terminal.reason !== undefined
+      || terminal.fault !== undefined
+      || terminal.unsubmittedStepIds !== undefined
     ) {
       replayFail("successful terminal has failure/abort metadata");
     }
@@ -1295,39 +1672,102 @@ function validateAndReplayTerminal(
     expectedRankStates = allSucceededRankStates(plan, rankCompletions);
   } else {
     if (
-      expectedNextStepId === undefined
-      || terminal.beforeStepId !== expectedNextStepId
-      || terminal.reason === undefined
+      typeof terminal.reason !== "string"
       || terminal.reason.length === 0
+      || terminal.failureAtNs === undefined
+      || !Number.isSafeInteger(terminal.failureAtNs)
+      || terminal.failureAtNs < 0
+      || terminal.unsubmittedStepIds === undefined
+      || !arraysEqual(
+        terminal.unsubmittedStepIds,
+        expectedUnsubmittedStepIds,
+      )
     ) {
-      replayFail("non-success terminal does not identify the next plan step");
+      replayFail("non-success terminal metadata is incomplete or inconsistent");
     }
-    const step = stepMap.get(expectedNextStepId);
-    if (!step) {
-      replayFail(`missing terminal step ${expectedNextStepId}`);
-    }
-    let dependencyReady = 0;
-    for (const dependency of step.dependencies) {
-      const event = eventByStep.get(dependency);
-      if (!event) {
-        replayFail(`terminal step dependency ${dependency} was not submitted`);
+    let failedRankIds: readonly string[];
+    if (terminal.fault) {
+      validatePlanFault(scenario, plan, terminal.fault);
+      const expectedStatus = terminal.fault.kind === "topology_epoch_change"
+        ? "aborted"
+        : "failed";
+      if (
+        terminal.status !== expectedStatus
+        || terminal.beforeStepId !== undefined
+        || terminal.failureAtNs !== terminal.fault.atNs
+        || terminal.reason !== terminal.fault.reason
+      ) {
+        replayFail("fault terminal status or envelope does not match the fault");
       }
-      dependencyReady = Math.max(dependencyReady, event.finishNs);
-    }
-    const expectedFailureAt = dependencyReady;
-    if (terminal.failureAtNs !== expectedFailureAt) {
-      replayFail(
-        `terminal failure/abort time ${terminal.failureAtNs} does not match ${expectedFailureAt}`,
+      if (terminal.fault.atNs > operationQuiescence) {
+        replayFail("fault was observed after natural operation quiescence");
+      }
+      if (operations.some(
+        (event) => event.submittedAtNs >= terminal.fault!.atNs,
+      )) {
+        replayFail("operation was submitted at or after fault observation");
+      }
+      for (const stepId of expectedUnsubmittedStepIds) {
+        const step = stepMap.get(stepId);
+        if (!step) {
+          replayFail(`unknown unsubmitted step ${stepId}`);
+        }
+        const dependencyEvents = step.dependencies.map(
+          (dependency) => eventByStep.get(dependency),
+        );
+        if (
+          dependencyEvents.every((event) => event !== undefined)
+          && Math.max(
+            0,
+            ...dependencyEvents.map((event) => event?.finishNs ?? 0),
+          ) < terminal.fault.atNs
+        ) {
+          replayFail(
+            `ready step ${step.id} was omitted before fault observation`,
+          );
+        }
+      }
+      failedRankIds = failedRanksForFault(
+        scenario,
+        plan,
+        operations,
+        terminal.fault,
       );
+    } else {
+      if (terminal.beforeStepId === undefined) {
+        replayFail("legacy terminal does not identify the next plan step");
+      }
+      const step = stepMap.get(terminal.beforeStepId);
+      if (!step || submittedStepIds.has(step.id)) {
+        replayFail(`missing or submitted terminal step ${terminal.beforeStepId}`);
+      }
+      let dependencyReady = 0;
+      for (const dependency of step.dependencies) {
+        const event = eventByStep.get(dependency);
+        if (!event) {
+          replayFail(`terminal step dependency ${dependency} was not submitted`);
+        }
+        dependencyReady = Math.max(dependencyReady, event.finishNs);
+      }
+      if (terminal.failureAtNs !== dependencyReady) {
+        replayFail(
+          `terminal failure/abort time ${terminal.failureAtNs} does not match ${dependencyReady}`,
+        );
+      }
+      failedRankIds = terminal.status === "failed"
+        ? step.participants
+        : [];
     }
-    expectedTimestamp = Math.max(operationQuiescence, expectedFailureAt);
+    expectedTimestamp = Math.max(
+      operationQuiescence,
+      terminal.failureAtNs,
+    );
     expectedRankStates = deriveRankStates(
       plan,
-      new Set(operations.map((event) => event.stepId)),
+      submittedStepIds,
       rankCompletions,
-      terminal.status,
-      step,
-      expectedFailureAt,
+      failedRankIds,
+      terminal.failureAtNs,
       expectedTimestamp,
     );
   }
@@ -1524,6 +1964,14 @@ function validateUniqueNumbers(
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
+}
+
+function eventMidpoint(event: PlanTraceEvent): number {
+  return checkedTimeAdd(
+    event.startNs,
+    Math.max(1, Math.ceil((event.finishNs - event.startNs) / 2)),
+    `fault midpoint for step ${event.stepId}`,
+  );
 }
 
 function checkedTimeAdd(left: number, right: number, label: string): number {

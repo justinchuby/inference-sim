@@ -1,6 +1,6 @@
 import type { ComputeCapability } from "./scenario-types.js";
 
-export const PLAN_CONTRACT_REVISION = 2;
+export const PLAN_CONTRACT_REVISION = 3;
 
 export type PlanOperation =
   | {
@@ -98,6 +98,8 @@ export interface PlanTerminalEvent {
   readonly beforeStepId?: number;
   readonly failureAtNs?: number;
   readonly reason?: string;
+  readonly fault?: PlanFault;
+  readonly unsubmittedStepIds?: readonly number[];
   readonly rankStates: readonly RankTerminalState[];
 }
 
@@ -129,4 +131,38 @@ export interface PlanExecutionOptions {
     readonly status: "failed" | "aborted";
     readonly reason: string;
   };
+  readonly injectFault?: PlanFault;
+}
+
+export type PlanFault =
+  | {
+      readonly kind: "device_failure";
+      readonly atNs: number;
+      readonly deviceId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "link_failure";
+      readonly atNs: number;
+      readonly linkId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "topology_epoch_change";
+      readonly atNs: number;
+      readonly nextTopologyEpoch: number;
+      readonly reason: string;
+    };
+
+export interface PlanFaultCampaignCase {
+  readonly id: string;
+  readonly fault: PlanFault;
+  readonly execution: FrozenPlanExecutionResult;
+  readonly replay: PlanReplayResult;
+}
+
+export interface PlanFaultCampaignResult {
+  readonly baseline: FrozenPlanExecutionResult;
+  readonly baselineReplay: PlanReplayResult;
+  readonly cases: readonly PlanFaultCampaignCase[];
 }

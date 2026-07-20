@@ -166,4 +166,48 @@ target_only:
       output.comparison.find((entry) => entry.scenarioId === "cpu-only")?.rank,
     ).toBe(6);
   });
+
+  it("runs and independently replays a deterministic fault campaign", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "fault-workload.yaml");
+    await writeFile(path, `
+target_only:
+  token_count: 2
+`, "utf8");
+    const firstCapture = captureIo();
+    const secondCapture = captureIo();
+
+    expect(
+      await runCli(
+        ["fault-campaign", "multi-gpu", path],
+        firstCapture.io,
+      ),
+    ).toBe(0);
+    expect(
+      await runCli(
+        ["fault-campaign", "multi-gpu", path],
+        secondCapture.io,
+      ),
+    ).toBe(0);
+    expect(firstCapture.stdout()).toBe(secondCapture.stdout());
+    const output = JSON.parse(firstCapture.stdout()) as {
+      baseline: { status: string; submittedSteps: number };
+      cases: Array<{
+        id: string;
+        status: string;
+        replayAppliedEvents: number;
+      }>;
+    };
+    expect(output.baseline.status).toBe("succeeded");
+    expect(output.baseline.submittedSteps).toBeGreaterThan(0);
+    expect(output.cases.map((entry) => entry.id)).toEqual([
+      "device:node0:gpu0",
+      "device:node0:gpu1",
+      "link:node0:nvlink:forward",
+      "epoch:1",
+    ]);
+    expect(output.cases.every((entry) => (
+      entry.status !== "succeeded" && entry.replayAppliedEvents > 0
+    ))).toBe(true);
+  });
 });

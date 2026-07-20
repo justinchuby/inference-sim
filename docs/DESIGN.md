@@ -242,6 +242,18 @@ silently omit the operation.
 Completion is rank-local. Abort closes new submission before already-enqueued
 operations quiesce and release allocation leases.
 
+Fault observation is time-anchored. At the same nanosecond a fault is processed
+before completion-driven submissions. A non-success terminal records the typed
+device/link/epoch fault, exact observation time, and the complete ordered set
+of unsubmitted step IDs. Replay rejects any step submitted at or after the
+fault and any ready step omitted before it.
+
+A communicator execution cancelled before its first submission is skipped
+without poisoning the epoch. Partial submission poisons the epoch and
+propagates abort through overlapping communicator queues. New execution
+registration remains closed until surviving old-epoch executions drain and the
+sequencer advances to a newer topology epoch.
+
 Collective steps declare both an immutable communicator group/sequence and the
 transport links they reserve. Group ordering alone is not a bandwidth model;
 collectives and point-to-point transfers contend on the same link lanes.
@@ -523,6 +535,8 @@ Simulation trace and visualization trace are separate views:
 
 JSON output uses an explicit schema and contract revision. Unknown revisions,
 missing events, sequence gaps, and non-finite numbers are errors.
+Fault traces additionally prove submission-prefix completeness, fault-first
+same-time ordering, rank-local failure/abort state, and quiescence.
 
 ## 14. Simulation Modes and Product Surfaces
 
@@ -655,7 +669,7 @@ Exit criteria:
 
 Status: complete. The initial slice had 21 tests across static analysis, event
 ordering, pressure protocol/replay, trace mutation, and speculative
-checkpoint/restore boundaries. The total suite has since grown to 87 tests.
+checkpoint/restore boundaries. The total suite has since grown to 101 tests.
 
 ### Phase 2: FrozenPlan, Communicator, and Topology Composition
 
@@ -688,12 +702,20 @@ Status: in progress. Implemented:
   with causal `submittedAtNs` trace evidence; and
 - topology-aware workload compilation into device compute, directed transfer,
   pipeline, and tensor-collective steps, followed by independent trace replay
-  and resource-utilization accounting.
+  and resource-utilization accounting;
+- time-anchored device, link, and topology-epoch fault injection with typed
+  terminal evidence, submission closure, in-flight quiescence, and independent
+  replay;
+- deterministic fault campaigns over every device/link used by a plan plus an
+  epoch-change case; and
+- communicator abort propagation across overlapping groups, poisoned-epoch
+  admission closure, and explicit epoch advance.
 
 Remaining Phase 2 work:
 
-- topology-epoch change and node/link failure injection;
-- adversarial campaigns across overlapping executions and communicator groups.
+- seeded large-scale campaigns that run multiple FrozenPlan executors
+  concurrently through shared communicator sequencers;
+- node-wide correlated failure and recovery/replan policy.
 
 ### Phase 3: Speculative, Workload, and Cache Dynamics
 
@@ -745,6 +767,9 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
+The `fault-campaign` command compiles that workload, executes and replays a
+successful baseline, then injects deterministic mid-operation faults into each
+used device/link and the next topology epoch.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,

@@ -9,6 +9,7 @@ import {
   buildScenarioPreset,
   executeFrozenPlan,
   replayPlanTrace,
+  runPlanFaultCampaign,
   validateFrozenPlan,
   type FrozenPlan,
   type PlanStep,
@@ -489,6 +490,291 @@ describe("FrozenPlan validation and execution", () => {
     );
   });
 
+  it("fails a device rank, closes submission, and quiesces in-flight work", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu1",
+        reason: "GPU heartbeat expired",
+      },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.completedAtNs).toBe(20);
+    expect(result.trace.operations.map((event) => event.stepId)).toEqual([0, 1]);
+    expect(result.trace.terminal).toMatchObject({
+      failureAtNs: 5,
+      timestampNs: 20,
+      unsubmittedStepIds: [2, 3],
+      fault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu1",
+      },
+    });
+    expect(result.rankStates).toEqual([
+      { rankId: "rank-0", status: "aborted", terminalAtNs: 20 },
+      { rankId: "rank-1", status: "failed", terminalAtNs: 5 },
+    ]);
+    expect(replayPlanTrace(scenario, plan, result.trace)).toMatchObject({
+      status: "failed",
+      completedAtNs: 20,
+      rankStates: result.rankStates,
+    });
+  });
+
+  it("preserves rank-local success completed before a later device fault", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const base = validPlan();
+    const plan: FrozenPlan = {
+      ...base,
+      id: "rank-local-completion",
+      executionId: "execution-rank-local-completion",
+      steps: base.steps.slice(0, 2),
+    };
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 15,
+        deviceId: "node0:gpu0",
+        reason: "late rank-local device failure",
+      },
+    });
+
+    expect(result.rankStates).toEqual([
+      { rankId: "rank-0", status: "succeeded", terminalAtNs: 10 },
+      { rankId: "rank-1", status: "succeeded", terminalAtNs: 20 },
+    ]);
+    expect(result.status).toBe("failed");
+    expect(replayPlanTrace(scenario, plan, result.trace).rankStates).toEqual(
+      result.rankStates,
+    );
+  });
+
+  it("fails all participants when an in-flight collective loses a link", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "link_failure",
+        atNs: 22,
+        linkId: "node0:nvlink:forward",
+        reason: "NVLink transport error",
+      },
+    });
+
+    expect(result.trace.operations.map((event) => event.stepId)).toEqual([
+      0,
+      1,
+      2,
+    ]);
+    expect(result.trace.terminal.unsubmittedStepIds).toEqual([3]);
+    expect(result.trace.terminal.timestampNs).toBe(25);
+    expect(result.rankStates).toEqual([
+      { rankId: "rank-0", status: "failed", terminalAtNs: 22 },
+      { rankId: "rank-1", status: "failed", terminalAtNs: 22 },
+    ]);
+    expect(replayPlanTrace(scenario, plan, result.trace).status).toBe("failed");
+  });
+
+  it("permits failure after every step was submitted but before quiescence", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const base = validPlan();
+    const plan: FrozenPlan = {
+      ...base,
+      id: "all-submitted",
+      executionId: "execution-all-submitted",
+      steps: base.steps.slice(0, 2),
+    };
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu0",
+        reason: "GPU reset",
+      },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.operations).toHaveLength(plan.steps.length);
+    expect(result.trace.terminal.unsubmittedStepIds).toEqual([]);
+    expect(result.rankStates).toEqual([
+      { rankId: "rank-0", status: "failed", terminalAtNs: 5 },
+      { rankId: "rank-1", status: "succeeded", terminalAtNs: 20 },
+    ]);
+    expect(replayPlanTrace(scenario, plan, result.trace).status).toBe("failed");
+  });
+
+  it("aborts an old-epoch plan and rejects it against the new epoch", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "topology_epoch_change",
+        atNs: 12,
+        nextTopologyEpoch: 1,
+        reason: "cluster membership changed",
+      },
+    });
+
+    expect(result.status).toBe("aborted");
+    expect(result.trace.terminal.unsubmittedStepIds).toEqual([2, 3]);
+    expect(result.rankStates.every((state) => state.status === "aborted")).toBe(
+      true,
+    );
+    expect(replayPlanTrace(scenario, plan, result.trace).status).toBe("aborted");
+
+    const nextScenario = {
+      ...scenario,
+      execution: { ...scenario.execution, topologyEpoch: 1 },
+    };
+    expect(
+      validateFrozenPlan(nextScenario, plan).issues.some(
+        (issue) => issue.code === "topology_epoch",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores a fault observed after natural plan completion", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 100,
+        deviceId: "node0:gpu0",
+        reason: "late failure",
+      },
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.completedAtNs).toBe(32);
+    expect(result.trace.terminal.fault).toBeUndefined();
+  });
+
+  it("rejects a synthetic failure after natural operation quiescence", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const base = validPlan();
+    const plan: FrozenPlan = {
+      ...base,
+      id: "synthetic-late-fault",
+      executionId: "execution-synthetic-late-fault",
+      steps: base.steps.slice(0, 2),
+    };
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu0",
+        reason: "GPU reset",
+      },
+    });
+    const trace = {
+      ...result.trace,
+      terminal: {
+        ...result.trace.terminal,
+        failureAtNs: 100,
+        timestampNs: 100,
+        fault: {
+          kind: "device_failure" as const,
+          atNs: 100,
+          deviceId: "node0:gpu0",
+          reason: "GPU reset",
+        },
+        rankStates: [
+          { rankId: "rank-0", status: "failed" as const, terminalAtNs: 100 },
+          { rankId: "rank-1", status: "succeeded" as const, terminalAtNs: 20 },
+        ],
+      },
+    };
+
+    expect(() => replayPlanTrace(scenario, plan, trace)).toThrowError(
+      "terminal: fault was observed after natural operation quiescence",
+    );
+  });
+
+  it("rejects corrupted fault closure metadata at the terminal event", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu0",
+        reason: "injected failure",
+      },
+    });
+    const trace = {
+      ...result.trace,
+      terminal: {
+        ...result.trace.terminal,
+        unsubmittedStepIds: [3],
+      },
+    };
+
+    expect(() => replayPlanTrace(scenario, plan, trace)).toThrowError(
+      "terminal: non-success terminal metadata is incomplete or inconsistent",
+    );
+  });
+
+  it("rejects omission of a step that was ready before fault observation", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const result = executeFrozenPlan(scenario, plan, {
+      injectFault: {
+        kind: "device_failure",
+        atNs: 5,
+        deviceId: "node0:gpu0",
+        reason: "injected failure",
+      },
+    });
+    const operations = result.trace.operations
+      .filter((event) => event.stepId !== 1)
+      .map((event, index) => ({ ...event, sourceSequence: index }));
+    const trace = {
+      operations,
+      terminal: {
+        ...result.trace.terminal,
+        sourceSequence: operations.length,
+        unsubmittedStepIds: [1, 2, 3],
+        timestampNs: 10,
+        rankStates: [
+          { rankId: "rank-0", status: "failed" as const, terminalAtNs: 5 },
+          { rankId: "rank-1", status: "aborted" as const, terminalAtNs: 10 },
+        ],
+      },
+    };
+
+    expect(() => replayPlanTrace(scenario, plan, trace)).toThrowError(
+      "terminal: ready step 1 was omitted before fault observation",
+    );
+  });
+
+  it("runs a deterministic fault campaign over every used resource", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const plan = validPlan();
+    const first = runPlanFaultCampaign(scenario, plan);
+    const second = runPlanFaultCampaign(scenario, plan);
+
+    expect(first).toEqual(second);
+    expect(first.baseline.status).toBe("succeeded");
+    expect(first.baselineReplay.status).toBe("succeeded");
+    expect(first.cases.map((entry) => entry.id)).toEqual([
+      "device:node0:gpu0",
+      "device:node0:gpu1",
+      "link:node0:nvlink:forward",
+      "link:node0:nvlink:reverse",
+      "epoch:1",
+    ]);
+    expect(first.cases.every((entry) => (
+      entry.execution.status !== "succeeded"
+      && entry.replay.status === entry.execution.status
+    ))).toBe(true);
+  });
+
   it("rejects a corrupted terminal rank state", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const plan = validPlan();
@@ -512,8 +798,8 @@ describe("FrozenPlan validation and execution", () => {
 describe("CollectiveSubmitSequencer", () => {
   it("prevents a later execution from overtaking the current group owner", () => {
     const sequencer = new CollectiveSubmitSequencer();
-    sequencer.registerExecution("execution-1", { tp: 2, ep: 1 });
-    sequencer.registerExecution("execution-2", { tp: 1 });
+    sequencer.registerExecution("execution-1", 0, { tp: 2, ep: 1 });
+    sequencer.registerExecution("execution-2", 0, { tp: 1 });
 
     expect(() => sequencer.submit("execution-2", "tp", 0)).toThrowError(
       FrozenPlanExecutionError,
@@ -527,5 +813,51 @@ describe("CollectiveSubmitSequencer", () => {
     sequencer.submit("execution-1", "ep", 0);
     sequencer.completeExecution("execution-1");
     sequencer.completeExecution("execution-2");
+  });
+
+  it("skips a pre-submit execution without poisoning its epoch", () => {
+    const sequencer = new CollectiveSubmitSequencer();
+    sequencer.registerExecution("execution-1", 0, { tp: 1 });
+    sequencer.registerExecution("execution-2", 0, { tp: 1 });
+
+    expect(sequencer.abortExecution("execution-1")).toEqual(["execution-1"]);
+    sequencer.submit("execution-2", "tp", 0);
+    sequencer.completeExecution("execution-2");
+    sequencer.registerExecution("execution-3", 0, { tp: 1 });
+  });
+
+  it("propagates partial-submit abort across overlapping groups", () => {
+    const sequencer = new CollectiveSubmitSequencer();
+    sequencer.registerExecution("execution-1", 0, { tp: 2 });
+    sequencer.registerExecution("execution-2", 0, { tp: 1, ep: 2 });
+    sequencer.registerExecution("execution-3", 0, { ep: 1 });
+    sequencer.submit("execution-1", "tp", 0);
+    sequencer.submit("execution-2", "ep", 0);
+
+    expect(sequencer.abortExecution("execution-1")).toEqual([
+      "execution-1",
+      "execution-2",
+      "execution-3",
+    ]);
+    expect(() => (
+      sequencer.registerExecution("execution-4", 0, { tp: 1 })
+    )).toThrowError("sequencer epoch 0 is poisoned and must advance");
+    sequencer.advanceTopologyEpoch(1);
+    expect(sequencer.currentTopologyEpoch()).toBe(1);
+    sequencer.registerExecution("execution-4", 1, { tp: 1 });
+    sequencer.submit("execution-4", "tp", 0);
+    sequencer.completeExecution("execution-4");
+  });
+
+  it("rejects epoch advance while executions remain registered", () => {
+    const sequencer = new CollectiveSubmitSequencer();
+    sequencer.registerExecution("execution-1", 0, { tp: 1 });
+
+    expect(() => sequencer.advanceTopologyEpoch(1)).toThrowError(
+      "cannot advance topology epoch with registered executions",
+    );
+    expect(() => (
+      sequencer.registerExecution("execution-2", 1, { tp: 1 })
+    )).toThrowError("does not match sequencer epoch 0");
   });
 });

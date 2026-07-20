@@ -7,11 +7,13 @@ import {
   buildTopology,
   calculateScenarioMemoryLedger,
   compareTopologyWorkloads,
+  compileTopologyWorkloadPlan,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyWorkload,
+  runPlanFaultCampaign,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -143,6 +145,28 @@ export async function runCli(
             profile,
           ),
         });
+        return 0;
+      }
+      case "fault-campaign": {
+        if (!argument) {
+          throw new Error("fault-campaign requires a scenario preset name");
+        }
+        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
+          throw new Error(`unknown scenario preset ${argument}`);
+        }
+        const config = await loadRequiredConfig(
+          secondArgument,
+          "fault-campaign",
+        );
+        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const plan = compileTopologyWorkloadPlan(
+          scenario,
+          buildTopologyProfile(config),
+        );
+        printJson(
+          io,
+          summarizeFaultCampaign(runPlanFaultCampaign(scenario, plan)),
+        );
         return 0;
       }
       default:
@@ -492,6 +516,34 @@ function summarizeTopologyRun(
   };
 }
 
+function summarizeFaultCampaign(
+  result: ReturnType<typeof runPlanFaultCampaign>,
+) {
+  return {
+    baseline: {
+      status: result.baseline.status,
+      completedAtNs: result.baseline.completedAtNs,
+      submittedSteps: result.baseline.trace.operations.length,
+      replayAppliedEvents: result.baselineReplay.appliedEvents,
+    },
+    cases: result.cases.map((entry) => {
+      const unsubmitted =
+        entry.execution.trace.terminal.unsubmittedStepIds ?? [];
+      return {
+        id: entry.id,
+        fault: entry.fault,
+        status: entry.execution.status,
+        completedAtNs: entry.execution.completedAtNs,
+        submittedSteps: entry.execution.trace.operations.length,
+        unsubmittedSteps: unsubmitted.length,
+        unsubmittedStepIdsPreview: unsubmitted.slice(0, 16),
+        rankStates: entry.execution.rankStates,
+        replayAppliedEvents: entry.replay.appliedEvents,
+      };
+    }),
+  };
+}
+
 function parseAcceptance(
   config: Record<string, unknown>,
 ): SpeculativeAcceptanceModel {
@@ -571,6 +623,7 @@ Usage:
   inference-sim expert-cache <config.yaml|json>
   inference-sim run <scenario-preset> <workload.yaml|json>
   inference-sim compare <workload.yaml|json>
+  inference-sim fault-campaign <scenario-preset> <workload.yaml|json>
 `;
 }
 
