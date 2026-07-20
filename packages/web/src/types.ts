@@ -1,9 +1,12 @@
 import type {
+  ConfidenceClass,
   ExpertCacheMetrics,
   ExpertRouteResult,
   ScenarioMemoryLedgerEntry,
   SpeculativeWorkloadIteration,
   SpeculativeWorkloadMetrics,
+  TopologyResourceUtilization,
+  TopologyWorkloadMetrics,
 } from "@inference-sim/core";
 
 export type WorkloadMode = "speculative" | "expert-cache";
@@ -42,6 +45,18 @@ export interface DashboardResult {
   };
   readonly mode: WorkloadMode;
   readonly durationMs: number;
+  readonly topology: {
+    readonly confidence: ConfidenceClass;
+    readonly assumptions: readonly string[];
+    readonly planSteps: number;
+    readonly operationCounts: {
+      readonly compute: number;
+      readonly transfer: number;
+      readonly collective: number;
+    };
+    readonly metrics: TopologyWorkloadMetrics;
+    readonly topResources: readonly TopologyResourceUtilization[];
+  };
   readonly speculative?: {
     readonly metrics: SpeculativeWorkloadMetrics;
     readonly iterations: readonly SpeculativeWorkloadIteration[];

@@ -28,6 +28,13 @@ export default function ResultCharts({
       </section>
       <section className="panel">
         <SectionHeading
+          title="Resource utilization"
+          detail={`${result.topology.planSteps.toLocaleString()} replay-verified steps`}
+        />
+        <ResourceChart result={result} />
+      </section>
+      <section className="panel">
+        <SectionHeading
           title={result.mode === "speculative"
             ? "Acceptance profile"
             : "Cache outcomes"}
@@ -40,6 +47,55 @@ export default function ResultCharts({
           : <CacheOutcomeChart result={result} />}
       </section>
     </>
+  );
+}
+
+function ResourceChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const data = result.topology.topResources.map((resource) => ({
+    name: shortResource(resource.resourceId),
+    utilization: Math.round(resource.utilization * 1000) / 10,
+    kind: resource.resourceId.startsWith("link:") ? "link" : "compute",
+  }));
+  return (
+    <div className="chart-frame">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical" margin={{ left: 8, right: 14 }}>
+          <CartesianGrid stroke="#e4e4e7" horizontal={false} />
+          <XAxis
+            type="number"
+            domain={[0, 100]}
+            tickFormatter={(value: number) => `${value}%`}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={104}
+            tick={{ fill: "#52525b", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ChartTooltip
+            formatter={(value) => `${Number(value).toFixed(1)}%`}
+            contentStyle={chartTooltipStyle}
+          />
+          <Bar dataKey="utilization" name="Utilization" radius={[0, 3, 3, 0]}>
+            {data.map((entry) => (
+              <Cell
+                key={entry.name}
+                fill={entry.kind === "link" ? "#d97706" : "#0369a1"}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -206,4 +262,12 @@ const chartTooltipStyle = {
 
 function shortDomain(id: string): string {
   return id.replace(/^node\d+:/, "").replaceAll("-", " ");
+}
+
+function shortResource(id: string): string {
+  return id
+    .replace(/^compute:/, "")
+    .replace(/^link:/, "")
+    .replace(/^node\d+:/, "")
+    .replaceAll("-", " ");
 }

@@ -655,7 +655,7 @@ Exit criteria:
 
 Status: complete. The initial slice had 21 tests across static analysis, event
 ordering, pressure protocol/replay, trace mutation, and speculative
-checkpoint/restore boundaries. The total suite has since grown to 76 tests.
+checkpoint/restore boundaries. The total suite has since grown to 87 tests.
 
 ### Phase 2: FrozenPlan, Communicator, and Topology Composition
 
@@ -685,7 +685,10 @@ Status: in progress. Implemented:
 - terminal success/failure/abort events with rank-local state and post-failure
   quiescence; and
 - completion-driven FrozenPlan submission on the deterministic event kernel,
-  with causal `submittedAtNs` trace evidence.
+  with causal `submittedAtNs` trace evidence; and
+- topology-aware workload compilation into device compute, directed transfer,
+  pipeline, and tensor-collective steps, followed by independent trace replay
+  and resource-utilization accounting.
 
 Remaining Phase 2 work:
 
@@ -720,8 +723,12 @@ checks that its final KV length matches committed target state. Expert-cache
 workloads now model seeded weighted routing without replacement, exact
 hot/warm byte capacities and reservations, deterministic LRU eviction,
 asynchronous initial prefetch, stalls, metrics, and independent replay.
-Timing/resource plans, family-specific eligibility/state, adaptive prefetch
-policy, request batching, and differential token-value traces remain.
+Speculative and expert-cache logical traces now compile into FrozenPlan
+resources across all six required topology families. Link duration uses each
+declared directed link's latency and bandwidth; compute coefficients are
+explicitly heuristic and provenance-tagged. Family-specific eligibility/state,
+measured calibration, adaptive prefetch policy, request batching, and
+differential token-value traces remain.
 
 ### Phase 4: Product Surfaces
 
@@ -735,13 +742,16 @@ The CLI and web UI consume core APIs; they do not own simulation semantics.
 Status: in progress. The initial CLI lists presets, materializes built-in
 scenarios and exact memory ledgers, validates scenario YAML/JSON, runs the
 legacy static-analysis examples, and executes speculative workload configs.
-It also executes exact-capacity expert-cache workload configs.
+It also executes exact-capacity expert-cache workload configs, compiles
+target-only/speculative/expert-cache workloads onto a selected topology, and
+compares one workload deterministically across all six presets.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,
-speculative/expert-cache controls, memory/acceptance/cache charts, and recent
-iteration/route inspection. Compare/search, FrozenPlan file execution/export,
-ONNX import, trace export, and richer progress phases remain.
+speculative/expert-cache controls, heuristic modeled latency and throughput,
+memory/acceptance/cache/resource-utilization charts, and recent iteration/route
+inspection. Browser compare/search, FrozenPlan file execution/export, ONNX
+import, trace export, and richer progress phases remain.
 
 ## 16. Testing and Delivery Gates
 

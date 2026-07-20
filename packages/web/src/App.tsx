@@ -431,6 +431,24 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
     : expertMetrics(result);
   return (
     <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
+        <div className="text-xs text-zinc-500">
+          {result.topology.planSteps.toLocaleString()} frozen-plan steps ·{" "}
+          {result.topology.operationCounts.compute.toLocaleString()} compute ·{" "}
+          {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
+          {result.topology.operationCounts.collective.toLocaleString()} collective
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="warning">
+              {result.topology.confidence} cost model
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-72">
+            {result.topology.assumptions[0]}
+          </TooltipContent>
+        </Tooltip>
+      </div>
       <section className="metric-grid" aria-label="Run metrics">
         {metrics.map((metric) => (
           <div key={metric.label} className="metric-card">
@@ -629,6 +647,7 @@ function RunBadge({ status }: { readonly status: RunStatus }): React.JSX.Element
 
 function speculativeMetrics(result: DashboardResult) {
   const metrics = result.speculative!.metrics;
+  const topology = result.topology.metrics;
   return [
     {
       label: "Efficiency",
@@ -637,10 +656,10 @@ function speculativeMetrics(result: DashboardResult) {
       icon: <Gauge className="size-4" />,
     },
     {
-      label: "Accepted drafts",
-      value: metrics.acceptedDraftTokens.toLocaleString(),
-      detail: `${metrics.rejectedDraftTokens} rejected`,
-      icon: <CheckCircle2 className="size-4 text-emerald-700" />,
+      label: "Modeled latency",
+      value: formatDuration(topology.totalDurationNs),
+      detail: "heuristic device + link time",
+      icon: <Clock3 className="size-4 text-amber-700" />,
     },
     {
       label: "KV high water",
@@ -649,16 +668,17 @@ function speculativeMetrics(result: DashboardResult) {
       icon: <Database className="size-4 text-sky-700" />,
     },
     {
-      label: "Runtime",
-      value: `${result.durationMs.toFixed(1)} ms`,
-      detail: `${metrics.iterations} iterations`,
-      icon: <Clock3 className="size-4 text-amber-700" />,
+      label: "Throughput",
+      value: formatRate(topology.tokensPerSecond),
+      detail: `${metrics.acceptedDraftTokens} drafts accepted`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
     },
   ];
 }
 
 function expertMetrics(result: DashboardResult) {
   const metrics = result.expertCache!.metrics;
+  const topology = result.topology.metrics;
   return [
     {
       label: "Hot hit rate",
@@ -667,22 +687,22 @@ function expertMetrics(result: DashboardResult) {
       icon: <MemoryStick className="size-4 text-sky-700" />,
     },
     {
+      label: "Modeled latency",
+      value: formatDuration(topology.totalDurationNs),
+      detail: "heuristic device + link time",
+      icon: <Clock3 className="size-4 text-amber-700" />,
+    },
+    {
+      label: "Throughput",
+      value: formatRate(topology.tokensPerSecond),
+      detail: `${metrics.demandLoads} demand loads`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
+    },
+    {
       label: "Bytes moved",
       value: formatBytes(metrics.bytesMoved),
-      detail: `${metrics.evictions} evictions`,
+      detail: `${metrics.evictions} evictions · ${formatDuration(metrics.stallNs)} cache stall`,
       icon: <Network className="size-4 text-amber-700" />,
-    },
-    {
-      label: "Cache stall",
-      value: formatDuration(metrics.stallNs),
-      detail: `${metrics.demandLoads} demand loads`,
-      icon: <Clock3 className="size-4 text-rose-700" />,
-    },
-    {
-      label: "Runtime",
-      value: `${result.durationMs.toFixed(1)} ms`,
-      detail: `${metrics.routes} token routes`,
-      icon: <Cpu className="size-4 text-emerald-700" />,
     },
   ];
 }
@@ -699,4 +719,11 @@ function formatDuration(nanoseconds: number): string {
     return `${(nanoseconds / 1_000_000).toFixed(1)} ms`;
   }
   return `${Math.round(nanoseconds / 1_000)} us`;
+}
+
+function formatRate(tokensPerSecond: number): string {
+  const value = tokensPerSecond >= 1000
+    ? tokensPerSecond.toLocaleString(undefined, { maximumFractionDigits: 0 })
+    : tokensPerSecond.toFixed(1);
+  return `${value} tok/s`;
 }

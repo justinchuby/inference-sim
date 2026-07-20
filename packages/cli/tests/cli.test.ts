@@ -47,7 +47,9 @@ describe("CLI", () => {
       memoryLedger: Array<{ reservedBytes: number }>;
     };
     expect(output.scenario.family).toBe("unified");
-    expect(output.memoryLedger[0].reservedBytes).toBe(76 * 1024 ** 3);
+    expect(output.memoryLedger[0].reservedBytes).toBe(
+      76 * 1024 ** 3 + 256 * 1024 ** 2,
+    );
   });
 
   it("runs a speculative YAML workload deterministically", async () => {
@@ -124,5 +126,44 @@ workload:
     expect(output.routes).toHaveLength(3);
     expect(output.snapshot.metrics.routes).toBe(3);
     expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(128);
+  });
+
+  it("runs a workload through topology resources", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "target-only.yaml");
+    await writeFile(path, `
+target_only:
+  token_count: 8
+`, "utf8");
+    const capture = captureIo();
+    expect(await runCli(["run", "multi-gpu", path], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      status: string;
+      operationCounts: { collective: number };
+      metrics: { committedTokens: number; totalDurationNs: number };
+    };
+    expect(output.status).toBe("succeeded");
+    expect(output.operationCounts.collective).toBe(8);
+    expect(output.metrics.committedTokens).toBe(8);
+    expect(output.metrics.totalDurationNs).toBeGreaterThan(0);
+  });
+
+  it("compares one workload across all topology presets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "target-only.yaml");
+    await writeFile(path, `
+target_only:
+  token_count: 8
+`, "utf8");
+    const capture = captureIo();
+    expect(await runCli(["compare", path], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      comparison: Array<{ scenarioId: string; rank: number }>;
+    };
+    expect(output.comparison).toHaveLength(6);
+    expect(output.comparison[0].scenarioId).toBe("multi-gpu");
+    expect(
+      output.comparison.find((entry) => entry.scenarioId === "cpu-only")?.rank,
+    ).toBe(6);
   });
 });

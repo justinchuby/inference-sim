@@ -178,3 +178,22 @@ export {
   replayPlanTrace,
   validateFrozenPlan,
 } from "./frozen-plan.js";
+export {
+  DEFAULT_TOPOLOGY_COST_MODEL,
+  TOPOLOGY_COST_MODEL_REVISION,
+  TopologyWorkloadError,
+  compareTopologyWorkloads,
+  compileTopologyWorkloadPlan,
+  simulateTopologyWorkload,
+  targetOnlyTopologyProfile,
+  topologyProfileFromExpertCache,
+  topologyProfileFromSpeculative,
+  type DeviceCapabilityCost,
+  type TopologyComparisonEntry,
+  type TopologyCostModel,
+  type TopologyResourceUtilization,
+  type TopologyWorkUnit,
+  type TopologyWorkloadMetrics,
+  type TopologyWorkloadProfile,
+  type TopologyWorkloadResult,
+} from "./topology-workload.js";

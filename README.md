@@ -25,7 +25,9 @@ Phase 2 is in progress:
 - FrozenPlan DAG validation and deterministic resource scheduling;
 - collective ordering, transport-link contention, and allocation leases; and
 - independent plan-trace replay with rank-local success/failure/abort
-  quiescence.
+  quiescence; and
+- workload-to-FrozenPlan compilation with device compute, directed transfers,
+  tensor collectives, and topology-aware heuristic timing.
 
 Phase 3 has an initial speculative workload slice:
 
@@ -39,12 +41,14 @@ Phase 3 has an initial speculative workload slice:
   metrics.
 - byte-capacity hot/warm expert caches with weighted routing without
   replacement, deterministic LRU eviction, asynchronous prefetch, and
-  independent trace replay.
+  independent trace replay; and
+- speculative and expert-cache traces compiled onto all six topology families
+  with replay-verified resource utilization and relative comparisons.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
-speculative and expert-cache controls, memory/caching charts, and a recent
-event inspector.
+speculative and expert-cache controls, modeled latency/throughput, memory,
+resource-utilization and caching charts, and a recent event inspector.
 
 ## Direction
 
@@ -75,8 +79,14 @@ pnpm sim scenario gpu-npu
 pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
+pnpm sim run multi-gpu examples/target-only.yaml
+pnpm sim compare examples/target-only.yaml
 pnpm dev:web
 ```
+
+`run` and `compare` use the bundled heuristic cost model. Their output carries
+the confidence class and assumptions; calibrate the coefficients against
+backend traces before treating results as hardware predictions.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

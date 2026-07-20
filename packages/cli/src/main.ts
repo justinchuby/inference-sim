@@ -6,10 +6,15 @@ import {
   buildScenarioPreset,
   buildTopology,
   calculateScenarioMemoryLedger,
+  compareTopologyWorkloads,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateTopologyWorkload,
+  targetOnlyTopologyProfile,
+  topologyProfileFromExpertCache,
+  topologyProfileFromSpeculative,
   type ExpertCacheWorkloadConfig,
   type ExpertLoadTarget,
   validateScenario,
@@ -21,6 +26,7 @@ import {
   type SpeculativeAcceptanceModel,
   type SpeculativeProposerFamily,
   type SpeculativeWorkloadConfig,
+  type TopologyWorkloadProfile,
 } from "@inference-sim/core";
 import {
   optionalNumber,
@@ -50,7 +56,7 @@ export async function runCli(
   io: CliIo = DEFAULT_IO,
 ): Promise<number> {
   try {
-    const [command = "help", argument] = args;
+    const [command = "help", argument, secondArgument] = args;
     switch (command) {
       case "help":
       case "--help":
@@ -105,6 +111,38 @@ export async function runCli(
           io,
           simulateExpertCacheWorkload(parseExpertCacheConfig(config)),
         );
+        return 0;
+      }
+      case "run": {
+        if (!argument) {
+          throw new Error("run requires a scenario preset name");
+        }
+        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
+          throw new Error(`unknown scenario preset ${argument}`);
+        }
+        const config = await loadRequiredConfig(secondArgument, "run");
+        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        printJson(
+          io,
+          summarizeTopologyRun(
+            simulateTopologyWorkload(
+              scenario,
+              buildTopologyProfile(config),
+            ),
+          ),
+        );
+        return 0;
+      }
+      case "compare": {
+        const config = await loadRequiredConfig(argument, "compare");
+        const profile = buildTopologyProfile(config);
+        printJson(io, {
+          profileId: profile.id,
+          comparison: compareTopologyWorkloads(
+            SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
+            profile,
+          ),
+        });
         return 0;
       }
       default:
@@ -398,6 +436,62 @@ function parseExpertCacheConfig(
   };
 }
 
+function buildTopologyProfile(
+  config: Record<string, unknown>,
+): TopologyWorkloadProfile {
+  if (config.speculative !== undefined) {
+    return topologyProfileFromSpeculative(
+      simulateSpeculativeWorkload(parseSpeculativeConfig(config)),
+    );
+  }
+  if (config.expert_cache !== undefined) {
+    const workload = parseExpertCacheConfig(config);
+    const result = simulateExpertCacheWorkload(workload);
+    const expertBytes = workload.cache.experts[0]?.bytes;
+    if (
+      expertBytes === undefined
+      || workload.cache.experts.some((expert) => expert.bytes !== expertBytes)
+    ) {
+      throw new Error(
+        "topology expert-cache profiles currently require equal expert byte sizes",
+      );
+    }
+    return topologyProfileFromExpertCache(result, expertBytes);
+  }
+  if (config.target_only !== undefined) {
+    const targetOnly = requireRecord(config.target_only, "target_only");
+    return targetOnlyTopologyProfile(
+      requireNumber(targetOnly, "token_count", "target_only"),
+    );
+  }
+  throw new Error(
+    "topology workload requires speculative, expert_cache, or target_only config",
+  );
+}
+
+function summarizeTopologyRun(
+  result: ReturnType<typeof simulateTopologyWorkload>,
+) {
+  const operationCounts = {
+    compute: 0,
+    transfer: 0,
+    collective: 0,
+  };
+  for (const event of result.execution.trace.operations) {
+    operationCounts[event.kind]++;
+  }
+  return {
+    scenarioId: result.scenarioId,
+    profileId: result.profileId,
+    confidence: result.confidence,
+    assumptions: result.assumptions,
+    status: result.execution.status,
+    planSteps: result.plan.steps.length,
+    operationCounts,
+    metrics: result.metrics,
+  };
+}
+
 function parseAcceptance(
   config: Record<string, unknown>,
 ): SpeculativeAcceptanceModel {
@@ -475,6 +569,8 @@ Usage:
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
   inference-sim expert-cache <config.yaml|json>
+  inference-sim run <scenario-preset> <workload.yaml|json>
+  inference-sim compare <workload.yaml|json>
 `;
 }
 

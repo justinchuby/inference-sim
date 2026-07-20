@@ -44,8 +44,8 @@ describe("scenario presets", () => {
     expect(calculateScenarioMemoryLedger(scenario)).toEqual([{
       domainId: "node0:unified",
       capacityBytes: 128 * 1024 ** 3,
-      reservedBytes: 76 * 1024 ** 3,
-      freeBytes: 52 * 1024 ** 3,
+      reservedBytes: 76 * 1024 ** 3 + 256 * 1024 ** 2,
+      freeBytes: 52 * 1024 ** 3 - 256 * 1024 ** 2,
     }]);
   });
 
@@ -90,7 +90,7 @@ describe("validateScenario", () => {
 
     expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
     expect(calculateScenarioMemoryLedger(scenario)[0].reservedBytes).toBe(
-      76 * 1024 ** 3,
+      76 * 1024 ** 3 + 256 * 1024 ** 2,
     );
   });
 

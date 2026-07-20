@@ -3,7 +3,11 @@ import {
   calculateScenarioMemoryLedger,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateTopologyWorkload,
+  topologyProfileFromExpertCache,
+  topologyProfileFromSpeculative,
   type ScenarioPresetName,
+  type TopologyWorkloadResult,
 } from "@inference-sim/core";
 import type { DashboardResult, DashboardRunConfig } from "./types.js";
 
@@ -13,24 +17,40 @@ export function simulateDashboard(
   const scenario = buildScenarioPreset(
     config.scenarioName as ScenarioPresetName,
   );
+  const scenarioSummary = {
+    id: scenario.id,
+    family: scenario.family,
+    deviceCount: scenario.devices.length,
+    linkCount: scenario.links.length,
+    memoryLedger: calculateScenarioMemoryLedger(scenario),
+  };
+  if (config.mode === "speculative") {
+    const workload = runSpeculative(config);
+    return {
+      scenario: scenarioSummary,
+      mode: config.mode,
+      topology: summarizeTopology(simulateTopologyWorkload(
+        scenario,
+        topologyProfileFromSpeculative(workload.result),
+      )),
+      speculative: workload.dashboard,
+    };
+  }
+  const workload = runExpertCache(config);
   return {
-    scenario: {
-      id: scenario.id,
-      family: scenario.family,
-      deviceCount: scenario.devices.length,
-      linkCount: scenario.links.length,
-      memoryLedger: calculateScenarioMemoryLedger(scenario),
-    },
+    scenario: scenarioSummary,
     mode: config.mode,
-    ...(config.mode === "speculative"
-      ? { speculative: runSpeculative(config) }
-      : { expertCache: runExpertCache(config) }),
+    topology: summarizeTopology(simulateTopologyWorkload(
+      scenario,
+      topologyProfileFromExpertCache(workload.result, workload.expertBytes),
+    )),
+    expertCache: workload.dashboard,
   };
 }
 
 function runSpeculative(
   config: DashboardRunConfig,
-): NonNullable<DashboardResult["speculative"]> {
+) {
   const initialTokenLength = 2048;
   const outputTokens = clampInteger(
     config.speculative.outputTokens,
@@ -77,15 +97,18 @@ function runSpeculative(
     },
   });
   return {
-    metrics: result.metrics,
-    iterations: result.iterations,
-    finalTokenLength: result.finalTokenLength,
+    result,
+    dashboard: {
+      metrics: result.metrics,
+      iterations: result.iterations,
+      finalTokenLength: result.finalTokenLength,
+    },
   };
 }
 
 function runExpertCache(
   config: DashboardRunConfig,
-): NonNullable<DashboardResult["expertCache"]> {
+) {
   const expertCount = clampInteger(config.expertCache.expertCount, 4, 64);
   const topK = clampInteger(config.expertCache.topK, 1, expertCount);
   const hotSlots = clampInteger(
@@ -123,12 +146,45 @@ function runExpertCache(
     tokenIntervalNs: 250_000,
   });
   return {
-    metrics: result.snapshot.metrics,
-    routes: result.routes,
-    hotResidentBytes: result.snapshot.hotResidentBytes,
-    warmResidentBytes: result.snapshot.warmResidentBytes,
-    hotCapacityBytes: result.snapshot.hotCapacityBytes,
-    warmCapacityBytes: result.snapshot.warmCapacityBytes,
+    result,
+    expertBytes,
+    dashboard: {
+      metrics: result.snapshot.metrics,
+      routes: result.routes,
+      hotResidentBytes: result.snapshot.hotResidentBytes,
+      warmResidentBytes: result.snapshot.warmResidentBytes,
+      hotCapacityBytes: result.snapshot.hotCapacityBytes,
+      warmCapacityBytes: result.snapshot.warmCapacityBytes,
+    },
+  };
+}
+
+function summarizeTopology(
+  result: TopologyWorkloadResult,
+): DashboardResult["topology"] {
+  const operationCounts = {
+    compute: 0,
+    transfer: 0,
+    collective: 0,
+  };
+  for (const event of result.execution.trace.operations) {
+    operationCounts[event.kind]++;
+  }
+  return {
+    confidence: result.confidence,
+    assumptions: result.assumptions,
+    planSteps: result.plan.steps.length,
+    operationCounts,
+    metrics: result.metrics,
+    topResources: [
+      ...result.metrics.computeUtilization,
+      ...result.metrics.linkUtilization,
+    ]
+      .sort((left, right) => (
+        right.utilization - left.utilization
+        || left.resourceId.localeCompare(right.resourceId)
+      ))
+      .slice(0, 8),
   };
 }
 

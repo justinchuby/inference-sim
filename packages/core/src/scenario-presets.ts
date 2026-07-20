@@ -13,6 +13,7 @@ import {
 import { assertValidScenario } from "./scenario.js";
 
 const GiB = 1024 ** 3;
+const MiB = 1024 ** 2;
 const GBps = 1_000_000_000;
 
 const HEURISTIC: EvidenceProvenance = {
@@ -83,6 +84,13 @@ function buildCpuOnly(): SimulationScenario {
       placement("target", cpu.id, ["attention", "ffn"], [
         allocation("target-weights", "node0:host", 8 * GiB, "pageable", "weights"),
         allocation("target-kv", "node0:host", 2 * GiB, "pageable", "kv"),
+        allocation(
+          "target-workspace",
+          "node0:host",
+          256 * MiB,
+          "pageable",
+          "workspace",
+        ),
       ]),
     ],
     groups: [group("world", [[0, cpu.id]])],
@@ -152,6 +160,13 @@ function buildSingleGpu(): SimulationScenario {
           "weights",
         ),
         allocation("target-kv", "node0:gpu0:vram", 8 * GiB, "device", "kv"),
+        allocation(
+          "target-workspace",
+          "node0:gpu0:vram",
+          256 * MiB,
+          "device",
+          "workspace",
+        ),
         allocation(
           "offload-staging",
           "node0:host",
@@ -260,10 +275,31 @@ function buildMultiGpu(): SimulationScenario {
       placement("target-shard-0", gpu0.id, ["attention", "ffn", "collective"], [
         allocation("weights-0", "node0:gpu0:vram", 36 * GiB, "device", "weights"),
         allocation("kv-0", "node0:gpu0:vram", 8 * GiB, "device", "kv"),
+        allocation(
+          "workspace-0",
+          "node0:gpu0:vram",
+          128 * MiB,
+          "device",
+          "workspace",
+        ),
+        allocation(
+          "expert-cache-host",
+          "node0:host",
+          256 * MiB,
+          "pinned",
+          "staging",
+        ),
       ]),
       placement("target-shard-1", gpu1.id, ["attention", "ffn", "collective"], [
         allocation("weights-1", "node0:gpu1:vram", 36 * GiB, "device", "weights"),
         allocation("kv-1", "node0:gpu1:vram", 8 * GiB, "device", "kv"),
+        allocation(
+          "workspace-1",
+          "node0:gpu1:vram",
+          128 * MiB,
+          "device",
+          "workspace",
+        ),
       ]),
     ],
     transfers: [
@@ -369,6 +405,13 @@ function buildGpuNpu(): SimulationScenario {
         ),
         allocation("attention-kv", "node0:npu0:memory", 4 * GiB, "device", "kv"),
         allocation(
+          "attention-workspace",
+          "node0:npu0:memory",
+          256 * MiB,
+          "device",
+          "workspace",
+        ),
+        allocation(
           "npu-staging",
           "node0:host",
           2 * GiB,
@@ -383,6 +426,13 @@ function buildGpuNpu(): SimulationScenario {
           30 * GiB,
           "device",
           "weights",
+        ),
+        allocation(
+          "ffn-workspace",
+          "node0:gpu0:vram",
+          256 * MiB,
+          "device",
+          "workspace",
         ),
         allocation(
           "gpu-staging",
@@ -452,6 +502,13 @@ function buildUnified(): SimulationScenario {
           "weights",
         ),
         allocation("target-kv", "node0:unified", 16 * GiB, "unified", "kv"),
+        allocation(
+          "target-workspace",
+          "node0:unified",
+          256 * MiB,
+          "unified",
+          "workspace",
+        ),
       ]),
     ],
     groups: [group("world", [[0, gpu.id]])],
@@ -474,7 +531,7 @@ function buildMultiNode(): SimulationScenario {
     "gpu",
     "CUDAExecutionProvider",
     ["node0:gpu0:vram", "node0:host"],
-    ["attention", "ffn", "collective", "copy"],
+    ["attention", "ffn", "collective", "copy", "draft"],
   );
   const cpu1 = device(
     "node1:cpu0",
@@ -490,7 +547,7 @@ function buildMultiNode(): SimulationScenario {
     "gpu",
     "CUDAExecutionProvider",
     ["node1:gpu0:vram", "node1:host"],
-    ["attention", "ffn", "collective", "copy"],
+    ["attention", "ffn", "collective", "copy", "draft"],
   );
   return scenario({
     id: "multi-node",
@@ -568,11 +625,25 @@ function buildMultiNode(): SimulationScenario {
       placement("target-shard-0", gpu0.id, ["attention", "ffn", "collective"], [
         allocation("weights-0", "node0:gpu0:vram", 36 * GiB, "device", "weights"),
         allocation("kv-0", "node0:gpu0:vram", 8 * GiB, "device", "kv"),
+        allocation(
+          "workspace-0",
+          "node0:gpu0:vram",
+          128 * MiB,
+          "device",
+          "workspace",
+        ),
         allocation("staging-0", "node0:host", 1 * GiB, "pinned", "staging"),
       ]),
       placement("target-shard-1", gpu1.id, ["attention", "ffn", "collective"], [
         allocation("weights-1", "node1:gpu0:vram", 36 * GiB, "device", "weights"),
         allocation("kv-1", "node1:gpu0:vram", 8 * GiB, "device", "kv"),
+        allocation(
+          "workspace-1",
+          "node1:gpu0:vram",
+          128 * MiB,
+          "device",
+          "workspace",
+        ),
         allocation("staging-1", "node1:host", 1 * GiB, "pinned", "staging"),
       ]),
     ],
