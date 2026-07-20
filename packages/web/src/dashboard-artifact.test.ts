@@ -155,6 +155,36 @@ describe("dashboard result artifact import", () => {
     ).artifactReplay?.matches).toBe(true);
   });
 
+  it("round-trips model capability evidence in deterministic input", () => {
+    const boundConfig: DashboardRunConfig = {
+      ...config,
+      modelBinding: {
+        source: "local_model_package",
+        modelFingerprints: [
+          "fnv1a32:12345678",
+          "fnv1a32:90abcdef",
+        ],
+        componentCount: 2,
+        pipelineStrategy: "composite",
+        speculativeFamilies: ["draft_model", "mtp"],
+      },
+    };
+    const artifact = createDashboardArtifact(
+      boundConfig,
+      simulateDashboardExecution(boundConfig),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "model-bound.json",
+    );
+
+    expect(parsed.config.modelBinding).toEqual(boundConfig.modelBinding);
+    expect(executeDashboardWorkerRun(
+      parsed.config,
+      parsed.expectation,
+    ).artifactReplay?.matches).toBe(true);
+  });
+
   it("replays all dashboard modes through the Worker execution boundary", async () => {
     const configs: DashboardRunConfig[] = [
       config,

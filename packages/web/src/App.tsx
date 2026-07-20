@@ -1,4 +1,10 @@
 import {
+  buildMultiGpuRingScenario,
+  buildScenarioPreset,
+  type ScenarioPresetName,
+  type SimulationScenario,
+} from "@inference-sim/core";
+import {
   lazy,
   Suspense,
   useCallback,
@@ -23,6 +29,7 @@ import {
   Network,
   Play,
   RotateCcw,
+  SlidersHorizontal,
   Square,
   TriangleAlert,
   Trash2,
@@ -229,6 +236,9 @@ const ONNX_HARDWARE: ReadonlyArray<{
 ];
 
 const ResultCharts = lazy(() => import("./ResultCharts.js"));
+const TopologyEditorDialog = lazy(
+  () => import("./TopologyEditorDialog.js"),
+);
 
 type RunStatus =
   | "idle"
@@ -493,6 +503,21 @@ export function App(): React.JSX.Element {
       scenarioName,
     });
     setCustomScenario({});
+  }, [changeConfig, config]);
+
+  const applyEditedTopology = useCallback((
+    scenario: SimulationScenario,
+  ) => {
+    changeConfig({
+      ...config,
+      scenarioName: "custom",
+      customScenario: scenario,
+      serving: {
+        ...config.serving,
+        compareTopologies: false,
+      },
+    });
+    setCustomScenario({ fileName: "Web topology editor" });
   }, [changeConfig, config]);
 
   const importLocalModelPackage = useCallback(async (
@@ -1270,6 +1295,7 @@ export function App(): React.JSX.Element {
                     disabled={runState.status === "running"}
                     onChange={changeConfig}
                     onCustomScenarioFile={importCustomScenario}
+                    onEditedTopology={applyEditedTopology}
                     onClearCustomScenario={clearCustomScenario}
                     calibration={calibration}
                     onCalibrationFile={importCalibration}
@@ -1905,6 +1931,7 @@ function ConfigurationPanel({
   disabled,
   onChange,
   onCustomScenarioFile,
+  onEditedTopology,
   onClearCustomScenario,
   calibration,
   onCalibrationFile,
@@ -1928,6 +1955,7 @@ function ConfigurationPanel({
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
   readonly onCustomScenarioFile: (file: File) => void;
+  readonly onEditedTopology: (scenario: SimulationScenario) => void;
   readonly onClearCustomScenario: (
     scenarioName?: Exclude<
       DashboardRunConfig["scenarioName"],
@@ -1945,6 +1973,7 @@ function ConfigurationPanel({
   readonly onCancel: () => void;
   readonly running: boolean;
 }): React.JSX.Element {
+  const [topologyEditorOpen, setTopologyEditorOpen] = useState(false);
   const modelFilesInput = useRef<HTMLInputElement | null>(null);
   const modelDirectoryInput = useRef<HTMLInputElement | null>(null);
   const calibrationInput = useRef<HTMLInputElement | null>(null);
@@ -1956,6 +1985,22 @@ function ConfigurationPanel({
   const speculativeOptions = SPECULATIVE_FAMILIES.filter((family) => (
     availableSpeculativeFamilies.includes(family.value)
   ));
+  const selectedScenario = useMemo(() => {
+    if (config.scenarioName === "custom") {
+      return config.customScenario;
+    }
+    if (
+      config.scenarioName === "multi-gpu"
+      && config.multiGpuRanks !== 2
+    ) {
+      return buildMultiGpuRingScenario(config.multiGpuRanks);
+    }
+    return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
+  }, [
+    config.customScenario,
+    config.multiGpuRanks,
+    config.scenarioName,
+  ]);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
@@ -2256,6 +2301,69 @@ function ConfigurationPanel({
                           </SelectContent>
                         </Select>
                       </Field>
+                    )
+                  : null}
+                {selectedScenario
+                  ? (
+                      <div className="mb-4 border-y border-zinc-200 py-3">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs font-semibold text-zinc-700">
+                              {selectedScenario.devices.length} devices ·{" "}
+                              {selectedScenario.memoryDomains.length} memory domains
+                            </div>
+                            <div className="truncate text-[11px] text-zinc-500">
+                              {selectedScenario.links.length} directed links · epoch{" "}
+                              {selectedScenario.execution.topologyEpoch}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="icon"
+                            className="shrink-0"
+                            aria-label="Edit device topology"
+                            disabled={disabled}
+                            onClick={() => setTopologyEditorOpen(true)}
+                          >
+                            <SlidersHorizontal className="size-4" />
+                          </Button>
+                        </div>
+                        <div className="space-y-1.5">
+                          {selectedScenario.devices.map((device) => {
+                            const capacity = selectedScenario.memoryDomains
+                              .filter((domain) => (
+                                device.memoryDomainIds.includes(domain.id)
+                                && domain.kind !== "storage"
+                                && (
+                                  domain.kind === "unified"
+                                  || (
+                                    device.kind === "cpu"
+                                      ? domain.kind === "host"
+                                      : domain.kind === "device"
+                                  )
+                                )
+                              ))
+                              .reduce(
+                                (sum, domain) => sum + domain.capacityBytes,
+                                0,
+                              );
+                            return (
+                              <div
+                                key={device.id}
+                                className="flex min-w-0 items-center justify-between gap-2 text-[11px]"
+                              >
+                                <span className="truncate font-medium text-zinc-700">
+                                  {device.id}
+                                </span>
+                                <span className="shrink-0 text-zinc-500">
+                                  {device.kind.toUpperCase()} · {formatBytes(capacity)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )
                   : null}
               </>
@@ -2903,6 +3011,18 @@ function ConfigurationPanel({
         </TabsContent>
         </Tabs>
       </div>
+      {topologyEditorOpen && selectedScenario
+        ? (
+            <Suspense fallback={null}>
+              <TopologyEditorDialog
+                open={topologyEditorOpen}
+                scenario={selectedScenario}
+                onOpenChange={setTopologyEditorOpen}
+                onSave={onEditedTopology}
+              />
+            </Suspense>
+          )
+        : null}
 
       <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
         {running

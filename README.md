@@ -145,7 +145,14 @@ validation, execution, replay, search, and artifact boundaries and remains
 outside deterministic evidence. The topology selector accepts a bounded local
 revision-4 scenario YAML/JSON file, validates it before selection, repeats the
 same strict parse in the Worker, and embeds the complete scenario in exported
-run evidence. The local filename is UI metadata only. Its expert-placement
+run evidence. The local filename is UI metadata only. Built-in and imported
+topologies can be opened in a responsive editor that exposes every device's
+execution provider, compute concurrency, dtypes, capabilities, accessible
+memory capacity/bandwidth/latency/coherence, and every directed link's
+endpoints, kind, bandwidth, latency, and lanes. Applying an edit marks the
+scenario custom, advances `topologyEpoch`, replaces topology provenance with
+explicit user-edited heuristic evidence, and validates the complete scenario
+through the shared core parser before it can run. Its expert-placement
 selector and the CLI's
 `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

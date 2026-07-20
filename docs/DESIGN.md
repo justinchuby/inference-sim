@@ -1502,6 +1502,25 @@ serving/speculative dashboard artifacts. Static results expose per-device
 weights, expert residency, KV, activation, and free capacity alongside the
 manifest inventory and profile assumptions.
 
+The topology surface resolves the selected preset, parameterized multi-GPU
+ring, or imported scenario into the same revision-4 `SimulationScenario` used
+by CLI and Worker execution. Its editor mutates existing compute devices,
+memory domains, and directed links: execution provider, capabilities, dtypes,
+compute lanes, capacity, local bandwidth/latency/coherence, endpoints,
+transport kind, link bandwidth/latency, and concurrency lanes. It deliberately
+does not create unplaced devices: a device without placement and communicator
+ownership would appear in topology counts while doing no workload, which is a
+misleading simulation. Arbitrary structural composition remains available
+through full scenario import.
+
+Applying an editor draft changes the family to `custom`, advances
+`topologyEpoch`, and replaces device/domain/link provenance with explicit
+user-edited heuristic evidence. The shared strict parser and semantic
+validator run before the UI accepts the draft; Worker execution parses it
+again, and deterministic result artifacts embed the complete custom scenario.
+Displayed memory for accelerators counts local device or unified domains, not
+host memory that happens to be addressable by the device.
+
 Static configuration search is a deterministic Cartesian enumeration of only
 the caller-declared finite axes. `maxCandidates` is checked before evaluation;
 empty or duplicate axes, duplicate topology identities, non-finite
