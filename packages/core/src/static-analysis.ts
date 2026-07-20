@@ -27,6 +27,8 @@ function bytesPerElement(quant: QuantType): number {
     case "fp16": case "bf16": return 2;
     case "fp8": case "int8": return 1;
     case "int4": case "nf4": return 0.5;
+    case "int2": return 0.25;
+    case "int1": return 0.125;
   }
 }
 

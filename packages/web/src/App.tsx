@@ -147,6 +147,8 @@ const BUILTIN_WEIGHT_DTYPES = [
   "fp8",
   "int8",
   "int4",
+  "int2",
+  "int1",
 ] as const satisfies readonly QuantType[];
 
 const COMPUTER_SCENARIOS: ReadonlyArray<{
@@ -1936,7 +1938,16 @@ function QuantizationSelect({
     >
       <SelectTrigger><SelectValue /></SelectTrigger>
       <SelectContent>
-        {["fp32", "fp16", "bf16", "fp8", "int8", "int4"].map((quant) => (
+        {[
+          "fp32",
+          "fp16",
+          "bf16",
+          "fp8",
+          "int8",
+          "int4",
+          "int2",
+          "int1",
+        ].map((quant) => (
           <SelectItem key={quant} value={quant}>{quant.toUpperCase()}</SelectItem>
         ))}
       </SelectContent>
@@ -5297,6 +5308,10 @@ function formatDtype(dtype: string): string {
       return "UINT8";
     case "int4":
       return "INT4";
+    case "int2":
+      return "INT2";
+    case "int1":
+      return "INT1";
     case "uint4":
       return "UINT4";
     case "nf4":

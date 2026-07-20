@@ -480,6 +480,8 @@ function bytesPerElement(quant: QuantType): number {
     case "int8": return 1;
     case "int4":
     case "nf4": return 0.5;
+    case "int2": return 0.25;
+    case "int1": return 0.125;
   }
 }
 

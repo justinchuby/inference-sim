@@ -1820,6 +1820,8 @@ function requireQuantType(value: string): QuantType {
     "fp8",
     "int8",
     "int4",
+    "int2",
+    "int1",
     "nf4",
   ];
   if (!types.includes(value as QuantType)) {

@@ -444,6 +444,8 @@ function parseModelFormat(
     "fp8",
     "int8",
     "int4",
+    "int2",
+    "int1",
     "nf4",
     "unknown",
   ] as const;
@@ -451,7 +453,17 @@ function parseModelFormat(
     weightDtypes,
     weightQuantization: requireEnum(
       format.weightQuantization,
-      ["none", "fp8", "int8", "int4", "nf4", "mixed", "unknown"] as const,
+      [
+        "none",
+        "fp8",
+        "int8",
+        "int4",
+        "int2",
+        "int1",
+        "nf4",
+        "mixed",
+        "unknown",
+      ] as const,
       "modelBinding modelFormat weightQuantization",
     ),
     kvCacheDtype: requireEnum(

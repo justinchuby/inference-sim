@@ -66,6 +66,8 @@ export interface DashboardModelFormat {
     | "fp8"
     | "int8"
     | "int4"
+    | "int2"
+    | "int1"
     | "nf4"
     | "mixed"
     | "unknown";

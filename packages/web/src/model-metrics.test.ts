@@ -24,6 +24,8 @@ describe("model UI metrics", () => {
   it("binds weight dtype to storage cost and experiment identity", () => {
     const fp16 = createBuiltinModelBinding("llama-3-8b", "fp16");
     const int4 = createBuiltinModelBinding("llama-3-8b", "int4");
+    const int2 = createBuiltinModelBinding("llama-3-8b", "int2");
+    const int1 = createBuiltinModelBinding("llama-3-8b", "int1");
 
     expect(fp16.modelFormat).toMatchObject({
       weightDtypes: ["fp16"],
@@ -37,12 +39,25 @@ describe("model UI metrics", () => {
       weightQuantization: "int4",
     });
     expect(int4.weightBytes).toBe(fp16.weightBytes / 4);
+    expect(int2.modelFormat).toMatchObject({
+      weightDtypes: ["int2"],
+      weightQuantization: "int2",
+    });
+    expect(int1.modelFormat).toMatchObject({
+      weightDtypes: ["int1"],
+      weightQuantization: "int1",
+    });
+    expect(int2.weightBytes).toBe(fp16.weightBytes / 8);
+    expect(int1.weightBytes).toBe(fp16.weightBytes / 16);
     expect(int4.executionProfile.attentionWeightBytesPerToken).toBe(
       fp16.executionProfile.attentionWeightBytesPerToken / 4,
     );
-    expect(int4.targetModelFingerprint).not.toBe(
+    expect(new Set([
       fp16.targetModelFingerprint,
-    );
+      int4.targetModelFingerprint,
+      int2.targetModelFingerprint,
+      int1.targetModelFingerprint,
+    ]).size).toBe(4);
     expect(fp16.speculativeFamilies).toEqual(["prompt_lookup"]);
   });
 

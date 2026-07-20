@@ -187,7 +187,7 @@ describe("dashboard result artifact import", () => {
     const quantizedConfig: DashboardRunConfig = {
       ...config,
       mode: "serving",
-      modelBinding: createBuiltinModelBinding("llama-3-8b", "int4"),
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "int1"),
       serving: {
         ...config.serving,
         decodeMode: "target_only",
@@ -199,7 +199,7 @@ describe("dashboard result artifact import", () => {
     );
     const parsed = parseDashboardArtifactFileText(
       serializeSimulationResultArtifact(artifact),
-      "int4-run.json",
+      "int1-run.json",
     );
 
     expect(parsed.config.modelBinding?.modelFormat).toEqual(
