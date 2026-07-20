@@ -152,7 +152,14 @@ memory capacity/bandwidth/latency/coherence, and every directed link's
 endpoints, kind, bandwidth, latency, and lanes. Applying an edit marks the
 scenario custom, advances `topologyEpoch`, replaces topology provenance with
 explicit user-edited heuristic evidence, and validates the complete scenario
-through the shared core parser before it can run. Its expert-placement
+through the shared core parser before it can run. The selected topology is
+also rendered as an interactive pan/zoom map in the configuration, editor, and
+result views. Device-to-memory access is shown separately from directed
+transport links, and selecting a node or edge reveals the exact capability or
+link evidence used by the scenario. The map is a deterministic, read-only
+projection of the same scenario object; topology changes remain explicit
+through the Devices and Links editor tabs rather than creating a second graph
+state. Its expert-placement
 selector and the CLI's
 `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

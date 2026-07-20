@@ -1243,6 +1243,32 @@ Product views retained from the original design:
 - TTFT, ITL percentiles, throughput, stalls, wasted work, and utilization; and
 - side-by-side configuration comparison.
 
+#### 14.3.1 Topology Projection
+
+The browser topology graph is a deterministic read-only projection of the
+validated revision-4 `SimulationScenario`. It must not own an independently
+editable graph model or feed coordinates back into simulation evidence.
+Configuration, editor draft, and result views project the scenario applicable
+to that view, so imported and parameterized multi-GPU topologies use the same
+path as built-in presets.
+
+The projection includes:
+
+- one node for every compute device and physical memory domain;
+- dashed access edges for each declared device-to-memory visibility relation;
+- every directed transport link, including both directions when the scenario
+  declares a bidirectional physical connection;
+- device provider, concurrency, capability, and dtype evidence;
+- memory capacity, local bandwidth, latency, and coherence evidence; and
+- link kind, bandwidth, latency, and concurrency lanes.
+
+Layout coordinates and UI selection are presentation state only. Pan, zoom,
+fit, and node/edge inspection cannot alter the scenario. Topology mutation is
+performed through the structured Devices and Links forms, increments
+`topologyEpoch`, and passes the same strict core validation before execution.
+Opposite directed links may share one visible performance label to avoid
+overlap, but both edges and their direction markers remain present.
+
 The UI runs core simulation in a Web Worker. Progress and abort are worker
 control messages; aborting the UI task does not fabricate a successful protocol
 terminal state.

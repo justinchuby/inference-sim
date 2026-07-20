@@ -239,6 +239,7 @@ const ResultCharts = lazy(() => import("./ResultCharts.js"));
 const TopologyEditorDialog = lazy(
   () => import("./TopologyEditorDialog.js"),
 );
+const TopologyGraph = lazy(() => import("./TopologyGraph.js"));
 
 type RunStatus =
   | "idle"
@@ -1081,6 +1082,13 @@ export function App(): React.JSX.Element {
   }, [run]);
 
   const result = runState.result;
+  const selectedScenario = useMemo(
+    () => resolveSelectedScenario(config),
+    [config.customScenario, config.multiGpuRanks, config.scenarioName],
+  );
+  const displayedScenario = result?.comparison
+    ? buildScenarioPreset(result.scenario.id as ScenarioPresetName)
+    : selectedScenario;
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-[#f7f8fa] text-zinc-950">
@@ -1323,12 +1331,15 @@ export function App(): React.JSX.Element {
               ? (
                   <Results
                     result={result}
+                    topologyScenario={displayedScenario}
                     artifact={runState.artifact}
                     artifactReplay={runState.artifactReplay}
                   />
                 )
               : modelPackage.result
               ? <ModelPackageOverview modelPackage={modelPackage.result} />
+              : runState.status === "idle" && selectedScenario
+              ? <TopologyConfigurationPreview scenario={selectedScenario} />
               : <EmptyState state={runState} />}
           </main>
 
@@ -1922,6 +1933,21 @@ function CompactParallelismSelect({
   );
 }
 
+function resolveSelectedScenario(
+  config: DashboardRunConfig,
+): SimulationScenario | undefined {
+  if (config.scenarioName === "custom") {
+    return config.customScenario;
+  }
+  if (
+    config.scenarioName === "multi-gpu"
+    && config.multiGpuRanks !== 2
+  ) {
+    return buildMultiGpuRingScenario(config.multiGpuRanks);
+  }
+  return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
+}
+
 function ConfigurationPanel({
   config,
   modelPackage,
@@ -1985,18 +2011,7 @@ function ConfigurationPanel({
   const speculativeOptions = SPECULATIVE_FAMILIES.filter((family) => (
     availableSpeculativeFamilies.includes(family.value)
   ));
-  const selectedScenario = useMemo(() => {
-    if (config.scenarioName === "custom") {
-      return config.customScenario;
-    }
-    if (
-      config.scenarioName === "multi-gpu"
-      && config.multiGpuRanks !== 2
-    ) {
-      return buildMultiGpuRingScenario(config.multiGpuRanks);
-    }
-    return buildScenarioPreset(config.scenarioName as ScenarioPresetName);
-  }, [
+  const selectedScenario = useMemo(() => resolveSelectedScenario(config), [
     config.customScenario,
     config.multiGpuRanks,
     config.scenarioName,
@@ -3328,12 +3343,60 @@ function OnnxMetric({
   );
 }
 
+function TopologyConfigurationPreview({
+  scenario,
+}: {
+  readonly scenario: SimulationScenario;
+}): React.JSX.Element {
+  return (
+    <div className="space-y-5">
+      <div className="border-b border-zinc-200 pb-3">
+        <h1 className="text-base font-bold">Topology configuration</h1>
+        <p className="mt-1 text-xs text-zinc-500">
+          {scenario.id} · epoch {scenario.execution.topologyEpoch}
+        </p>
+      </div>
+      <TopologyVisualizationSection scenario={scenario} title="Device map" />
+    </div>
+  );
+}
+
+function TopologyVisualizationSection({
+  scenario,
+  title,
+}: {
+  readonly scenario: SimulationScenario;
+  readonly title: string;
+}): React.JSX.Element {
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-bold">{title}</h2>
+        <Badge variant="neutral">
+          {scenario.devices.length} devices · {scenario.links.length} links
+        </Badge>
+      </div>
+      <Suspense
+        fallback={(
+          <div className="grid h-[430px] place-items-center border border-zinc-200 bg-white text-xs text-zinc-500">
+            Loading topology map
+          </div>
+        )}
+      >
+        <TopologyGraph scenario={scenario} />
+      </Suspense>
+    </section>
+  );
+}
+
 function Results({
   result,
+  topologyScenario,
   artifact,
   artifactReplay,
 }: {
   readonly result: DashboardResult;
+  readonly topologyScenario?: SimulationScenario;
   readonly artifact?: DashboardArtifactDownload;
   readonly artifactReplay?: DashboardArtifactReplay;
 }): React.JSX.Element {
@@ -3483,6 +3546,14 @@ function Results({
           </div>
         ))}
       </section>
+      {topologyScenario
+        ? (
+            <TopologyVisualizationSection
+              scenario={topologyScenario}
+              title="Execution topology"
+            />
+          )
+        : null}
 
       <Suspense fallback={<ChartSkeleton />}>
         <ResultCharts result={result} />

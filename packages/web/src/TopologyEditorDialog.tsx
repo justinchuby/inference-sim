@@ -4,6 +4,7 @@ import {
   Cpu,
   Link2,
   MemoryStick,
+  Network,
 } from "lucide-react";
 import type {
   ComputeCapability,
@@ -37,6 +38,7 @@ import {
   gigabytesPerSecondToBytes,
   LINK_KINDS,
 } from "./topology-editor.js";
+import TopologyGraph from "./TopologyGraph.js";
 
 export default function TopologyEditorDialog({
   open,
@@ -50,13 +52,13 @@ export default function TopologyEditorDialog({
   readonly onSave: (scenario: SimulationScenario) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState(scenario);
-  const [view, setView] = useState<"devices" | "links">("devices");
+  const [view, setView] = useState<"map" | "devices" | "links">("map");
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
     if (open) {
       setDraft(scenario);
-      setView("devices");
+      setView("map");
       setError(undefined);
     }
   }, [open, scenario]);
@@ -111,6 +113,14 @@ export default function TopologyEditorDialog({
           <div className="flex gap-1 border-b border-zinc-200 px-5 py-2">
             <Button
               type="button"
+              variant={view === "map" ? "secondary" : "ghost"}
+              onClick={() => setView("map")}
+            >
+              <Network className="size-4" />
+              Map
+            </Button>
+            <Button
+              type="button"
               variant={view === "devices" ? "secondary" : "ghost"}
               onClick={() => setView("devices")}
             >
@@ -128,7 +138,14 @@ export default function TopologyEditorDialog({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50 p-4 sm:p-5">
-            {view === "devices"
+            {view === "map"
+              ? (
+                  <TopologyGraph
+                    scenario={draft}
+                    className="h-[min(65vh,620px)]"
+                  />
+                )
+              : view === "devices"
               ? (
                   <div className="grid gap-3 xl:grid-cols-2">
                     {draft.devices.map((device) => (
