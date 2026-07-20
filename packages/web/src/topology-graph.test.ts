@@ -50,19 +50,30 @@ describe("topology graph projection", () => {
         source: "node0:gpu0:vram",
         target: "node0:gpu1:vram",
         label: "600 GB/s · 500 ns",
+        interactionWidth: 28,
         markerStart: { type: "arrowclosed" },
         markerEnd: { type: "arrowclosed" },
         data: { scope: "intra-node", bidirectional: true },
       });
+    expect(graph.edges.find((edge) => edge.data.category === "access"))
+      .toMatchObject({ interactionWidth: 18 });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
       .toBe("2× 32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward"))
       .toMatchObject({
-        sourceHandle: "top-source",
+        sourceHandle: "top-source-lane-2",
         targetHandle: "bottom-target",
+        type: "smoothstep",
+        pathOptions: { offset: 32 },
       });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward")?.label)
       .toBeUndefined();
+    expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward"))
+      .toMatchObject({
+        type: "smoothstep",
+        sourceHandle: "top-source-lane-5",
+        pathOptions: { offset: 68 },
+      });
     const vram = graph.nodes.find((node) => node.id === "node0:gpu0:vram")!;
     const host = graph.nodes.find((node) => node.id === "node0:host")!;
     expect(vram.position.y).toBeLessThan(host.position.y);

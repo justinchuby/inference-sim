@@ -29,6 +29,10 @@ const nodeTypes = {
   topology: memo(TopologyNode),
   topologyGroup: memo(TopologyGroupNode),
 };
+const PARALLEL_HANDLE_OFFSETS = Array.from(
+  { length: 8 },
+  (_value, index) => ((index + 1) * 100) / 9,
+);
 
 export default function TopologyGraph({
   scenario,
@@ -38,42 +42,66 @@ export default function TopologyGraph({
   readonly className?: string;
 }): React.JSX.Element {
   const graph = useMemo(() => buildTopologyGraph(scenario), [scenario]);
+  const [selection, setSelection] = useState<
+    | {
+        readonly category: "node";
+        readonly id: string;
+        readonly data: FlowNodeData;
+      }
+    | {
+        readonly category: "edge";
+        readonly id: string;
+        readonly data: FlowEdgeData;
+      }
+    | undefined
+  >();
   const nodes: FlowNode[] = useMemo(() => graph.nodes.map((node) => ({
     ...node,
     data: node.data as FlowNodeData,
-  })), [graph.nodes]);
-  const edges: FlowEdge[] = useMemo(() => graph.edges.map((edge) => ({
-    ...edge,
-    markerEnd: edge.markerEnd === undefined
-      ? undefined
-      : {
-          type: MarkerType.ArrowClosed,
-          color: edge.markerEnd.color,
-        },
-    markerStart: edge.markerStart === undefined
-      ? undefined
-      : {
-          type: MarkerType.ArrowClosed,
-          color: edge.markerStart.color,
-        },
-    data: edge.data as FlowEdgeData,
-    labelStyle: {
-      fill: "#52525b",
-      fontSize: 10,
-      fontWeight: 600,
-    },
-    labelBgStyle: {
-      fill: "#ffffff",
-      fillOpacity: 0.92,
-    },
-    labelBgPadding: [4, 2] as [number, number],
-    labelBgBorderRadius: 2,
-  })), [graph.edges]);
-  const [selection, setSelection] = useState<
-    | { readonly category: "node"; readonly data: FlowNodeData }
-    | { readonly category: "edge"; readonly data: FlowEdgeData }
-    | undefined
-  >();
+    selected: selection?.category === "node" && selection.id === node.id,
+  })), [graph.nodes, selection]);
+  const edges: FlowEdge[] = useMemo(() => graph.edges.map((edge) => {
+    const selected = selection?.category === "edge" && selection.id === edge.id;
+    return {
+      ...edge,
+      selected,
+      zIndex: selected ? 20 : edge.data.category === "link" ? 2 : 1,
+      style: {
+        ...edge.style,
+        cursor: "pointer",
+        strokeWidth: selected
+          ? Math.max(4, edge.style.strokeWidth + 2)
+          : edge.style.strokeWidth,
+        ...(selected
+          ? { filter: "drop-shadow(0 0 2px rgba(24, 24, 27, 0.45))" }
+          : {}),
+      },
+      markerEnd: edge.markerEnd === undefined
+        ? undefined
+        : {
+            type: MarkerType.ArrowClosed,
+            color: edge.markerEnd.color,
+          },
+      markerStart: edge.markerStart === undefined
+        ? undefined
+        : {
+            type: MarkerType.ArrowClosed,
+            color: edge.markerStart.color,
+          },
+      data: edge.data as FlowEdgeData,
+      labelStyle: {
+        fill: selected ? "#18181b" : "#52525b",
+        fontSize: 10,
+        fontWeight: selected ? 700 : 600,
+      },
+      labelBgStyle: {
+        fill: selected ? "#fef3c7" : "#ffffff",
+        fillOpacity: selected ? 1 : 0.92,
+      },
+      labelBgPadding: [4, 2] as [number, number],
+      labelBgBorderRadius: 2,
+    };
+  }), [graph.edges, selection]);
 
   return (
     <div
@@ -98,11 +126,12 @@ export default function TopologyGraph({
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_event, node) => setSelection({
           category: "node",
+          id: node.id,
           data: node.data,
         })}
         onEdgeClick={(_event, edge) => {
           if (edge.data !== undefined) {
-            setSelection({ category: "edge", data: edge.data });
+            setSelection({ category: "edge", id: edge.id, data: edge.data });
           }
         }}
         onPaneClick={() => setSelection(undefined)}
@@ -256,6 +285,40 @@ function TopologyNode({
         position={Position.Right}
         className="!size-2 !border-white !bg-zinc-400"
       />
+      {PARALLEL_HANDLE_OFFSETS.flatMap((left, index) => ([
+        <Handle
+          key={`top-source-lane-${index}`}
+          id={`top-source-lane-${index}`}
+          type="source"
+          position={Position.Top}
+          style={{ left: `${left}%` }}
+          className="!size-1 !border-transparent !bg-transparent !opacity-0"
+        />,
+        <Handle
+          key={`top-target-lane-${index}`}
+          id={`top-target-lane-${index}`}
+          type="target"
+          position={Position.Top}
+          style={{ left: `${left}%` }}
+          className="!size-1 !border-transparent !bg-transparent !opacity-0"
+        />,
+        <Handle
+          key={`bottom-source-lane-${index}`}
+          id={`bottom-source-lane-${index}`}
+          type="source"
+          position={Position.Bottom}
+          style={{ left: `${left}%` }}
+          className="!size-1 !border-transparent !bg-transparent !opacity-0"
+        />,
+        <Handle
+          key={`bottom-target-lane-${index}`}
+          id={`bottom-target-lane-${index}`}
+          type="target"
+          position={Position.Bottom}
+          style={{ left: `${left}%` }}
+          className="!size-1 !border-transparent !bg-transparent !opacity-0"
+        />,
+      ]))}
       <div className="flex items-center gap-2">
         <span className={`size-2 shrink-0 rounded-sm ${accentColor(data.accent)}`} />
         <div className="min-w-0 flex-1 truncate text-xs font-bold">

@@ -60,8 +60,13 @@ export interface TopologyGraphEdge {
   readonly sourceHandle: string;
   readonly targetHandle: string;
   readonly type: "smoothstep";
+  readonly pathOptions?: {
+    readonly borderRadius: number;
+    readonly offset: number;
+  };
   readonly label?: string;
   readonly animated: boolean;
+  readonly interactionWidth: number;
   readonly style: {
     readonly stroke: string;
     readonly strokeWidth: number;
@@ -261,6 +266,7 @@ export function buildTopologyGraph(
       targetHandle: "top-target",
       type: "smoothstep" as const,
       animated: false,
+      interactionWidth: 18,
       style: {
         stroke: "#a1a1aa",
         strokeWidth: 1,
@@ -278,6 +284,7 @@ export function buildTopologyGraph(
   const renderedLinks = new Set<string>();
   const labeledLinkGroups = new Set<string>();
   const linkLabelGroupCounts = new Map<string, number>();
+  const renderedLinkGroupCounts = new Map<string, number>();
   scenario.links.forEach((link, index) => {
     const hasEarlierReverse = scenario.links.slice(0, index).some((candidate) => (
       candidate.sourceDomainId === link.targetDomainId
@@ -302,6 +309,9 @@ export function buildTopologyGraph(
     const showLabel = !labeledLinkGroups.has(labelGroupKey);
     labeledLinkGroups.add(labelGroupKey);
     const parallelCount = linkLabelGroupCounts.get(labelGroupKey) ?? 1;
+    const parallelIndex = renderedLinkGroupCounts.get(labelGroupKey) ?? 0;
+    renderedLinkGroupCounts.set(labelGroupKey, parallelIndex + 1);
+    const sharedEndpoint = sharedLinkEndpoint(link, domainKindById);
     const color = linkColor(link.kind);
     const path = [
       link.sourceDomainId,
@@ -324,9 +334,21 @@ export function buildTopologyGraph(
         id: path.length === 2 ? link.id : `${link.id}:path:${segmentIndex}`,
         source,
         target,
-        sourceHandle: handles.source,
-        targetHandle: handles.target,
+        sourceHandle: source === sharedEndpoint
+          ? fanOutHandle(handles.source, parallelIndex, parallelCount)
+          : handles.source,
+        targetHandle: target === sharedEndpoint
+          ? fanOutHandle(handles.target, parallelIndex, parallelCount)
+          : handles.target,
         type: "smoothstep" as const,
+        ...(parallelCount > 1
+          ? {
+              pathOptions: {
+                borderRadius: 10,
+                offset: 32 + parallelIndex * 36,
+              },
+            }
+          : {}),
         ...(showLabel && segmentIndex === labelSegment
           ? {
               label: [
@@ -337,6 +359,7 @@ export function buildTopologyGraph(
             }
           : {}),
         animated: false,
+        interactionWidth: 28,
         style: {
           stroke: color,
           strokeWidth: 2,
@@ -389,10 +412,7 @@ function linkLabelGroupKey(
     SimulationScenario["memoryDomains"][number]["kind"]
   >,
 ): string {
-  const sharedEndpoint = [link.sourceDomainId, link.targetDomainId].find((id) => {
-    const kind = domainKindById.get(id);
-    return kind === "host" || kind === "storage";
-  });
+  const sharedEndpoint = sharedLinkEndpoint(link, domainKindById);
   const endpointKey = sharedEndpoint
     ?? [link.sourceDomainId, link.targetDomainId].sort().join("↔");
   return [
@@ -403,6 +423,35 @@ function linkLabelGroupKey(
     link.latencyNs,
     link.concurrencyLanes,
   ].join("::");
+}
+
+function sharedLinkEndpoint(
+  link: SimulationScenario["links"][number],
+  domainKindById: ReadonlyMap<
+    string,
+    SimulationScenario["memoryDomains"][number]["kind"]
+  >,
+): string | undefined {
+  return [link.sourceDomainId, link.targetDomainId].find((id) => {
+    const kind = domainKindById.get(id);
+    return kind === "host" || kind === "storage";
+  });
+}
+
+function fanOutHandle(
+  baseHandle: string,
+  parallelIndex: number,
+  parallelCount: number,
+): string {
+  if (
+    parallelCount <= 1
+    || parallelCount > 8
+    || (!baseHandle.startsWith("top-") && !baseHandle.startsWith("bottom-"))
+  ) {
+    return baseHandle;
+  }
+  const slot = Math.round(((parallelIndex + 1) * 9) / (parallelCount + 1)) - 1;
+  return `${baseHandle}-lane-${slot}`;
 }
 
 function linkHandles(
