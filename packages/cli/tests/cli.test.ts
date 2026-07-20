@@ -165,6 +165,40 @@ speculative_token_trace:
     });
   });
 
+  it("binds independent runtime captures and executes their topology", async () => {
+    const targetPath = new URL(
+      "../../../examples/runtime-capture-target-only.yaml",
+      import.meta.url,
+    ).pathname;
+    const speculativePath = new URL(
+      "../../../examples/runtime-capture-speculative.yaml",
+      import.meta.url,
+    ).pathname;
+    const capture = captureIo();
+
+    expect(await runCli([
+      "speculative-capture",
+      targetPath,
+      speculativePath,
+      "single-gpu-cpu",
+    ], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      targetOnlyCaptureId: string;
+      speculativeCaptureId: string;
+      trace: {
+        differential: { matchesTargetOnly: boolean };
+        iterations: Array<{ outcome: string }>;
+      };
+      topology: { execution: { status: string } };
+    };
+    expect(output.targetOnlyCaptureId).toBe("target-only-synthetic-001");
+    expect(output.speculativeCaptureId).toBe("speculative-synthetic-001");
+    expect(output.trace.differential.matchesTargetOnly).toBe(true);
+    expect(output.trace.iterations.map((iteration) => iteration.outcome))
+      .toEqual(["correction", "bonus", "accepted_tail"]);
+    expect(output.topology.execution.status).toBe("succeeded");
+  });
+
   it("returns a nonzero status with a concise error", async () => {
     const capture = captureIo();
     expect(await runCli(["scenario", "does-not-exist"], capture.io)).toBe(1);

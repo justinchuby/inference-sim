@@ -1,0 +1,17 @@
+runtime_token_capture:
+  revision: 1
+  id: target-only-synthetic-001
+  role: target_only
+  provenance:
+    source: onnx-genai-conformance-synthetic
+    runtime_revision: onnx-genai-synthetic
+    model_fingerprint: sha256:target-model-synthetic
+    tokenizer_fingerprint: sha256:tokenizer-synthetic
+    generation_config_fingerprint: sha256:greedy-max-token-synthetic
+  completion_reason: max_tokens
+  prompt_token_ids: [101, 102, 103]
+  output_token_ids: [10, 20, 21, 30, 31, 32, 40, 41]
+  terminal:
+    status: completed
+    output_token_count: 8
+    iteration_count: 0

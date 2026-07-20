@@ -1,0 +1,36 @@
+runtime_token_capture:
+  revision: 1
+  id: speculative-synthetic-001
+  role: speculative
+  provenance:
+    source: onnx-genai-conformance-synthetic
+    runtime_revision: onnx-genai-synthetic
+    model_fingerprint: sha256:target-model-synthetic
+    tokenizer_fingerprint: sha256:tokenizer-synthetic
+    generation_config_fingerprint: sha256:greedy-max-token-synthetic
+  completion_reason: max_tokens
+  prompt_token_ids: [101, 102, 103]
+  output_token_ids: [10, 20, 21, 30, 31, 32, 40, 41]
+  terminal:
+    status: completed
+    output_token_count: 8
+    iteration_count: 3
+  family: mtp
+  proposer_fingerprint: sha256:mtp-sidecar-synthetic
+  max_additional_tokens: 2
+  iterations:
+    - id: iteration-0
+      output_offset: 0
+      proposal_token_ids: [10, 99, 100]
+      target_token_ids: [10, 20]
+      committed_token_ids: [10, 20]
+    - id: iteration-1
+      output_offset: 2
+      proposal_token_ids: [21, 30, 31]
+      target_token_ids: [21, 30, 31, 32]
+      committed_token_ids: [21, 30, 31, 32]
+    - id: iteration-2
+      output_offset: 6
+      proposal_token_ids: [40, 41]
+      target_token_ids: [40, 41]
+      committed_token_ids: [40, 41]

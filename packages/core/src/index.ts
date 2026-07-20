@@ -152,6 +152,21 @@ export {
   type SpeculativeTokenTraceResult,
 } from "./speculative-token-trace.js";
 export {
+  SPECULATIVE_RUNTIME_CAPTURE_REVISION,
+  SpeculativeRuntimeCaptureError,
+  bindParsedRuntimeCaptures,
+  bindSpeculativeRuntimeCaptures,
+  parseRuntimeTokenCapture,
+  validateRuntimeTokenCapture,
+  type BoundSpeculativeRuntimeCapture,
+  type RuntimeTokenCapture,
+  type SpeculativeRuntimeCapture,
+  type SpeculativeRuntimeCaptureIteration,
+  type SpeculativeRuntimeCaptureProvenance,
+  type SpeculativeRuntimeCaptureTerminal,
+  type TargetOnlyRuntimeCapture,
+} from "./speculative-runtime-capture.js";
+export {
   PAGED_KV_CONTRACT_REVISION,
   PagedKvCacheSimulator,
   PagedKvProtocolError,

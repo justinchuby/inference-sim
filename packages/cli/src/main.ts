@@ -3,6 +3,7 @@ import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   analyzeStatic,
+  bindParsedRuntimeCaptures,
   buildSpeculativeStateGroups,
   buildModelProfile,
   buildScenarioPreset,
@@ -73,7 +74,13 @@ export async function runCli(
   io: CliIo = DEFAULT_IO,
 ): Promise<number> {
   try {
-    const [command = "help", argument, secondArgument, thirdArgument] = args;
+    const [
+      command = "help",
+      argument,
+      secondArgument,
+      thirdArgument,
+      fourthArgument,
+    ] = args;
     switch (command) {
       case "help":
       case "--help":
@@ -151,6 +158,46 @@ export async function runCli(
           printJson(io, result);
         }
         return result.differential.matchesTargetOnly ? 0 : 2;
+      }
+      case "speculative-capture": {
+        const targetOnlyConfig = await loadRequiredConfig(
+          argument,
+          "speculative-capture target-only",
+        );
+        const speculativeConfig = await loadRequiredConfig(
+          secondArgument,
+          "speculative-capture speculative",
+        );
+        const bound = bindParsedRuntimeCaptures(
+          targetOnlyConfig,
+          speculativeConfig,
+        );
+        const summary = {
+          targetOnlyCaptureId: bound.targetOnlyCaptureId,
+          speculativeCaptureId: bound.speculativeCaptureId,
+          trace: bound.result,
+        };
+        if (thirdArgument) {
+          if (
+            !SCENARIO_PRESET_NAMES.includes(
+              thirdArgument as ScenarioPresetName,
+            )
+          ) {
+            throw new Error(`unknown scenario preset ${thirdArgument}`);
+          }
+          const costModel = await loadCostModel(fourthArgument);
+          printJson(io, {
+            ...summary,
+            topology: simulateTopologyWorkload(
+              buildScenarioPreset(thirdArgument as ScenarioPresetName),
+              topologyProfileFromSpeculative(bound.result.workload),
+              costModel,
+            ),
+          });
+        } else {
+          printJson(io, summary);
+        }
+        return bound.result.differential.matchesTargetOnly ? 0 : 2;
       }
       case "expert-cache": {
         const config = await loadRequiredConfig(argument, "expert-cache");
@@ -988,6 +1035,7 @@ Usage:
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
   inference-sim speculative-trace <trace.yaml|json> [scenario-preset] [calibration.yaml|json]
+  inference-sim speculative-capture <target-only.yaml|json> <speculative.yaml|json> [scenario-preset] [calibration.yaml|json]
   inference-sim expert-cache <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
   inference-sim serving <scenario-preset> <config.yaml|json> [calibration.yaml|json]

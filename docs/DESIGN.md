@@ -409,6 +409,17 @@ accepted counts through the composite state transaction and requires
 token-decision/state-decision parity at every iteration. Token mismatch against
 the target-only output is reported separately from malformed evidence.
 
+Runtime evidence is captured as two independent revision-1 artifacts: one
+target-only run and one speculative run. Both must complete by the controlled
+`max_tokens` condition and bind identical runtime, model, tokenizer,
+generation-config, prompt, and output-length coordinates. The speculative
+artifact records each iteration's output offset, proposal, actually selected
+target tokens, and runtime-claimed commits. Import independently derives every
+commit, rejects provenance or terminal-count mismatches, compares the derived
+stream with the speculative run output, and finally compares that output with
+the target-only run. EOS and stop-sequence truncation are deliberately outside
+revision 1 rather than being silently misclassified as accepted tails.
+
 This proves deterministic selected-token and logical-state parity for the
 captured configuration. It does not prove logit equality, sampling-distribution
 equality, numerical kernel equivalence, or physical cache-byte equality.
@@ -972,6 +983,9 @@ The `speculative-trace` command verifies a revisioned YAML/JSON token trace and
 optionally executes its derived workload on a topology preset. It exits zero on
 parity, two on a well-formed token mismatch, and one on malformed evidence or
 execution failure.
+The `speculative-capture` command binds separate target-only and speculative
+runtime artifacts, verifies the runtime's iteration-level commit claims, then
+runs the same token, state, and optional topology checks.
 
 The React workbench imports the same token-trace contract in the Spec view.
 Parsing and an immediate preview provide file-level feedback; the authoritative
