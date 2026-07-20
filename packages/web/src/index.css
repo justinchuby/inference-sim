@@ -63,6 +63,16 @@ input {
   height: 300px;
 }
 
+.configuration-panel [role="combobox"] {
+  height: 32px;
+  padding-inline: 8px;
+  font-size: 12px;
+}
+
+.configuration-panel [role="tablist"] {
+  height: 32px;
+}
+
 .recharts-surface {
   overflow: visible;
 }

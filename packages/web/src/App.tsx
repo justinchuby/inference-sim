@@ -1553,8 +1553,7 @@ function OnnxConfigurationPanel({
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
-                className="size-8"
+                size="icon-sm"
                 aria-label="Close ONNX model manifest"
                 disabled={disabled}
                 onClick={onClose}
@@ -1571,7 +1570,8 @@ function OnnxConfigurationPanel({
             <Button
               key={candidateMode}
               type="button"
-              className="h-8 capitalize"
+              size="sm"
+              className="capitalize"
               variant={mode === candidateMode ? "default" : "ghost"}
               disabled={disabled}
               aria-pressed={mode === candidateMode}
@@ -1819,16 +1819,21 @@ function OnnxConfigurationPanel({
               </div>
             )}
       </div>
-      <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
+      <div className="configuration-action mt-3 flex gap-2 border-t border-zinc-200 bg-white pt-3">
         {running
           ? (
-              <Button className="w-full" variant="destructive" onClick={onCancel}>
+              <Button
+                className="w-full"
+                size="sm"
+                variant="destructive"
+                onClick={onCancel}
+              >
                 <Square className="size-4 fill-current" />
                 Cancel
               </Button>
             )
           : (
-              <Button className="w-full" onClick={onRun}>
+              <Button className="w-full" size="sm" onClick={onRun}>
                 <Play className="size-4 fill-current" />
                 {mode === "search" ? "Search configurations" : "Analyze model"}
               </Button>
@@ -2103,8 +2108,7 @@ function ConfigurationPanel({
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-8"
+                        size="icon-sm"
                         aria-label="Replace model folder"
                         disabled={disabled || modelPackage.importing}
                         onClick={() => modelDirectoryInput.current?.click()}
@@ -2119,8 +2123,7 @@ function ConfigurationPanel({
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-8"
+                        size="icon-sm"
                         aria-label="Remove model binding"
                         disabled={disabled || modelPackage.importing}
                         onClick={onClearModelPackage}
@@ -2136,6 +2139,7 @@ function ConfigurationPanel({
                 <div className="grid grid-cols-2 gap-2">
                   <Button
                     type="button"
+                    size="sm"
                     variant="secondary"
                     disabled={disabled || modelPackage.importing}
                     onClick={() => modelDirectoryInput.current?.click()}
@@ -2145,6 +2149,7 @@ function ConfigurationPanel({
                   </Button>
                   <Button
                     type="button"
+                    size="sm"
                     variant="secondary"
                     disabled={disabled || modelPackage.importing}
                     onClick={() => modelFilesInput.current?.click()}
@@ -2195,40 +2200,81 @@ function ConfigurationPanel({
                     }
                   }}
                 />
-                <Field label="Device topology">
-                  <Select
-                    value={config.scenarioName}
-                    disabled={disabled}
-                    onValueChange={(scenarioName) => {
-                      if (
-                        scenarioName === "custom"
-                        && config.customScenario === undefined
-                      ) {
-                        scenarioInput.current?.click();
-                        return;
-                      }
-                      if (scenarioName === "custom") {
-                        onChange(config);
-                      } else {
-                        onClearCustomScenario(scenarioName as Exclude<
-                          DashboardRunConfig["scenarioName"],
-                          "custom"
-                        >);
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SCENARIOS.map((scenario) => (
-                        <SelectItem key={scenario.value} value={scenario.value}>
-                          {scenario.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
+                <div className="mb-4">
+                  <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
+                    Device topology
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <Select
+                      value={config.scenarioName}
+                      disabled={disabled}
+                      onValueChange={(scenarioName) => {
+                        if (
+                          scenarioName === "custom"
+                          && config.customScenario === undefined
+                        ) {
+                          scenarioInput.current?.click();
+                          return;
+                        }
+                        if (scenarioName === "custom") {
+                          onChange(config);
+                        } else {
+                          onClearCustomScenario(scenarioName as Exclude<
+                            DashboardRunConfig["scenarioName"],
+                            "custom"
+                          >);
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="min-w-0 flex-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SCENARIOS.map((scenario) => (
+                          <SelectItem key={scenario.value} value={scenario.value}>
+                            {scenario.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="icon-sm"
+                          className="shrink-0"
+                          aria-label="Import custom scenario"
+                          disabled={disabled}
+                          onClick={() => scenarioInput.current?.click()}
+                        >
+                          <Upload className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Import custom scenario</TooltipContent>
+                    </Tooltip>
+                    {selectedScenario
+                      ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="icon-sm"
+                                className="shrink-0"
+                                aria-label="Edit device topology"
+                                disabled={disabled}
+                                onClick={() => setTopologyEditorOpen(true)}
+                              >
+                                <SlidersHorizontal className="size-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit device topology</TooltipContent>
+                          </Tooltip>
+                        )
+                      : null}
+                  </div>
+                </div>
                 {config.scenarioName === "custom" && config.customScenario
                   ? (
                       <div className="mb-4 flex min-w-0 items-center gap-2 border-y border-zinc-200 bg-zinc-50 px-2 py-2">
@@ -2248,24 +2294,7 @@ function ConfigurationPanel({
                             <Button
                               type="button"
                               variant="ghost"
-                              size="icon"
-                              className="size-8"
-                              aria-label="Replace custom scenario"
-                              disabled={disabled}
-                              onClick={() => scenarioInput.current?.click()}
-                            >
-                              <Upload className="size-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Replace custom scenario</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="size-8"
+                              size="icon-sm"
                               aria-label="Remove custom scenario"
                               disabled={disabled}
                               onClick={() => onClearCustomScenario()}
@@ -2277,18 +2306,7 @@ function ConfigurationPanel({
                         </Tooltip>
                       </div>
                     )
-                  : (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        className="mb-4 w-full"
-                        disabled={disabled}
-                        onClick={() => scenarioInput.current?.click()}
-                      >
-                        <Upload className="size-4" />
-                        Import custom scenario
-                      </Button>
-                    )}
+                  : null}
                 {customScenario.error
                   ? (
                       <div className="mb-4 text-xs leading-4 text-rose-700">
@@ -2330,8 +2348,8 @@ function ConfigurationPanel({
                   : null}
                 {selectedScenario
                   ? (
-                      <div className="mb-4 border-y border-zinc-200 py-3">
-                        <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="mb-4 border-y border-zinc-200 py-2.5">
+                        <div className="mb-2 min-w-0">
                           <div className="min-w-0">
                             <div className="truncate text-xs font-semibold text-zinc-700">
                               {selectedScenario.devices.length} devices ·{" "}
@@ -2342,19 +2360,8 @@ function ConfigurationPanel({
                               {selectedScenario.execution.topologyEpoch}
                             </div>
                           </div>
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="icon"
-                            className="shrink-0"
-                            aria-label="Edit device topology"
-                            disabled={disabled}
-                            onClick={() => setTopologyEditorOpen(true)}
-                          >
-                            <SlidersHorizontal className="size-4" />
-                          </Button>
                         </div>
-                        <div className="space-y-1.5">
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                           {selectedScenario.devices.map((device) => {
                             const capacity = selectedScenario.memoryDomains
                               .filter((domain) => (
@@ -2376,14 +2383,14 @@ function ConfigurationPanel({
                             return (
                               <div
                                 key={device.id}
-                                className="flex min-w-0 items-center justify-between gap-2 text-[11px]"
+                                className="min-w-0 text-[11px]"
                               >
-                                <span className="truncate font-medium text-zinc-700">
+                                <div className="truncate font-medium text-zinc-700">
                                   {device.id}
-                                </span>
-                                <span className="shrink-0 text-zinc-500">
+                                </div>
+                                <div className="truncate text-zinc-500">
                                   {device.kind.toUpperCase()} · {formatBytes(capacity)}
-                                </span>
+                                </div>
                               </div>
                             );
                           })}
@@ -2440,8 +2447,7 @@ function ConfigurationPanel({
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-8"
+                        size="icon-sm"
                         aria-label="Replace calibration"
                         disabled={disabled}
                         onClick={() => calibrationInput.current?.click()}
@@ -2456,8 +2462,7 @@ function ConfigurationPanel({
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon"
-                        className="size-8"
+                        size="icon-sm"
                         aria-label="Remove calibration"
                         disabled={disabled}
                         onClick={onClearCalibration}
@@ -2472,13 +2477,14 @@ function ConfigurationPanel({
             : (
                 <Button
                   type="button"
+                  size="sm"
                   variant="secondary"
                   className="w-full"
                   disabled={disabled}
                   onClick={() => calibrationInput.current?.click()}
                 >
                   <Upload className="size-4" />
-                  Import YAML or JSON
+                  Import calibration
                 </Button>
               )}
           {calibration.error
@@ -2506,7 +2512,7 @@ function ConfigurationPanel({
           </TabsTrigger>
           <TabsTrigger value="expert-cache">Experts</TabsTrigger>
         </TabsList>
-        <TabsContent value="serving" className="space-y-5">
+        <TabsContent value="serving" className="space-y-4">
           <Field label="Topology scope">
             <Select
               value={config.serving.compareTopologies ? "all" : "single"}
@@ -2696,7 +2702,7 @@ function ConfigurationPanel({
             })}
           />
         </TabsContent>
-        <TabsContent value="speculative" className="space-y-5">
+        <TabsContent value="speculative" className="space-y-4">
           <div className="border-y border-zinc-200 py-3">
             <div className="mb-2 flex items-center justify-between gap-2">
               <span className="text-xs font-semibold text-zinc-600">
@@ -2763,8 +2769,7 @@ function ConfigurationPanel({
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon"
-                          className="size-8"
+                          size="icon-sm"
                           aria-label={tokenTrace.runtimePair
                             ? "Replace runtime captures"
                             : "Replace token trace"}
@@ -2789,8 +2794,7 @@ function ConfigurationPanel({
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon"
-                          className="size-8"
+                          size="icon-sm"
                           aria-label="Remove token trace"
                           disabled={disabled}
                           onClick={onClearTokenTrace}
@@ -2803,26 +2807,26 @@ function ConfigurationPanel({
                   </div>
                 )
               : (
-                  <div className="grid gap-2">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <Button
                       type="button"
+                      size="sm"
                       variant="secondary"
-                      className="w-full"
                       disabled={disabled}
                       onClick={() => runtimeCaptureInput.current?.click()}
                     >
                       <FileCheck2 className="size-4" />
-                      Import runtime captures
+                      Captures
                     </Button>
                     <Button
                       type="button"
+                      size="sm"
                       variant="ghost"
-                      className="w-full"
                       disabled={disabled}
                       onClick={() => tokenTraceInput.current?.click()}
                     >
                       <Upload className="size-4" />
-                      Import assembled trace
+                      Trace
                     </Button>
                   </div>
                 )}
@@ -2923,7 +2927,7 @@ function ConfigurationPanel({
                 </>
               )}
         </TabsContent>
-        <TabsContent value="expert-cache" className="space-y-5">
+        <TabsContent value="expert-cache" className="space-y-4">
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
               Expert placement
@@ -2963,7 +2967,7 @@ function ConfigurationPanel({
                 <Button
                   key={label}
                   type="button"
-                  className="h-8"
+                  size="sm"
                   variant={config.expertCache.adaptivePrefetch
                     === value ? "default" : "ghost"}
                   disabled={disabled || (value && config.expertCache.warmSlots === 0)}
@@ -3049,16 +3053,21 @@ function ConfigurationPanel({
           )
         : null}
 
-      <div className="configuration-action mt-6 flex gap-2 border-t border-zinc-200 bg-white pt-4">
+      <div className="configuration-action mt-3 flex gap-2 border-t border-zinc-200 bg-white pt-3">
         {running
           ? (
-            <Button className="w-full" variant="destructive" onClick={onCancel}>
+            <Button
+              className="w-full"
+              size="sm"
+              variant="destructive"
+              onClick={onCancel}
+            >
               <Square className="size-4 fill-current" />
               Cancel
             </Button>
           )
           : (
-            <Button className="w-full" onClick={onRun}>
+            <Button className="w-full" size="sm" onClick={onRun}>
               <Play className="size-4 fill-current" />
               Run simulation
             </Button>
