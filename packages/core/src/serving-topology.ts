@@ -172,6 +172,10 @@ export function topologyProfileFromServingBatch(
       coldLoadBytes: 0,
       promptInvocations,
       finalInvocations,
+      pipelineStepInvocations: batch.decode.reduce(
+        (sum, slice) => sum + slice.targetTokenWidth,
+        0,
+      ),
     }],
   };
 }

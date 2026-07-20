@@ -1590,8 +1590,11 @@ phase identity in the frozen plan. Dataflow dependencies are ordered, explicit
 cross-device edges reserve transfer paths, `device_transfer: false` enforces
 colocation, component weights are checked against their selected memory
 domains, and timing uses the selected weight-domain bandwidth as a lower
-bound. Prompt components precede speculative proposers; final components run
-after the last speculative iteration.
+bound. Each logical request emits its own component chain unless metadata gains
+an explicit batching contract. Prompt components precede speculative
+proposers; final components run after the last speculative iteration.
+Gemma-style fusion components feeding `decoder.inputs_embeds` execute once for
+prompt fusion and again for each decode or verification position.
 
 Coverage remains `partial` for semantics that are not yet execution-equivalent:
 on-demand application invocations, imported draft-model proposer costs,

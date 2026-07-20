@@ -432,6 +432,7 @@ function parsePipelineExecution(
       "devicePreference",
       "isPrimary",
       "order",
+      "rerunEveryStep",
     ], `modelBinding pipelineExecution components[${index}]`);
     return {
       id: requireString(component.id, "pipeline component id"),
@@ -472,6 +473,14 @@ function parsePipelineExecution(
         Number.MAX_SAFE_INTEGER,
         "pipeline component order",
       ),
+      ...(component.rerunEveryStep === undefined
+        ? {}
+        : {
+            rerunEveryStep: requireBoolean(
+              component.rerunEveryStep,
+              "pipeline component rerunEveryStep",
+            ),
+          }),
     };
   });
   const edges = requireArray(
@@ -902,6 +911,7 @@ function assertOnlyKeys(
     && key !== "pipelineExecution"
     && key !== "devicePreference"
     && key !== "deviceTransfer"
+    && key !== "rerunEveryStep"
     && key !== "trace"
     && !(key in record)
   ));

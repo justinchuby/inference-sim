@@ -55,6 +55,7 @@ export interface TopologyWorkUnit {
   readonly requiredPrefetchIds?: readonly string[];
   readonly promptInvocations?: number;
   readonly finalInvocations?: number;
+  readonly pipelineStepInvocations?: number;
 }
 
 export interface TopologyWorkloadProfile {
@@ -84,6 +85,7 @@ export interface TopologyPipelineComponentWork {
   readonly devicePreference?: string;
   readonly isPrimary: boolean;
   readonly order: number;
+  readonly rerunEveryStep?: boolean;
 }
 
 export interface TopologyPipelineEdgeWork {
@@ -315,6 +317,11 @@ export function topologyProfileFromSpeculative(
       coldLoadBytes: 0,
       promptInvocations: iteration.iteration === 0 ? 1 : 0,
       finalInvocations: index === result.iterations.length - 1 ? 1 : 0,
+      pipelineStepInvocations: checkedAdd(
+        iteration.proposedDraftTokens,
+        1,
+        "pipeline verification width",
+      ),
     })),
   };
 }
@@ -1166,7 +1173,7 @@ class WorkloadPlanCompiler {
       entryDependencies = this.compilePipelinePhase(
         unit,
         "every_step",
-        Math.max(1, unit.targetTokenWidth),
+        unit.pipelineStepInvocations ?? Math.max(1, unit.targetTokenWidth),
         entryDependencies,
       );
       const primary = this.profile.pipeline?.components.find(
@@ -1239,8 +1246,28 @@ class WorkloadPlanCompiler {
     if (pipeline === undefined || invocations === 0 || phase === "on_demand") {
       return [...entryDependencies];
     }
+    let dependencies = [...entryDependencies];
+    for (let invocation = 0; invocation < invocations; invocation++) {
+      dependencies = this.compilePipelinePhaseInvocation(
+        unit,
+        phase,
+        dependencies,
+      );
+    }
+    return dependencies;
+  }
+
+  private compilePipelinePhaseInvocation(
+    unit: TopologyWorkUnit,
+    phase: TopologyPipelinePhase,
+    entryDependencies: readonly number[],
+  ): number[] {
+    const pipeline = this.profile.pipeline!;
     const active = pipeline.components.filter((component) => (
-      component.phase === phase
+      (
+        component.phase === phase
+        || (phase === "every_step" && component.rerunEveryStep)
+      )
       && (pipeline.replacesTarget || !component.isPrimary)
     ));
     if (active.length === 0) {
@@ -1313,11 +1340,7 @@ class WorkloadPlanCompiler {
           const transfers = this.addTransferPath(
             workspaceDomain(sourcePlacement),
             workspaceDomain(placement),
-            checkedMultiply(
-              this.costModel.activationBytesPerToken,
-              Math.max(1, invocations),
-              `pipeline edge ${edge.fromComponent}->${edge.toComponent} bytes`,
-            ),
+            this.costModel.activationBytesPerToken,
             [sourceTerminal],
             [this.rank(sourcePlacement.deviceId), this.rank(placement.deviceId)],
           );
@@ -1329,7 +1352,7 @@ class WorkloadPlanCompiler {
       const durationNs = this.pipelineComponentDuration(
         placement,
         component,
-        invocations,
+        1,
         placement.requiredCapabilities.includes("ffn")
           ? "ffn"
           : "attention",
@@ -1381,11 +1404,7 @@ class WorkloadPlanCompiler {
       const transfers = this.addTransferPath(
         workspaceDomain(sourcePlacement),
         workspaceDomain(targetPlacement),
-        checkedMultiply(
-          this.costModel.activationBytesPerToken,
-          Math.max(1, invocations),
-          `pipeline edge ${edge.fromComponent}->${edge.toComponent} bytes`,
-        ),
+        this.costModel.activationBytesPerToken,
         [sourceTerminal],
         [this.rank(sourcePlacement.deviceId), this.rank(targetPlacement.deviceId)],
       );

@@ -258,6 +258,10 @@ function buildPipelineExecution(
     }
   }
   const primaryIds = new Set(primaryModel.componentIds);
+  const rerunEveryStepIds = new Set(metadata.edges.filter((edge) => (
+    primaryIds.has(edge.toComponent)
+    && edge.toPort.toLowerCase().endsWith("inputs_embeds")
+  )).map((edge) => edge.fromComponent));
   const strategyKind = metadata.pipelineStrategy ?? "single_pass";
   const replacesTarget = !metadata.stages.some(
     (stage) => stage.kind === "autoregressive"
@@ -307,6 +311,9 @@ function buildPipelineExecution(
           ?? metadata.stages.length + metadata.components.findIndex(
             (candidate) => candidate.id === component.id,
           ),
+        ...(rerunEveryStepIds.has(component.id)
+          ? { rerunEveryStep: true }
+          : {}),
       };
     }).sort((left, right) => left.order - right.order);
   return {

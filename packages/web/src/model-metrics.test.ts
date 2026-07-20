@@ -180,7 +180,11 @@ describe("model UI metrics", () => {
       replacesTarget: false,
       components: [
         { id: "vision_encoder", phase: "prompt_only" },
-        { id: "embedding", phase: "prompt_only" },
+        {
+          id: "embedding",
+          phase: "prompt_only",
+          rerunEveryStep: true,
+        },
         { id: "decoder", phase: "every_step", isPrimary: true },
       ],
     });
@@ -215,7 +219,7 @@ describe("model UI metrics", () => {
     )).toHaveLength(1);
     expect(componentIds.filter(
       (componentId) => componentId === "embedding",
-    )).toHaveLength(1);
+    )).toHaveLength(2);
   });
 
   it("reports an independent draft model as heuristic proposer work", () => {
@@ -299,10 +303,10 @@ describe("model UI metrics", () => {
     ));
     expect(componentIds.filter(
       (componentId) => componentId === "encoder",
-    )).toHaveLength(1);
+    )).toHaveLength(3);
     expect(componentIds.filter(
       (componentId) => componentId === "vocoder",
-    )).toHaveLength(1);
+    )).toHaveLength(3);
     expect(result.metrics.committedTokens).toBe(3);
   });
 

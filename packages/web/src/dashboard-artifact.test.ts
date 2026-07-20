@@ -306,7 +306,12 @@ describe("dashboard result artifact import", () => {
             : []
         ))
       : [];
-    expect(operations).toEqual(["encoder", "vocoder"]);
+    expect(operations).toEqual([
+      "encoder",
+      "vocoder",
+      "encoder",
+      "vocoder",
+    ]);
   });
 
   it("reports execution-bound progress without changing the artifact", async () => {
