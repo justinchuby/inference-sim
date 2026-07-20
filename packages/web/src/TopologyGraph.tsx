@@ -215,6 +215,12 @@ function TopologyNode({
         className="!size-2 !border-white !bg-zinc-400"
       />
       <Handle
+        id="top-source"
+        type="source"
+        position={Position.Top}
+        className="!size-2 !border-white !bg-zinc-400"
+      />
+      <Handle
         id="left-target"
         type="target"
         position={Position.Left}
@@ -229,6 +235,12 @@ function TopologyNode({
       <Handle
         id="bottom-source"
         type="source"
+        position={Position.Bottom}
+        className="!size-2 !border-white !bg-zinc-400"
+      />
+      <Handle
+        id="bottom-target"
+        type="target"
         position={Position.Bottom}
         className="!size-2 !border-white !bg-zinc-400"
       />

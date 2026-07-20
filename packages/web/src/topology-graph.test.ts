@@ -55,9 +55,14 @@ describe("topology graph projection", () => {
         data: { scope: "intra-node", bidirectional: true },
       });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
-      .toBe("32 GB/s · 1.5 us");
+      .toBe("2× 32 GB/s · 1.5 us");
+    expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward"))
+      .toMatchObject({
+        sourceHandle: "top-source",
+        targetHandle: "bottom-target",
+      });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward")?.label)
-      .toBe("32 GB/s · 1.5 us");
+      .toBeUndefined();
     const vram = graph.nodes.find((node) => node.id === "node0:gpu0:vram")!;
     const host = graph.nodes.find((node) => node.id === "node0:host")!;
     expect(vram.position.y).toBeLessThan(host.position.y);

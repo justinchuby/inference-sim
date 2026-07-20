@@ -113,6 +113,9 @@ export function buildTopologyGraph(
   const systemByDevice = new Map(
     scenario.devices.map((device) => [device.id, device.nodeId]),
   );
+  const domainKindById = new Map(
+    scenario.memoryDomains.map((domain) => [domain.id, domain.kind]),
+  );
   let groupOffset = GROUP_X;
 
   for (const nodeId of nodeIds) {
@@ -273,6 +276,18 @@ export function buildTopologyGraph(
     })),
   );
   const renderedLinks = new Set<string>();
+  const labeledLinkGroups = new Set<string>();
+  const linkLabelGroupCounts = new Map<string, number>();
+  scenario.links.forEach((link, index) => {
+    const hasEarlierReverse = scenario.links.slice(0, index).some((candidate) => (
+      candidate.sourceDomainId === link.targetDomainId
+      && candidate.targetDomainId === link.sourceDomainId
+      && equivalentLinkContract(link, candidate)
+    ));
+    if (hasEarlierReverse) return;
+    const key = linkLabelGroupKey(link, domainKindById);
+    linkLabelGroupCounts.set(key, (linkLabelGroupCounts.get(key) ?? 0) + 1);
+  });
   const linkEdges: TopologyGraphEdge[] = scenario.links.flatMap((link) => {
     if (renderedLinks.has(link.id)) return [];
     const reverse = scenario.links.find((candidate) => (
@@ -283,6 +298,10 @@ export function buildTopologyGraph(
     ));
     renderedLinks.add(link.id);
     if (reverse !== undefined) renderedLinks.add(reverse.id);
+    const labelGroupKey = linkLabelGroupKey(link, domainKindById);
+    const showLabel = !labeledLinkGroups.has(labelGroupKey);
+    labeledLinkGroups.add(labelGroupKey);
+    const parallelCount = linkLabelGroupCounts.get(labelGroupKey) ?? 1;
     const color = linkColor(link.kind);
     const path = [
       link.sourceDomainId,
@@ -295,25 +314,24 @@ export function buildTopologyGraph(
     const targetX = positionById.get(path[path.length - 1])?.x ?? 0;
     return path.slice(0, -1).map((source, segmentIndex) => {
       const target = path[segmentIndex + 1];
-      const segmentSourceX = positionById.get(source)?.x ?? sourceX;
-      const segmentTargetX = positionById.get(target)?.x ?? targetX;
+      const segmentSource = positionById.get(source)
+        ?? { x: sourceX, y: 0 };
+      const segmentTarget = positionById.get(target)
+        ?? { x: targetX, y: 0 };
+      const handles = linkHandles(segmentSource, segmentTarget);
       const labelSegment = Math.floor((path.length - 2) / 2);
       return {
         id: path.length === 2 ? link.id : `${link.id}:path:${segmentIndex}`,
         source,
         target,
-        sourceHandle: segmentSourceX <= segmentTargetX
-          ? "right-source"
-          : "left-source",
-        targetHandle: segmentSourceX <= segmentTargetX
-          ? "left-target"
-          : "right-target",
+        sourceHandle: handles.source,
+        targetHandle: handles.target,
         type: "smoothstep" as const,
-        ...(segmentIndex === labelSegment
+        ...(showLabel && segmentIndex === labelSegment
           ? {
               label: [
                 link.transport,
-                formatRate(link.bandwidthBytesPerSec),
+                `${parallelCount > 1 ? `${parallelCount}× ` : ""}${formatRate(link.bandwidthBytesPerSec)}`,
                 formatDuration(link.latencyNs),
               ].filter(Boolean).join(" · "),
             }
@@ -362,6 +380,43 @@ export function buildTopologyGraph(
     });
   });
   return { nodes, edges: [...accessEdges, ...linkEdges] };
+}
+
+function linkLabelGroupKey(
+  link: SimulationScenario["links"][number],
+  domainKindById: ReadonlyMap<
+    string,
+    SimulationScenario["memoryDomains"][number]["kind"]
+  >,
+): string {
+  const sharedEndpoint = [link.sourceDomainId, link.targetDomainId].find((id) => {
+    const kind = domainKindById.get(id);
+    return kind === "host" || kind === "storage";
+  });
+  const endpointKey = sharedEndpoint
+    ?? [link.sourceDomainId, link.targetDomainId].sort().join("↔");
+  return [
+    endpointKey,
+    link.kind,
+    link.transport,
+    link.bandwidthBytesPerSec,
+    link.latencyNs,
+    link.concurrencyLanes,
+  ].join("::");
+}
+
+function linkHandles(
+  source: { readonly x: number; readonly y: number },
+  target: { readonly x: number; readonly y: number },
+): { readonly source: string; readonly target: string } {
+  if (Math.abs(source.y - target.y) > 40) {
+    return source.y < target.y
+      ? { source: "bottom-source", target: "top-target" }
+      : { source: "top-source", target: "bottom-target" };
+  }
+  return source.x <= target.x
+    ? { source: "right-source", target: "left-target" }
+    : { source: "left-source", target: "right-target" };
 }
 
 function equivalentLinkContract(
