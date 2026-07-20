@@ -15,6 +15,7 @@ import {
   Download,
   FileDiff,
   FileCheck2,
+  FilePlay,
   Gauge,
   MemoryStick,
   Network,
@@ -34,6 +35,7 @@ import {
   MAX_DASHBOARD_ARTIFACT_FILE_BYTES,
   parseDashboardArtifactFileText,
 } from "./dashboard-artifact.js";
+import { MAX_FROZEN_PLAN_FILE_BYTES } from "./frozen-plan-import.js";
 import {
   MAX_TOKEN_TRACE_FILE_BYTES,
   parseTokenTraceFileText,
@@ -74,6 +76,7 @@ import type {
   DashboardArtifactReplay,
   DashboardResult,
   DashboardRunConfig,
+  FrozenPlanBrowserResult,
   WorkerResponse,
   WorkloadMode,
 } from "./types.js";
@@ -162,6 +165,7 @@ interface RunState {
   readonly result?: DashboardResult;
   readonly artifact?: DashboardArtifactDownload;
   readonly artifactReplay?: DashboardArtifactReplay;
+  readonly frozenPlan?: FrozenPlanBrowserResult;
   readonly error?: string;
 }
 
@@ -189,6 +193,7 @@ export function App(): React.JSX.Element {
   const [tokenTrace, setTokenTrace] = useState<TokenTraceSelection>({});
   const workerRef = useRef<Worker | undefined>(undefined);
   const artifactInputRef = useRef<HTMLInputElement | null>(null);
+  const frozenPlanInputRef = useRef<HTMLInputElement | null>(null);
   const runIdRef = useRef(0);
   const initializedRef = useRef(false);
   const changeConfig = useCallback((nextConfig: DashboardRunConfig) => {
@@ -365,6 +370,17 @@ export function App(): React.JSX.Element {
         workerRef.current = undefined;
         return;
       }
+      if (message.type !== "result") {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "Worker protocol failed",
+          error: "dashboard worker returned an unexpected result",
+        });
+        worker.terminate();
+        workerRef.current = undefined;
+        return;
+      }
       const result: DashboardResult = {
         ...message.summary,
         durationMs: message.durationMs,
@@ -447,6 +463,90 @@ export function App(): React.JSX.Element {
     }
   }, [run]);
 
+  const runFrozenPlan = useCallback(async (file: File) => {
+    try {
+      if (file.size > MAX_FROZEN_PLAN_FILE_BYTES) {
+        throw new Error("FrozenPlan artifact exceeds the 128 MiB limit");
+      }
+      if (!file.name.toLowerCase().endsWith(".json")) {
+        throw new Error("FrozenPlan artifact file must use .json");
+      }
+      const artifactText = await file.text();
+      workerRef.current?.terminate();
+      const worker = new Worker(new URL("./sim-worker.ts", import.meta.url), {
+        type: "module",
+      });
+      const runId = ++runIdRef.current;
+      workerRef.current = worker;
+      setRunState({
+        status: "running",
+        progress: 4,
+        phase: "Starting FrozenPlan worker",
+      });
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        const message = event.data;
+        if (message.runId !== runIdRef.current) {
+          return;
+        }
+        if (message.type === "progress") {
+          setRunState((current) => ({
+            ...current,
+            progress: message.progress,
+            phase: message.phase,
+          }));
+          return;
+        }
+        if (message.type === "error") {
+          setRunState({
+            status: "error",
+            progress: 100,
+            phase: "FrozenPlan execution failed",
+            error: message.message,
+          });
+        } else if (message.type === "frozen-plan-result") {
+          setRunState({
+            status: "complete",
+            progress: 100,
+            phase: "FrozenPlan replay verified",
+            frozenPlan: message.result,
+          });
+        } else {
+          setRunState({
+            status: "error",
+            progress: 100,
+            phase: "FrozenPlan execution failed",
+            error: "FrozenPlan worker returned an unexpected result",
+          });
+        }
+        worker.terminate();
+        workerRef.current = undefined;
+      };
+      worker.onerror = (event) => {
+        setRunState({
+          status: "error",
+          progress: 100,
+          phase: "FrozenPlan worker failed",
+          error: event.message,
+        });
+        worker.terminate();
+        workerRef.current = undefined;
+      };
+      worker.postMessage({
+        type: "run-frozen-plan",
+        runId,
+        sourceFileName: file.name,
+        artifactText,
+      });
+    } catch (error) {
+      setRunState({
+        status: "error",
+        progress: 100,
+        phase: "FrozenPlan import failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
@@ -473,6 +573,34 @@ export function App(): React.JSX.Element {
           </div>
           <div className="flex items-center gap-2">
             <RunBadge status={runState.status} />
+            <input
+              ref={frozenPlanInputRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              disabled={runState.status === "running"}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) {
+                  void runFrozenPlan(file);
+                }
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Import and execute FrozenPlan"
+                  onClick={() => frozenPlanInputRef.current?.click()}
+                  disabled={runState.status === "running"}
+                >
+                  <FilePlay className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Import and execute FrozenPlan</TooltipContent>
+            </Tooltip>
             <input
               ref={artifactInputRef}
               type="file"
@@ -539,7 +667,9 @@ export function App(): React.JSX.Element {
 
           <main className="min-w-0 overflow-y-auto p-4 sm:p-5">
             <RunProgress state={runState} />
-            {result
+            {runState.frozenPlan
+              ? <FrozenPlanResults result={runState.frozenPlan} />
+              : result
               ? (
                   <Results
                     result={result}
@@ -1477,6 +1607,166 @@ function Results({
       <Suspense fallback={<ChartSkeleton />}>
         <ResultCharts result={result} />
       </Suspense>
+    </div>
+  );
+}
+
+function FrozenPlanResults({
+  result,
+}: {
+  readonly result: FrozenPlanBrowserResult;
+}): React.JSX.Element {
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 pb-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-bold text-zinc-900">
+            {result.plan.id}
+          </div>
+          <div className="truncate text-xs text-zinc-500">
+            {result.sourceFileName} · {result.scenario.id} · epoch{" "}
+            {result.plan.topologyEpoch}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="success">
+            <CheckCircle2 className="mr-1 size-3.5" />
+            execution replay parity
+          </Badge>
+          <Badge variant="neutral">FrozenPlan artifact v{result.artifact.revision}</Badge>
+        </div>
+      </div>
+
+      <section className="grid gap-3 border-y border-zinc-200 bg-white px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center">
+        <div className="flex min-w-0 items-center gap-3">
+          <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+          <div className="min-w-0">
+            <div className="truncate text-xs font-bold text-zinc-800">
+              {result.artifact.artifactFingerprint}
+            </div>
+            <div className="truncate text-[11px] text-zinc-500">
+              self-contained scenario and plan
+            </div>
+          </div>
+        </div>
+        <DiagnosticValue
+          label="Scenario"
+          value={result.artifact.scenarioFingerprint}
+        />
+        <DiagnosticValue
+          label="Plan"
+          value={result.artifact.planFingerprint}
+        />
+        <DiagnosticValue
+          label="Replay"
+          value={`${result.replay.appliedEvents.toLocaleString()} events`}
+        />
+      </section>
+
+      <section className="metric-grid" aria-label="FrozenPlan run metrics">
+        <PlanMetric
+          label="Modeled duration"
+          value={formatDuration(result.execution.completedAtNs)}
+          detail={`${result.execution.operationCount.toLocaleString()} submitted operations`}
+          icon={<Clock3 className="size-4 text-amber-700" />}
+        />
+        <PlanMetric
+          label="Plan steps"
+          value={result.plan.steps.toLocaleString()}
+          detail={`${result.plan.operationCounts.compute.toLocaleString()} compute · ${result.plan.operationCounts.transfer.toLocaleString()} transfer`}
+          icon={<Cpu className="size-4 text-sky-700" />}
+        />
+        <PlanMetric
+          label="Topology"
+          value={`${result.scenario.devices} devices`}
+          detail={`${result.scenario.ranks} ranks · ${result.scenario.links} links`}
+          icon={<Network className="size-4 text-emerald-700" />}
+        />
+        <PlanMetric
+          label="Rank terminals"
+          value={result.execution.rankStates.length.toLocaleString()}
+          detail={`${result.execution.rankStates.filter((rank) => rank.status === "succeeded").length} succeeded`}
+          icon={<CheckCircle2 className="size-4 text-emerald-700" />}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="m-0 text-sm font-bold text-zinc-900">
+              Operation trace
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              {result.execution.operationPreview.length.toLocaleString()} of{" "}
+              {result.execution.operationCount.toLocaleString()} operations
+            </p>
+          </div>
+          <Badge variant="neutral">{result.execution.status}</Badge>
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[620px] border-collapse text-left text-xs">
+            <thead className="border-b border-zinc-200 text-zinc-500">
+              <tr>
+                <th className="px-2 py-2 font-semibold">Step</th>
+                <th className="px-2 py-2 font-semibold">Kind</th>
+                <th className="px-2 py-2 font-semibold">Start</th>
+                <th className="px-2 py-2 font-semibold">Finish</th>
+                <th className="px-2 py-2 font-semibold">Resources</th>
+                <th className="px-2 py-2 font-semibold">Ranks</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {result.execution.operationPreview.map((operation) => (
+                <tr key={operation.sourceSequence}>
+                  <td className="px-2 py-2 font-semibold tabular-nums">
+                    {operation.stepId}
+                  </td>
+                  <td className="px-2 py-2">{operation.kind}</td>
+                  <td className="px-2 py-2 tabular-nums text-zinc-600">
+                    {formatDuration(operation.startNs)}
+                  </td>
+                  <td className="px-2 py-2 tabular-nums text-zinc-600">
+                    {formatDuration(operation.finishNs)}
+                  </td>
+                  <td className="max-w-64 truncate px-2 py-2 text-zinc-600">
+                    {operation.resources.map((resource) => (
+                      `${resource.resourceId}:${resource.resourceLane}`
+                    )).join(", ")}
+                  </td>
+                  <td className="px-2 py-2 text-zinc-600">
+                    {operation.participants.join(", ")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PlanMetric({
+  label,
+  value,
+  detail,
+  icon,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly detail: string;
+  readonly icon: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <div className="metric-card">
+      <div className="flex items-center justify-between gap-2 text-zinc-500">
+        <span className="text-xs font-semibold">{label}</span>
+        {icon}
+      </div>
+      <div className="mt-2 text-xl font-bold tabular-nums">{value}</div>
+      <div className="mt-1 min-h-8 text-xs leading-4 text-zinc-500">
+        {detail}
+      </div>
     </div>
   );
 }

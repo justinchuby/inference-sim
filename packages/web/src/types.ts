@@ -7,6 +7,9 @@ import type {
   ExpertCacheMetrics,
   ExpertCachePartitionSnapshot,
   ExpertRouteResult,
+  PlanTraceEvent,
+  RankCompletion,
+  RankTerminalState,
   ExpertCacheWorkloadResult,
   ScenarioMemoryLedgerEntry,
   SimulationResultArtifact,
@@ -225,12 +228,61 @@ export interface DashboardArtifactReplay {
   readonly matches: boolean;
 }
 
-export type WorkerRequest = {
-  readonly type: "run";
-  readonly runId: number;
-  readonly config: DashboardRunConfig;
-  readonly expectedArtifact?: DashboardArtifactExpectation;
-};
+export interface FrozenPlanBrowserResult {
+  readonly sourceFileName: string;
+  readonly artifact: {
+    readonly revision: number;
+    readonly artifactFingerprint: string;
+    readonly scenarioFingerprint: string;
+    readonly planFingerprint: string;
+  };
+  readonly scenario: {
+    readonly id: string;
+    readonly family: string;
+    readonly devices: number;
+    readonly links: number;
+    readonly ranks: number;
+  };
+  readonly plan: {
+    readonly id: string;
+    readonly executionId: string;
+    readonly topologyEpoch: number;
+    readonly steps: number;
+    readonly operationCounts: {
+      readonly compute: number;
+      readonly transfer: number;
+      readonly collective: number;
+    };
+  };
+  readonly execution: {
+    readonly status: "succeeded" | "failed" | "aborted";
+    readonly completedAtNs: number;
+    readonly rankCompletions: readonly RankCompletion[];
+    readonly rankStates: readonly RankTerminalState[];
+    readonly operationPreview: readonly PlanTraceEvent[];
+    readonly operationCount: number;
+  };
+  readonly replay: {
+    readonly status: "succeeded" | "failed" | "aborted";
+    readonly completedAtNs: number;
+    readonly appliedEvents: number;
+    readonly exact: boolean;
+  };
+}
+
+export type WorkerRequest =
+  | {
+      readonly type: "run";
+      readonly runId: number;
+      readonly config: DashboardRunConfig;
+      readonly expectedArtifact?: DashboardArtifactExpectation;
+    }
+  | {
+      readonly type: "run-frozen-plan";
+      readonly runId: number;
+      readonly sourceFileName: string;
+      readonly artifactText: string;
+    };
 
 export type WorkerResponse =
   | {
@@ -245,6 +297,12 @@ export type WorkerResponse =
       readonly summary: Omit<DashboardResult, "durationMs">;
       readonly artifact: DashboardArtifactDownload;
       readonly artifactReplay?: DashboardArtifactReplay;
+      readonly durationMs: number;
+    }
+  | {
+      readonly type: "frozen-plan-result";
+      readonly runId: number;
+      readonly result: FrozenPlanBrowserResult;
       readonly durationMs: number;
     }
   | {
