@@ -1508,6 +1508,19 @@ The `concurrent-node-failure` command applies one node fault to a seeded
 multi-execution campaign, closes all old-epoch submission atomically, quiesces
 only the already submitted global prefix, and independently replays every
 failed execution terminal.
+The `plan-export` command compiles one workload into a revision-1
+`inference-sim/frozen-plan` artifact. The artifact is self-contained: it embeds
+the exact validated scenario and FrozenPlan rather than retaining a preset
+name that could resolve differently in a later build. It records the scenario
+schema and plan contract revisions plus canonical fingerprints for the
+scenario, plan, and complete unsigned envelope. `plan-run` verifies those
+boundaries, rejects unknown plan fields, validates the embedded scenario-plan
+pair, executes it, and independently replays the resulting trace. A producer
+must regenerate the artifact when either contract revision changes; readers do
+not silently migrate executable plans.
+These FNV fingerprints are deterministic integrity and parity identifiers, not
+cryptographic signatures or producer authentication. Deployment tooling must
+establish artifact provenance separately when plans cross a trust boundary.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,
@@ -1532,8 +1545,9 @@ mode in the Worker, and reports expected/current input, output, and envelope
 fingerprints. Invalid envelopes and stale applicable contracts fail closed;
 valid historical evidence may complete with an explicit artifact mismatch.
 The browser can compare all six serving topologies with a ranked latency chart,
-fastest-topology detail view, and comparison inspector. General configuration
-search, standalone FrozenPlan file execution/export, ONNX import, artifact
+fastest-topology detail view, and comparison inspector. Standalone FrozenPlan
+file export/execution is available in the CLI and shared core contract; its
+browser workflow remains. General configuration search, ONNX import, artifact
 history management, and richer progress phases remain. Calibration YAML/JSON
 import shares the core parser and fit contract with the CLI, enforces a 1 MiB
 input limit, refits in the Worker, and reports the dataset fingerprint, compute

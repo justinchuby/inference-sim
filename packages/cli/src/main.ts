@@ -14,10 +14,13 @@ import {
   compareTopologyServingWorkloads,
   compareTopologyWorkloads,
   compileTopologyWorkloadPlan,
+  createFrozenPlanArtifact,
   defaultSpeculativeEligibility,
+  executeFrozenPlan,
   expertCacheConfigForTopology,
   fitTopologyCostModel,
   parseCalibrationDataset,
+  parseFrozenPlanArtifact,
   parseSpeculativeTokenTrace,
   listModelPresets,
   listPresets,
@@ -30,6 +33,8 @@ import {
   runNodeFailoverCampaign,
   runSeededConcurrentNodeFailureCampaign,
   runSeededConcurrentPlanCampaign,
+  replayPlanTrace,
+  serializeFrozenPlanArtifact,
   targetOnlyTopologyProfile,
   topologyProfileFromExpertCache,
   topologyProfileFromSpeculative,
@@ -255,6 +260,51 @@ export async function runCli(
             ),
           ),
         );
+        return 0;
+      }
+      case "plan-export": {
+        const scenario = resolveScenarioTarget(argument, "plan-export");
+        const config = await loadRequiredConfig(
+          secondArgument,
+          "plan-export",
+        );
+        const costModel = await loadCostModel(thirdArgument);
+        const plan = compileTopologyWorkloadPlan(
+          scenario,
+          buildTopologyProfile(config, scenario),
+          costModel,
+        );
+        io.stdout(`${serializeFrozenPlanArtifact(
+          createFrozenPlanArtifact(scenario, plan),
+          true,
+        )}\n`);
+        return 0;
+      }
+      case "plan-run": {
+        const config = await loadRequiredConfig(argument, "plan-run");
+        const artifact = parseFrozenPlanArtifact(config);
+        const execution = executeFrozenPlan(
+          artifact.scenario,
+          artifact.plan,
+        );
+        const replay = replayPlanTrace(
+          artifact.scenario,
+          artifact.plan,
+          execution.trace,
+        );
+        printJson(io, {
+          artifact: {
+            kind: artifact.kind,
+            revision: artifact.revision,
+            artifactFingerprint: artifact.artifactFingerprint,
+            scenarioFingerprint: artifact.scenarioFingerprint,
+            planFingerprint: artifact.planFingerprint,
+          },
+          scenarioId: artifact.scenario.id,
+          planId: artifact.plan.id,
+          execution,
+          replay,
+        });
         return 0;
       }
       case "compare": {
@@ -1451,6 +1501,8 @@ Usage:
   inference-sim serving <scenario-target> <config.yaml|json> [calibration.yaml|json]
   inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
   inference-sim run <scenario-target> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim plan-export <scenario-target> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim plan-run <frozen-plan.json>
   inference-sim compare <workload.yaml|json> [calibration.yaml|json]
   inference-sim fault-campaign <scenario-target> <workload.yaml|json> [calibration.yaml|json]
   inference-sim concurrent-campaign <scenario-target> <workload.yaml|json> [calibration.yaml|json]

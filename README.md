@@ -95,6 +95,11 @@ target-only versus proposer-family serving, modeled latency/throughput, request
 TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
 inspector. Serving can run one selected topology or compare all six in one
 replay-verified view.
+The CLI also exports a compiled workload as a self-contained, revisioned
+FrozenPlan artifact and executes that artifact without consulting mutable
+preset definitions. Scenario, plan, and whole-envelope fingerprints fail
+closed before semantic validation; successful execution is independently
+replayed from the emitted plan trace.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

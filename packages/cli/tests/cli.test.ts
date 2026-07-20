@@ -570,6 +570,86 @@ target_only:
     });
   });
 
+  it("exports and replays a self-contained FrozenPlan artifact", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const workloadPath = join(directory, "target-only.yaml");
+    const artifactPath = join(directory, "plan.json");
+    await writeFile(workloadPath, `
+target_only:
+  token_count: 4
+`, "utf8");
+    const firstExport = captureIo();
+    const secondExport = captureIo();
+
+    expect(await runCli(
+      ["plan-export", "multi-gpu-ring-4", workloadPath],
+      firstExport.io,
+    )).toBe(0);
+    expect(await runCli(
+      ["plan-export", "multi-gpu-ring-4", workloadPath],
+      secondExport.io,
+    )).toBe(0);
+    expect(firstExport.stdout()).toBe(secondExport.stdout());
+
+    const artifact = JSON.parse(firstExport.stdout()) as {
+      kind: string;
+      scenario: { id: string };
+      plan: { steps: unknown[] };
+    };
+    expect(artifact.kind).toBe("inference-sim/frozen-plan");
+    expect(artifact.scenario.id).toBe("multi-gpu-ring-4");
+    expect(artifact.plan.steps.length).toBeGreaterThan(0);
+
+    await writeFile(artifactPath, firstExport.stdout(), "utf8");
+    const run = captureIo();
+    expect(await runCli(["plan-run", artifactPath], run.io)).toBe(0);
+    const result = JSON.parse(run.stdout()) as {
+      scenarioId: string;
+      execution: {
+        status: string;
+        completedAtNs: number;
+        trace: { operations: unknown[] };
+      };
+      replay: {
+        status: string;
+        completedAtNs: number;
+        appliedEvents: number;
+      };
+    };
+    expect(result.scenarioId).toBe("multi-gpu-ring-4");
+    expect(result.execution.status).toBe("succeeded");
+    expect(result.replay).toMatchObject({
+      status: "succeeded",
+      completedAtNs: result.execution.completedAtNs,
+      appliedEvents: result.execution.trace.operations.length + 1,
+    });
+  });
+
+  it("rejects a tampered FrozenPlan artifact before execution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const workloadPath = join(directory, "target-only.yaml");
+    const artifactPath = join(directory, "tampered-plan.json");
+    await writeFile(workloadPath, `
+target_only:
+  token_count: 1
+`, "utf8");
+    const exported = captureIo();
+    expect(await runCli(
+      ["plan-export", "multi-gpu", workloadPath],
+      exported.io,
+    )).toBe(0);
+    const artifact = JSON.parse(exported.stdout()) as {
+      plan: { steps: Array<{ operation: { durationNs: number } }> };
+    };
+    artifact.plan.steps[0].operation.durationNs++;
+    await writeFile(artifactPath, JSON.stringify(artifact), "utf8");
+
+    const run = captureIo();
+    expect(await runCli(["plan-run", artifactPath], run.io)).toBe(1);
+    expect(run.stderr()).toContain("plan fingerprint mismatch");
+    expect(run.stdout()).toBe("");
+  });
+
   it("compares one workload across all topology presets", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "target-only.yaml");

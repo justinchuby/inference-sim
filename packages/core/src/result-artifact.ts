@@ -29,8 +29,8 @@ export function createSimulationResultArtifact<TInput, TOutput>(
 ): SimulationResultArtifact<TInput, TOutput> {
   assertNonEmptyString(runKind, "artifact runKind");
   const normalizedContracts = normalizeContracts(contracts);
-  const inputFingerprint = fingerprint(input);
-  const outputFingerprint = fingerprint(output);
+  const inputFingerprint = canonicalJsonFingerprint(input);
+  const outputFingerprint = canonicalJsonFingerprint(output);
   const unsigned: Omit<
     SimulationResultArtifact<TInput, TOutput>,
     "artifactFingerprint"
@@ -46,7 +46,7 @@ export function createSimulationResultArtifact<TInput, TOutput>(
   };
   return {
     ...unsigned,
-    artifactFingerprint: fingerprint(unsigned),
+    artifactFingerprint: canonicalJsonFingerprint(unsigned),
   };
 }
 
@@ -92,13 +92,13 @@ export function parseSimulationResultArtifact(
     artifact.artifactFingerprint,
     "artifact artifactFingerprint",
   );
-  const expectedInputFingerprint = fingerprint(artifact.input);
+  const expectedInputFingerprint = canonicalJsonFingerprint(artifact.input);
   if (inputFingerprint !== expectedInputFingerprint) {
     throw new SimulationResultArtifactError(
       `artifact input fingerprint mismatch: expected ${expectedInputFingerprint}, got ${inputFingerprint}`,
     );
   }
-  const expectedOutputFingerprint = fingerprint(artifact.output);
+  const expectedOutputFingerprint = canonicalJsonFingerprint(artifact.output);
   if (outputFingerprint !== expectedOutputFingerprint) {
     throw new SimulationResultArtifactError(
       `artifact output fingerprint mismatch: expected ${expectedOutputFingerprint}, got ${outputFingerprint}`,
@@ -117,7 +117,7 @@ export function parseSimulationResultArtifact(
     input: artifact.input,
     output: artifact.output,
   };
-  const expectedArtifactFingerprint = fingerprint(unsigned);
+  const expectedArtifactFingerprint = canonicalJsonFingerprint(unsigned);
   if (artifactFingerprint !== expectedArtifactFingerprint) {
     throw new SimulationResultArtifactError(
       `artifact fingerprint mismatch: expected ${expectedArtifactFingerprint}, got ${artifactFingerprint}`,
@@ -134,7 +134,7 @@ export function serializeSimulationResultArtifact(
   pretty = false,
 ): string {
   const validated = parseSimulationResultArtifact(artifact);
-  return JSON.stringify(canonicalJsonValue(validated, "$"), null, pretty ? 2 : 0);
+  return canonicalJsonStringify(validated, pretty);
 }
 
 function normalizeContracts(
@@ -159,7 +159,7 @@ function normalizeContracts(
   return normalized;
 }
 
-function fingerprint(value: unknown): string {
+export function canonicalJsonFingerprint(value: unknown): string {
   const text = JSON.stringify(canonicalJsonValue(value, "$"));
   let hash = 0x811c9dc5;
   for (const byte of new TextEncoder().encode(text)) {
@@ -167,6 +167,13 @@ function fingerprint(value: unknown): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+export function canonicalJsonStringify(
+  value: unknown,
+  pretty = false,
+): string {
+  return JSON.stringify(canonicalJsonValue(value, "$"), null, pretty ? 2 : 0);
 }
 
 type JsonValue =

@@ -31,11 +31,22 @@ export {
   SIMULATION_RESULT_ARTIFACT_KIND,
   SIMULATION_RESULT_ARTIFACT_REVISION,
   SimulationResultArtifactError,
+  canonicalJsonFingerprint,
+  canonicalJsonStringify,
   createSimulationResultArtifact,
   parseSimulationResultArtifact,
   serializeSimulationResultArtifact,
   type SimulationResultArtifact,
 } from "./result-artifact.js";
+export {
+  FROZEN_PLAN_ARTIFACT_KIND,
+  FROZEN_PLAN_ARTIFACT_REVISION,
+  FrozenPlanArtifactError,
+  createFrozenPlanArtifact,
+  parseFrozenPlanArtifact,
+  serializeFrozenPlanArtifact,
+  type FrozenPlanArtifact,
+} from "./frozen-plan-artifact.js";
 export {
   DiscreteEventSimulator,
   SimulationError,
