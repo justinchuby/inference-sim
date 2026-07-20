@@ -666,16 +666,23 @@ result and must match both batch work and scheduler start time, while the full
 expert-cache trace is replayed independently from initialization through final
 residency.
 
-Adaptive background prefetch is deliberately rejected in composed serving.
-Standalone expert-cache plans can overlap a bounded prefetch with later units,
-and topology results identify the final foreground workload step separately
-from total plan drain. `foregroundDurationNs` is taken from that step's
-replayed trace event; `backgroundDrainNs` is the remaining quiescence tail.
-However, a per-batch serving plan currently drains before the next batch.
-Claiming cross-
-batch in-flight prefetch would therefore be false until serving batches share
-one global resource event loop and the cache accepts physical transfer
-completion timestamps from that loop.
+Topology results identify the final foreground workload step separately from
+total plan drain. `foregroundDurationNs` is taken from that step's replayed
+trace event; `backgroundDrainNs` is the remaining quiescence tail. Composed
+serving admits each batch plan into one streaming concurrent-plan runtime at
+the scheduler's absolute start time and runs only until that batch's foreground
+terminal before returning its service duration. Resource lanes, physical
+allocation leases, and collective submit ordering remain live for older
+background steps. After the final batch, the runtime drains and the existing
+concurrent-plan verifier independently replays every admission, operation, and
+terminal.
+
+Adaptive background prefetch remains deliberately rejected in composed
+serving. The global physical timeline can now retain its transfer across batch
+boundaries, but expert-cache residency still advances on a separate logical
+fixed-latency clock. Enabling the policy before cache completion is driven by
+the physical transfer trace could expose a warm expert before its copy is
+actually complete.
 
 ## 10. Device Configuration Coverage
 

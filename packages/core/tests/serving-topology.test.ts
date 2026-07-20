@@ -227,6 +227,19 @@ describe("topology-aware serving", () => {
     expect(expertCache.snapshot.metrics.hotHits)
       .toBe(expertCache.routes.length - 1);
     expect(expertCache.replay.snapshot).toEqual(expertCache.snapshot);
+    expect(result.physical?.execution.trace.admissions).toHaveLength(
+      result.batches.length,
+    );
+    expect(result.physical?.replay.appliedEvents).toBeGreaterThan(0);
+    expect(result.physical?.replay.completedAtNs).toBe(
+      result.physical?.execution.completedAtNs,
+    );
+    expect(result.batches.every((batch) => (
+      batch.physicalExecution?.executionId
+        === batch.topology.plan.executionId
+      && batch.foregroundCompletedAtNs
+        <= batch.startedAtNs + batch.durationNs
+    ))).toBe(true);
     expect(result.batches.length).toBeGreaterThan(1);
     expect(result.batches[0].expertRoutes[0].sourceTiers).toEqual(["cold"]);
     expect(result.batches.slice(1).every((batch) => (

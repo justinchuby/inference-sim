@@ -129,6 +129,9 @@ export interface DashboardResult {
     readonly support: "onnx_genai_current" | "design_only" | "target_only";
     readonly metrics: ServingMetrics;
     readonly requests: readonly ServingRequestResult[];
+    readonly physicalReplayEvents?: number;
+    readonly maximumConcurrentPlans?: number;
+    readonly physicalDrainNs?: number;
     readonly batches: readonly {
       readonly batchId: number;
       readonly sequenceCount: number;

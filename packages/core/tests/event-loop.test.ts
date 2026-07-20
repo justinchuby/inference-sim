@@ -50,6 +50,23 @@ describe("DiscreteEventSimulator", () => {
     expect(second.nowNs).toBe(4);
   });
 
+  it("advances exactly one non-cancelled event for streaming runtimes", () => {
+    const simulator = new DiscreteEventSimulator<string>();
+    const cancelled = simulator.scheduleAt(1, "cancelled");
+    simulator.scheduleAt(2, "first");
+    simulator.scheduleAt(3, "second");
+    simulator.cancel(cancelled);
+    const observed: string[] = [];
+
+    expect(simulator.runNext((event) => observed.push(event.payload))).toBe(true);
+    expect(observed).toEqual(["first"]);
+    expect(simulator.nowNs).toBe(2);
+    expect(simulator.pendingCount).toBe(1);
+    expect(simulator.runNext((event) => observed.push(event.payload))).toBe(true);
+    expect(simulator.runNext((event) => observed.push(event.payload))).toBe(false);
+    expect(observed).toEqual(["first", "second"]);
+  });
+
   it("rejects scheduling into the past", () => {
     const simulator = new DiscreteEventSimulator<string>();
     simulator.scheduleAt(5, "now");

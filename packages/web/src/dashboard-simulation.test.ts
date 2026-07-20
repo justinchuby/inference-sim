@@ -160,6 +160,8 @@ describe("simulateDashboard", () => {
     expect(result.expertCache?.metrics.routes).toBe(
       result.expertCache?.routes.length,
     );
+    expect(result.serving?.physicalReplayEvents).toBeGreaterThan(0);
+    expect(result.serving?.maximumConcurrentPlans).toBeGreaterThan(0);
     expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
     expect(result.topology.planSteps).toBeGreaterThan(0);
   });

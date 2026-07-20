@@ -3,6 +3,7 @@ import {
   PLAN_CONTRACT_REVISION,
   SCENARIO_PRESET_NAMES,
   PlanReplayError,
+  StreamingConcurrentPlanRuntime,
   buildScenarioPreset,
   compileTopologyWorkloadPlan,
   executeConcurrentFrozenPlans,
@@ -111,6 +112,60 @@ function oneStepPlan(executionId: string, durationNs = 10): FrozenPlan {
 }
 
 describe("concurrent FrozenPlan execution", () => {
+  it("admits the next foreground while prior background work remains live", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const first: FrozenPlan = {
+      ...oneStepPlan("execution-a"),
+      steps: [
+        oneStepPlan("execution-a").steps[0],
+        {
+          id: 1,
+          participants: ["rank-0"],
+          dependencies: [0],
+          reads: ["weights-0"],
+          writes: ["kv-0"],
+          operation: {
+            kind: "compute",
+            deviceId: "node0:gpu0",
+            capability: "attention",
+            durationNs: 100,
+          },
+        },
+      ],
+    };
+    const second = oneStepPlan("execution-b");
+    const runtime = new StreamingConcurrentPlanRuntime(scenario);
+
+    runtime.admit(first, 0);
+    expect(runtime.runUntilStep("execution-a", 0)).toEqual({
+      executionId: "execution-a",
+      stepId: 0,
+      completedAtNs: 10,
+    });
+    runtime.admit(second, 10);
+    expect(runtime.runUntilStep("execution-b", 0).completedAtNs).toBe(120);
+    const result = runtime.drain();
+    const requests = [
+      { plan: first, arrivalNs: 0, admissionOrder: 0 },
+      { plan: second, arrivalNs: 10, admissionOrder: 1 },
+    ];
+
+    expect(result.completedAtNs).toBe(120);
+    expect(result.maximumConcurrentExecutions).toBe(2);
+    expect(result.trace.operations.map(({ event }) => [
+      event.executionId,
+      event.stepId,
+      event.startNs,
+      event.finishNs,
+    ])).toEqual([
+      ["execution-a", 0, 0, 10],
+      ["execution-a", 1, 10, 110],
+      ["execution-b", 0, 110, 120],
+    ]);
+    expect(replayConcurrentPlanTrace(scenario, requests, result.trace)
+      .completedAtNs).toBe(120);
+  });
+
   it("shares resource lanes and communicator ownership deterministically", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const first = executeConcurrentFrozenPlans(scenario, requests());

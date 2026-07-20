@@ -1285,6 +1285,17 @@ function summarizeServingRun(result: TopologyServingResult) {
             replayAppliedEvents: result.expertCache.replay.appliedEvents,
           },
         }),
+    ...(result.physical === undefined
+      ? {}
+      : {
+          physical: {
+            completedAtNs: result.physical.execution.completedAtNs,
+            maximumConcurrentExecutions:
+              result.physical.execution.maximumConcurrentExecutions,
+            operations: result.physical.execution.trace.operations.length,
+            replayAppliedEvents: result.physical.replay.appliedEvents,
+          },
+        }),
   };
 }
 

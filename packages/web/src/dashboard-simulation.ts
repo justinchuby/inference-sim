@@ -191,6 +191,18 @@ function servingDashboardResult(
         : speculativeFamilyContract(config.serving.decodeMode).support,
       metrics: serving.serving.metrics,
       requests: serving.serving.requests,
+      ...(serving.physical === undefined
+        ? {}
+        : {
+            physicalReplayEvents: serving.physical.replay.appliedEvents,
+            maximumConcurrentPlans:
+              serving.physical.execution.maximumConcurrentExecutions,
+            physicalDrainNs: Math.max(
+              0,
+              serving.physical.execution.completedAtNs
+                - serving.serving.metrics.totalDurationNs,
+            ),
+          }),
       batches: serving.batches.map((batch) => ({
         batchId: batch.batchId,
         sequenceCount: batch.work.sequenceCount,

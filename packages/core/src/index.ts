@@ -67,6 +67,7 @@ export {
   type TopologyServingExpertCacheConfig,
   type TopologyServingExpertCacheResult,
   type TopologyServingMetrics,
+  type TopologyServingPhysicalResult,
   type TopologyServingResult,
 } from "./serving-topology.js";
 export {
@@ -279,6 +280,7 @@ export {
 } from "./frozen-plan.js";
 export {
   CONCURRENT_PLAN_TRACE_REVISION,
+  StreamingConcurrentPlanRuntime,
   executeConcurrentFrozenPlans,
   executeConcurrentNodeFailure,
   replayConcurrentPlanTrace,
@@ -295,6 +297,7 @@ export {
   type ConcurrentPlanReplayResult,
   type ConcurrentPlanReplayOptions,
   type ConcurrentPlanRequest,
+  type StreamingPlanStepCompletion,
 } from "./concurrent-plan.js";
 export {
   NODE_RECOVERY_CONTRACT_REVISION,

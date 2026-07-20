@@ -138,6 +138,20 @@ export class DiscreteEventSimulator<E> {
     };
   }
 
+  runNext(handler: SimulationEventHandler<E>): boolean {
+    while (this.heap.length > 0) {
+      const event = this.pop();
+      this.pendingIds.delete(event.id);
+      if (this.cancelledIds.delete(event.id)) {
+        continue;
+      }
+      this.currentTimeNs = event.timestampNs;
+      handler(event, this);
+      return true;
+    }
+    return false;
+  }
+
   private push(event: ScheduledEvent<E>): void {
     this.heap.push(event);
     let index = this.heap.length - 1;

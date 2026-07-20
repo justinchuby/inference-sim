@@ -114,28 +114,154 @@ interface CompletionEvent {
   readonly stepId: number;
 }
 
-export function executeConcurrentFrozenPlans(
-  scenario: SimulationScenario,
-  requests: readonly ConcurrentPlanRequest[],
-): ConcurrentPlanExecutionResult {
-  const ordered = validateConcurrentRequests(scenario, requests);
-  const states = new Map(
-    ordered.map((request) => [
-      request.plan.executionId,
-      buildExecutionState(request),
-    ]),
-  );
-  const resourceLanes = buildResourceLanes(scenario);
-  const leases = new ConcurrentLeaseTimeline();
-  const sequencer = sequencerForEpoch(scenario.execution.topologyEpoch);
-  const simulator = new DiscreteEventSimulator<CompletionEvent>();
-  const operations: ConcurrentPlanOperationEvent[] = [];
-  const admissions: ConcurrentPlanAdmission[] = [];
-  const terminals: PlanTerminalEvent[] = [];
+export interface StreamingPlanStepCompletion {
+  readonly executionId: string;
+  readonly stepId: number;
+  readonly completedAtNs: number;
+}
 
-  const submitReady = (submittedAtNs: number): void => {
+export class StreamingConcurrentPlanRuntime {
+  private readonly requests: ConcurrentPlanRequest[] = [];
+  private readonly states = new Map<string, ExecutionState>();
+  private readonly resourceLanes: Map<string, number[]>;
+  private readonly leases = new ConcurrentLeaseTimeline();
+  private readonly sequencer: CollectiveSubmitSequencer;
+  private readonly simulator = new DiscreteEventSimulator<CompletionEvent>();
+  private readonly operations: ConcurrentPlanOperationEvent[] = [];
+  private readonly admissions: ConcurrentPlanAdmission[] = [];
+  private readonly terminals: PlanTerminalEvent[] = [];
+  private lastAdmissionNs = 0;
+
+  constructor(private readonly scenario: SimulationScenario) {
+    this.resourceLanes = buildResourceLanes(scenario);
+    this.sequencer = sequencerForEpoch(scenario.execution.topologyEpoch);
+  }
+
+  get currentTimeNs(): number {
+    return this.simulator.nowNs;
+  }
+
+  admit(plan: FrozenPlan, arrivalNs: number): ConcurrentPlanAdmission {
+    if (
+      !Number.isSafeInteger(arrivalNs)
+      || arrivalNs < this.lastAdmissionNs
+      || arrivalNs < this.simulator.nowNs
+    ) {
+      throw new FrozenPlanExecutionError(
+        `streaming admission ${arrivalNs}ns precedes runtime time ${this.simulator.nowNs}ns or prior admission ${this.lastAdmissionNs}ns`,
+      );
+    }
+    const request: ConcurrentPlanRequest = {
+      plan,
+      arrivalNs,
+      admissionOrder: this.requests.length,
+    };
+    validateConcurrentRequests(this.scenario, [...this.requests, request]);
+    this.runCompletionsThrough(arrivalNs);
+    const state = buildExecutionState(request);
+    this.requests.push(request);
+    this.states.set(plan.executionId, state);
+    this.sequencer.registerExecution(
+      plan.executionId,
+      plan.topologyEpoch,
+      collectiveCounts(plan),
+    );
+    state.admitted = true;
+    const admission = admissionFor(request);
+    this.admissions.push(admission);
+    this.lastAdmissionNs = arrivalNs;
+    this.submitReady(arrivalNs);
+    return admission;
+  }
+
+  runUntilStep(
+    executionId: string,
+    stepId: number,
+  ): StreamingPlanStepCompletion {
+    const state = this.states.get(executionId);
+    if (!state?.stepMap.has(stepId)) {
+      throw new FrozenPlanExecutionError(
+        `unknown streaming step ${executionId}/${stepId}`,
+      );
+    }
+    while (!state.completedSteps.has(stepId)) {
+      const processed = this.simulator.runNext(
+        (scheduled, activeSimulator) => {
+          this.completeStep(scheduled.payload, activeSimulator.nowNs);
+          this.submitReady(activeSimulator.nowNs);
+        },
+      );
+      if (!processed) {
+        throw new FrozenPlanExecutionError(
+          `streaming execution quiesced before ${executionId}/${stepId}`,
+        );
+      }
+    }
+    const event = state.localOperations.find(
+      (operation) => operation.stepId === stepId,
+    );
+    if (event === undefined) {
+      throw new FrozenPlanExecutionError(
+        `streaming completion for ${executionId}/${stepId} is inconsistent`,
+      );
+    }
+    return { executionId, stepId, completedAtNs: event.finishNs };
+  }
+
+  drain(): ConcurrentPlanExecutionResult {
+    if (this.requests.length === 0) {
+      throw new FrozenPlanExecutionError(
+        "streaming execution requires at least one admitted plan",
+      );
+    }
+    this.runCompletionsThrough();
+    const unfinished = [...this.states.values()].filter(
+      (state) => !state.result,
+    );
+    if (unfinished.length > 0) {
+      throw new FrozenPlanExecutionError(
+        `streaming execution quiesced with unfinished plans: ${
+          unfinished.map(
+            (state) => state.request.plan.executionId,
+          ).join(", ")
+        }`,
+      );
+    }
+    const executions = this.requests.map((request) => {
+      const result = this.states.get(request.plan.executionId)?.result;
+      if (!result) {
+        throw new FrozenPlanExecutionError(
+          `missing result for ${request.plan.executionId}`,
+        );
+      }
+      return result;
+    });
+    const completedAtNs = executions.reduce(
+      (maximum, execution) => Math.max(maximum, execution.completedAtNs),
+      0,
+    );
+    const terminals = [...this.terminals].sort(
+      compareTerminals(this.requests),
+    );
+    return {
+      completedAtNs,
+      maximumConcurrentExecutions: maximumConcurrency(
+        this.admissions,
+        terminals,
+      ),
+      executions,
+      trace: {
+        revision: CONCURRENT_PLAN_TRACE_REVISION,
+        admissions: [...this.admissions],
+        operations: [...this.operations],
+        terminals,
+      },
+    };
+  }
+
+  private submitReady(submittedAtNs: number): void {
     while (true) {
-      const candidates = [...states.values()]
+      const candidates = [...this.states.values()]
         .filter((state) => state.admitted && !state.result)
         .flatMap((state) => state.ready.map((stepId) => ({ state, stepId })))
         .sort(compareReadyCandidates);
@@ -149,7 +275,7 @@ export function executeConcurrentFrozenPlans(
         }
         if (
           step.operation.kind === "collective"
-          && !sequencer.canSubmit(
+          && !this.sequencer.canSubmit(
             candidate.state.request.plan.executionId,
             step.operation.groupId,
             step.operation.commSequenceId,
@@ -165,7 +291,7 @@ export function executeConcurrentFrozenPlans(
         }
         candidate.state.ready.splice(readyIndex, 1);
         if (step.operation.kind === "collective") {
-          sequencer.submit(
+          this.sequencer.submit(
             candidate.state.request.plan.executionId,
             step.operation.groupId,
             step.operation.commSequenceId,
@@ -173,17 +299,17 @@ export function executeConcurrentFrozenPlans(
         }
         const resources = selectResourceReservations(
           step.operation,
-          resourceLanes,
+          this.resourceLanes,
         );
         const resourceReadyNs = Math.max(
           submittedAtNs,
           ...resources.map((reservation) => (
-            resourceLanes.get(reservation.resourceId)?.[
+            this.resourceLanes.get(reservation.resourceId)?.[
               reservation.resourceLane
             ] ?? 0
           )),
         );
-        const startNs = leases.earliestStart(
+        const startNs = this.leases.earliestStart(
           step,
           resourceReadyNs,
           step.operation.durationNs,
@@ -193,13 +319,13 @@ export function executeConcurrentFrozenPlans(
           step.operation.durationNs,
           `step ${step.id} finish`,
         );
-        leases.reserve(
+        this.leases.reserve(
           candidate.state.request.plan.executionId,
           step,
           startNs,
           finishNs,
         );
-        reserveResources(resourceLanes, resources, finishNs);
+        reserveResources(this.resourceLanes, resources, finishNs);
         const event = buildTraceEvent(
           candidate.state.request.plan,
           step,
@@ -210,11 +336,11 @@ export function executeConcurrentFrozenPlans(
           resources,
         );
         candidate.state.localOperations.push(event);
-        operations.push({
-          globalSequence: operations.length,
+        this.operations.push({
+          globalSequence: this.operations.length,
           event,
         });
-        simulator.scheduleAt(finishNs, {
+        this.simulator.scheduleAt(finishNs, {
           executionId: candidate.state.request.plan.executionId,
           stepId: step.id,
         });
@@ -225,13 +351,13 @@ export function executeConcurrentFrozenPlans(
         return;
       }
     }
-  };
+  }
 
-  const completeStep = (
+  private completeStep(
     completion: CompletionEvent,
     completedAtNs: number,
-  ): void => {
-    const state = states.get(completion.executionId);
+  ): void {
+    const state = this.states.get(completion.executionId);
     const step = state?.stepMap.get(completion.stepId);
     if (!state || !step || state.completedSteps.has(completion.stepId)) {
       throw new FrozenPlanExecutionError(
@@ -254,83 +380,33 @@ export function executeConcurrentFrozenPlans(
       }
     }
     if (state.completedSteps.size === state.request.plan.steps.length) {
-      sequencer.completeExecution(state.request.plan.executionId);
+      this.sequencer.completeExecution(state.request.plan.executionId);
       state.result = successfulExecutionResult(state, completedAtNs);
-      terminals.push(state.result.trace.terminal);
+      this.terminals.push(state.result.trace.terminal);
     }
-  };
+  }
 
-  const runCompletionsThrough = (untilNs?: number): void => {
-    simulator.run((scheduled, activeSimulator) => {
-      completeStep(scheduled.payload, activeSimulator.nowNs);
-      submitReady(activeSimulator.nowNs);
+  private runCompletionsThrough(untilNs?: number): void {
+    this.simulator.run((scheduled, activeSimulator) => {
+      this.completeStep(scheduled.payload, activeSimulator.nowNs);
+      this.submitReady(activeSimulator.nowNs);
     }, {
       ...(untilNs === undefined ? {} : { untilNs }),
-      maxEvents: scenario.execution.maxEvents,
+      maxEvents: this.scenario.execution.maxEvents,
     });
-  };
-
-  let requestIndex = 0;
-  while (requestIndex < ordered.length) {
-    const arrivalNs = ordered[requestIndex].arrivalNs;
-    runCompletionsThrough(arrivalNs);
-    while (
-      requestIndex < ordered.length
-      && ordered[requestIndex].arrivalNs === arrivalNs
-    ) {
-      const request = ordered[requestIndex];
-      const state = states.get(request.plan.executionId);
-      if (!state || state.admitted) {
-        throw new FrozenPlanExecutionError(
-          `duplicate admission ${request.plan.executionId}`,
-        );
-      }
-      sequencer.registerExecution(
-        request.plan.executionId,
-        request.plan.topologyEpoch,
-        collectiveCounts(request.plan),
-      );
-      state.admitted = true;
-      admissions.push(admissionFor(request));
-      requestIndex++;
-    }
-    submitReady(arrivalNs);
   }
-  runCompletionsThrough();
+}
 
-  const unfinished = [...states.values()].filter((state) => !state.result);
-  if (unfinished.length > 0) {
-    throw new FrozenPlanExecutionError(
-      `concurrent execution quiesced with unfinished plans: ${
-        unfinished.map((state) => state.request.plan.executionId).join(", ")
-      }`,
-    );
+export function executeConcurrentFrozenPlans(
+  scenario: SimulationScenario,
+  requests: readonly ConcurrentPlanRequest[],
+): ConcurrentPlanExecutionResult {
+  const ordered = validateConcurrentRequests(scenario, requests);
+  const runtime = new StreamingConcurrentPlanRuntime(scenario);
+  for (const request of ordered) {
+    runtime.admit(request.plan, request.arrivalNs);
   }
-  const executions = ordered.map((request) => {
-    const result = states.get(request.plan.executionId)?.result;
-    if (!result) {
-      throw new FrozenPlanExecutionError(
-        `missing result for ${request.plan.executionId}`,
-      );
-    }
-    return result;
-  });
-  const completedAtNs = executions.reduce(
-    (maximum, execution) => Math.max(maximum, execution.completedAtNs),
-    0,
-  );
-  terminals.sort(compareTerminals(ordered));
-  return {
-    completedAtNs,
-    maximumConcurrentExecutions: maximumConcurrency(admissions, terminals),
-    executions,
-    trace: {
-      revision: CONCURRENT_PLAN_TRACE_REVISION,
-      admissions,
-      operations,
-      terminals,
-    },
-  };
+  return runtime.drain();
 }
 
 export function executeConcurrentNodeFailure(

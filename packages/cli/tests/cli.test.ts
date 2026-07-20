@@ -353,6 +353,10 @@ expert_cache:
         routes: number;
         replayAppliedEvents: number;
       };
+      physical: {
+        maximumConcurrentExecutions: number;
+        replayAppliedEvents: number;
+      };
     };
     expect(output.serving.metrics).toMatchObject({
       outputTokens: 10,
@@ -372,6 +376,8 @@ expert_cache:
     expect(output.expertCache.metrics.hotHits)
       .toBe(output.expertCache.routes - 1);
     expect(output.expertCache.replayAppliedEvents).toBeGreaterThan(0);
+    expect(output.physical.maximumConcurrentExecutions).toBeGreaterThan(0);
+    expect(output.physical.replayAppliedEvents).toBeGreaterThan(0);
   });
 
   it("compares one serving workload across all topology presets", async () => {

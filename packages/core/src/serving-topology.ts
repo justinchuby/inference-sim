@@ -28,6 +28,16 @@ import {
   type TopologyWorkloadProfile,
   type TopologyWorkloadResult,
 } from "./topology-workload.js";
+import {
+  StreamingConcurrentPlanRuntime,
+  replayConcurrentPlanTrace,
+  type ConcurrentPlanExecutionResult,
+  type ConcurrentPlanReplayResult,
+  type ConcurrentPlanRequest,
+} from "./concurrent-plan.js";
+import type {
+  FrozenPlanExecutionResult,
+} from "./plan-types.js";
 
 export const SERVING_EXPERT_CACHE_CONTRACT_REVISION = 1;
 
@@ -53,8 +63,15 @@ export interface TopologyServingBatchResult {
   readonly durationNs: number;
   readonly cacheConstraintNs: number;
   readonly expertRoutes: readonly ExpertRouteResult[];
+  readonly foregroundCompletedAtNs: number;
+  readonly physicalExecution?: FrozenPlanExecutionResult;
   readonly work: ServingBatchWork;
   readonly topology: TopologyWorkloadResult;
+}
+
+export interface TopologyServingPhysicalResult {
+  readonly execution: ConcurrentPlanExecutionResult;
+  readonly replay: ConcurrentPlanReplayResult;
 }
 
 export interface TopologyServingMetrics {
@@ -80,6 +97,7 @@ export interface TopologyServingResult {
   readonly serving: ServingSimulationResult;
   readonly batches: readonly TopologyServingBatchResult[];
   readonly expertCache?: TopologyServingExpertCacheResult;
+  readonly physical?: TopologyServingPhysicalResult;
   readonly metrics: TopologyServingMetrics;
 }
 
@@ -136,6 +154,10 @@ export function simulateTopologyServingWorkload(
   const expertCache = expertCacheConfig === undefined
     ? undefined
     : new ExpertCacheSimulator(expertCacheConfig.cache);
+  const physicalRuntime = expertCacheConfig === undefined
+    ? undefined
+    : new StreamingConcurrentPlanRuntime(scenario);
+  const physicalRequests: ConcurrentPlanRequest[] = [];
   const expertRoutes: ExpertRouteResult[] = [];
   let nextExpertTokenIndex = 0;
   const estimateDuration = (
@@ -192,8 +214,23 @@ export function simulateTopologyServingWorkload(
           ),
       costModel,
     );
+    let foregroundCompletedAtNs = startedAtNs
+      + topology.metrics.foregroundDurationNs;
+    if (physicalRuntime !== undefined) {
+      physicalRuntime.admit(topology.plan, startedAtNs);
+      physicalRequests.push({
+        plan: topology.plan,
+        arrivalNs: startedAtNs,
+        admissionOrder: physicalRequests.length,
+      });
+      foregroundCompletedAtNs = physicalRuntime.runUntilStep(
+        topology.plan.executionId,
+        topology.foregroundTerminalStepId,
+      ).completedAtNs;
+    }
+    const physicalForegroundNs = foregroundCompletedAtNs - startedAtNs;
     const durationNs = Math.max(
-      topology.metrics.totalDurationNs,
+      physicalForegroundNs,
       cacheConstraintNs,
     );
     batches.set(work.batchId, {
@@ -202,15 +239,36 @@ export function simulateTopologyServingWorkload(
       durationNs,
       cacheConstraintNs,
       expertRoutes: batchExpertRoutes,
+      foregroundCompletedAtNs,
       work,
       topology,
     });
     return durationNs;
   };
   const serving = simulateServingWorkload(config, estimateDuration);
+  const physical = physicalRuntime === undefined
+    ? undefined
+    : buildPhysicalResult(
+        scenario,
+        physicalRuntime,
+        physicalRequests,
+      );
+  const physicalByExecution = new Map(
+    physical?.execution.executions.map((execution) => [
+      execution.executionId,
+      execution,
+    ]) ?? [],
+  );
   const orderedBatches = [...batches.values()].sort(
     (left, right) => left.batchId - right.batchId,
-  );
+  ).map((batch) => {
+    const physicalExecution = physicalByExecution.get(
+      batch.topology.plan.executionId,
+    );
+    return physicalExecution === undefined
+      ? batch
+      : { ...batch, physicalExecution };
+  });
   const resourceBusy = new Map<string, {
     busyNs: number;
     capacityLanes: number;
@@ -282,7 +340,10 @@ export function simulateTopologyServingWorkload(
         : "expert routes preserve cache state across batches; routes within each batch are serialized conservatively",
       expertCache === undefined
         ? "batch duration is determined by topology execution"
-        : "composed batch duration is the maximum of topology execution and the expert-cache readiness constraint; demand transfer is not added twice",
+        : "composed batch duration is the maximum of global foreground completion and the expert-cache readiness constraint; demand transfer is not added twice",
+      expertCache === undefined
+        ? "batch plans use isolated relative-time execution"
+        : "composed batch plans share one absolute-time resource, lease, and collective timeline through final drain",
       "batch plans execute serially while resources inside each plan retain declared concurrency",
     ],
     serving,
@@ -290,6 +351,7 @@ export function simulateTopologyServingWorkload(
     ...(expertCacheResult === undefined
       ? {}
       : { expertCache: expertCacheResult }),
+    ...(physical === undefined ? {} : { physical }),
     metrics: {
       totalDurationNs,
       batchServiceNs: serving.metrics.batchServiceNs,
@@ -318,6 +380,20 @@ export function simulateTopologyServingWorkload(
         )),
     },
   };
+}
+
+function buildPhysicalResult(
+  scenario: SimulationScenario,
+  runtime: StreamingConcurrentPlanRuntime,
+  requests: readonly ConcurrentPlanRequest[],
+): TopologyServingPhysicalResult {
+  const execution = runtime.drain();
+  const replay = replayConcurrentPlanTrace(
+    scenario,
+    requests,
+    execution.trace,
+  );
+  return { execution, replay };
 }
 
 export function compareTopologyServingWorkloads(

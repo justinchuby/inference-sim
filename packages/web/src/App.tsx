@@ -1209,6 +1209,9 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
           {result.serving && result.expertCache
             ? <Badge variant="neutral">stateful expert cache</Badge>
             : null}
+          {result.serving?.physicalReplayEvents
+            ? <Badge variant="neutral">global resource replay</Badge>
+            : null}
           {result.serving && result.serving.decodeMode !== "target_only"
             ? (
                 <Badge variant={result.serving.support === "design_only"
