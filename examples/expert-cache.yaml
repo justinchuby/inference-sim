@@ -1,0 +1,27 @@
+expert_cache:
+  hot_capacity_bytes: 201326592
+  warm_capacity_bytes: 402653184
+  warm_to_hot_latency_ns: 400000
+  cold_to_hot_latency_ns: 2200000
+  cold_to_warm_latency_ns: 1500000
+  routing_seed: 17
+  initial_hot_expert_ids: [expert-0, expert-1]
+  initial_warm_expert_ids: [expert-2, expert-3]
+  experts:
+    - { id: expert-0, bytes: 67108864, routing_weight: 1.4 }
+    - { id: expert-1, bytes: 67108864, routing_weight: 1.2 }
+    - { id: expert-2, bytes: 67108864, routing_weight: 1.0 }
+    - { id: expert-3, bytes: 67108864, routing_weight: 0.9 }
+    - { id: expert-4, bytes: 67108864, routing_weight: 0.8 }
+    - { id: expert-5, bytes: 67108864, routing_weight: 0.7 }
+
+initial_prefetch:
+  target_tier: warm
+  expert_ids: [expert-4, expert-5]
+  lead_time_ns: 1500000
+
+workload:
+  token_count: 16
+  top_k: 2
+  start_at_ns: 0
+  token_interval_ns: 250000

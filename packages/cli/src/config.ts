@@ -90,3 +90,44 @@ export function requireNumberArray(
   }
   return value;
 }
+
+export function requireStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): string[] {
+  const value = record[key];
+  if (
+    !Array.isArray(value)
+    || value.some((entry) => typeof entry !== "string" || entry.length === 0)
+  ) {
+    throw new Error(`${path}.${key} must be an array of non-empty strings`);
+  }
+  return value;
+}
+
+export function optionalStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  fallback: readonly string[],
+  path: string,
+): string[] {
+  if (record[key] === undefined) {
+    return [...fallback];
+  }
+  return requireStringArray(record, key, path);
+}
+
+export function requireRecordArray(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+): Record<string, unknown>[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}.${key} must be an array`);
+  }
+  return value.map((entry, index) => (
+    requireRecord(entry, `${path}.${key}[${index}]`)
+  ));
+}

@@ -373,6 +373,31 @@ proposer/verification/rollback time, rejected compute and communication,
 target/proposer KV high-water marks, and speedup versus a target-only simulation
 using the same resource model.
 
+### 9.7 Expert Routing and Cache Tiers
+
+MoE routing samples weighted experts without replacement using a fixed,
+trace-replayable seed. A route cannot select the same expert twice for one
+token, and the complete routed working set must fit the hot-cache byte
+capacity.
+
+Cold storage is the authoritative expert-weight backing store. Warm and hot
+tiers are independent cache copies, so one expert may be present in both.
+Loads retain the source copy and reserve exact target-tier bytes before
+transfer completion. Resident plus reserved bytes may never exceed capacity.
+Completed copies become visible only at their deterministic completion event.
+
+Eviction is byte-capacity LRU with expert identity as the stable tie-breaker.
+Experts selected by an in-flight route are protected until access. Prefetch is
+asynchronous, deduplicates target copies, and fails atomically if the complete
+request cannot be reserved; demand routing likewise cannot consume RNG or emit
+a partial route when admission fails.
+
+The trace records routes, prefetch requests, evictions, load start/completion,
+source tier, and access stalls. Independent replay re-derives seeded routes,
+LRU victims, latency, capacity, and route-to-access correspondence. Metrics
+include hot/warm/cold outcomes, bytes moved, evictions, load counts, stall time,
+and per-tier high-water bytes.
+
 ## 10. Device Configuration Coverage
 
 Device configurations are composed from memory domains, compute devices,
@@ -630,7 +655,7 @@ Exit criteria:
 
 Status: complete. The initial slice had 21 tests across static analysis, event
 ordering, pressure protocol/replay, trace mutation, and speculative
-checkpoint/restore boundaries. The total suite has since grown to 64 tests.
+checkpoint/restore boundaries. The total suite has since grown to 74 tests.
 
 ### Phase 2: FrozenPlan, Communicator, and Topology Composition
 
@@ -691,9 +716,12 @@ draft, and committed-token-per-target-forward metrics. Paged target KV now
 models exact byte capacity, stable non-reused physical page identities,
 checkpoint-relative accepted-prefix restore, logical tail masking, allocation
 and release metrics, and independent trace replay; the speculative workload
-checks that its final KV length matches committed target state. Timing/resource
-plans, family-specific eligibility/state, expert-cache dynamics, request
-batching, and differential token-value traces remain.
+checks that its final KV length matches committed target state. Expert-cache
+workloads now model seeded weighted routing without replacement, exact
+hot/warm byte capacities and reservations, deterministic LRU eviction,
+asynchronous initial prefetch, stalls, metrics, and independent replay.
+Timing/resource plans, family-specific eligibility/state, adaptive prefetch
+policy, request batching, and differential token-value traces remain.
 
 ### Phase 4: Product Surfaces
 
@@ -707,6 +735,7 @@ The CLI and web UI consume core APIs; they do not own simulation semantics.
 Status: in progress. The initial CLI lists presets, materializes built-in
 scenarios and exact memory ledgers, validates scenario YAML/JSON, runs the
 legacy static-analysis examples, and executes speculative workload configs.
+It also executes exact-capacity expert-cache workload configs.
 Compare/search, FrozenPlan file execution/export, ONNX import, progress/abort
 control, and the browser worker/UI remain.
 

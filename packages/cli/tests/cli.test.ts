@@ -90,4 +90,39 @@ speculative:
     expect(await runCli(["scenario", "does-not-exist"], capture.io)).toBe(1);
     expect(capture.stderr()).toContain("unknown scenario preset");
   });
+
+  it("runs an exact-capacity expert-cache workload", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "expert-cache.yaml");
+    await writeFile(path, `
+expert_cache:
+  hot_capacity_bytes: 128
+  warm_capacity_bytes: 128
+  warm_to_hot_latency_ns: 5
+  cold_to_hot_latency_ns: 20
+  cold_to_warm_latency_ns: 12
+  routing_seed: 7
+  initial_hot_expert_ids: [e0]
+  experts:
+    - { id: e0, bytes: 64 }
+    - { id: e1, bytes: 64 }
+    - { id: e2, bytes: 64 }
+workload:
+  token_count: 3
+  top_k: 2
+  token_interval_ns: 10
+`, "utf8");
+    const capture = captureIo();
+    expect(await runCli(["expert-cache", path], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      routes: unknown[];
+      snapshot: {
+        metrics: { routes: number };
+        hotResidentBytes: number;
+      };
+    };
+    expect(output.routes).toHaveLength(3);
+    expect(output.snapshot.metrics.routes).toBe(3);
+    expect(output.snapshot.hotResidentBytes).toBeLessThanOrEqual(128);
+  });
 });

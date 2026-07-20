@@ -90,6 +90,28 @@ export {
   type PagedKvTraceEvent,
 } from "./paged-kv.js";
 export {
+  EXPERT_CACHE_CONTRACT_REVISION,
+  ExpertCacheProtocolError,
+  ExpertCacheReplayError,
+  ExpertCacheSimulator,
+  replayExpertCacheTrace,
+  simulateExpertCacheWorkload,
+  type ExpertCacheConfig,
+  type ExpertCacheMetrics,
+  type ExpertCacheReplayResult,
+  type ExpertCacheSnapshot,
+  type ExpertCacheTier,
+  type ExpertCacheTraceEvent,
+  type ExpertCacheWorkloadConfig,
+  type ExpertCacheWorkloadResult,
+  type ExpertLoadKind,
+  type ExpertLoadTarget,
+  type ExpertPendingLoadSnapshot,
+  type ExpertRouteRequest,
+  type ExpertRouteResult,
+  type ExpertSpec,
+} from "./expert-cache.js";
+export {
   SCENARIO_SCHEMA_VERSION,
   type AllocationClass,
   type AllocationReservation,

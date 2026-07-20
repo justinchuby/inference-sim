@@ -8,7 +8,10 @@ import {
   calculateScenarioMemoryLedger,
   listModelPresets,
   listPresets,
+  simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  type ExpertCacheWorkloadConfig,
+  type ExpertLoadTarget,
   validateScenario,
   type MemoryPolicyConfig,
   type ParallelismConfig,
@@ -22,11 +25,14 @@ import {
 import {
   optionalNumber,
   optionalString,
+  optionalStringArray,
   readConfigFile,
   requireNumber,
   requireNumberArray,
+  requireRecordArray,
   requireRecord,
   requireString,
+  requireStringArray,
 } from "./config.js";
 
 export interface CliIo {
@@ -90,6 +96,14 @@ export async function runCli(
         printJson(
           io,
           simulateSpeculativeWorkload(parseSpeculativeConfig(config)),
+        );
+        return 0;
+      }
+      case "expert-cache": {
+        const config = await loadRequiredConfig(argument, "expert-cache");
+        printJson(
+          io,
+          simulateExpertCacheWorkload(parseExpertCacheConfig(config)),
         );
         return 0;
       }
@@ -285,6 +299,105 @@ function parseSpeculativeConfig(
   };
 }
 
+function parseExpertCacheConfig(
+  config: Record<string, unknown>,
+): ExpertCacheWorkloadConfig {
+  const cache = requireRecord(config.expert_cache, "expert_cache");
+  const workload = requireRecord(config.workload, "workload");
+  const experts = requireRecordArray(
+    cache,
+    "experts",
+    "expert_cache",
+  ).map((expert, index) => ({
+    id: requireString(expert, "id", `expert_cache.experts[${index}]`),
+    bytes: requireNumber(expert, "bytes", `expert_cache.experts[${index}]`),
+    routingWeight: optionalNumber(
+      expert,
+      "routing_weight",
+      1,
+      `expert_cache.experts[${index}]`,
+    ),
+  }));
+  const prefetch = config.initial_prefetch === undefined
+    ? undefined
+    : requireRecord(config.initial_prefetch, "initial_prefetch");
+  return {
+    cache: {
+      experts,
+      hotCapacityBytes: requireNumber(
+        cache,
+        "hot_capacity_bytes",
+        "expert_cache",
+      ),
+      warmCapacityBytes: requireNumber(
+        cache,
+        "warm_capacity_bytes",
+        "expert_cache",
+      ),
+      warmToHotLatencyNs: requireNumber(
+        cache,
+        "warm_to_hot_latency_ns",
+        "expert_cache",
+      ),
+      coldToHotLatencyNs: requireNumber(
+        cache,
+        "cold_to_hot_latency_ns",
+        "expert_cache",
+      ),
+      coldToWarmLatencyNs: requireNumber(
+        cache,
+        "cold_to_warm_latency_ns",
+        "expert_cache",
+      ),
+      routingSeed: optionalNumber(
+        cache,
+        "routing_seed",
+        42,
+        "expert_cache",
+      ),
+      initialHotExpertIds: optionalStringArray(
+        cache,
+        "initial_hot_expert_ids",
+        [],
+        "expert_cache",
+      ),
+      initialWarmExpertIds: optionalStringArray(
+        cache,
+        "initial_warm_expert_ids",
+        [],
+        "expert_cache",
+      ),
+    },
+    tokenCount: requireNumber(workload, "token_count", "workload"),
+    topK: requireNumber(workload, "top_k", "workload"),
+    startAtNs: optionalNumber(workload, "start_at_ns", 0, "workload"),
+    tokenIntervalNs: requireNumber(
+      workload,
+      "token_interval_ns",
+      "workload",
+    ),
+    ...(prefetch
+      ? {
+          initialPrefetch: {
+            expertIds: requireStringArray(
+              prefetch,
+              "expert_ids",
+              "initial_prefetch",
+            ),
+            targetTier: requireLoadTarget(
+              requireString(prefetch, "target_tier", "initial_prefetch"),
+            ),
+            leadTimeNs: requireNumber(
+              prefetch,
+              "lead_time_ns",
+              "initial_prefetch",
+            ),
+          },
+        }
+      : {}),
+  };
+}
+
 function parseAcceptance(
   config: Record<string, unknown>,
 ): SpeculativeAcceptanceModel {
@@ -337,6 +450,13 @@ function requireOffloadStrategy(
   return value;
 }
 
+function requireLoadTarget(value: string): ExpertLoadTarget {
+  if (value !== "hot" && value !== "warm") {
+    throw new Error(`unsupported expert load target ${value}`);
+  }
+  return value;
+}
+
 function printJson(io: CliIo, value: unknown): void {
   io.stdout(`${JSON.stringify(value, (_key, entry) => (
     typeof entry === "number" && !Number.isFinite(entry)
@@ -354,6 +474,7 @@ Usage:
   inference-sim validate <scenario.yaml|json>
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
+  inference-sim expert-cache <config.yaml|json>
 `;
 }
 
