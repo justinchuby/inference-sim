@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
+  defaultSpeculativeEligibility,
   simulateTopologyServingWorkload,
   type ServingSchedulerConfig,
+  type SpeculativeProposerFamily,
 } from "../src/index.js";
 
 const workload: ServingSchedulerConfig = {
@@ -17,6 +19,15 @@ const workload: ServingSchedulerConfig = {
   prefillChunkTokens: 4,
   maxKvTokens: 32,
 };
+
+const FAMILIES: readonly SpeculativeProposerFamily[] = [
+  "prompt_lookup",
+  "draft_model",
+  "mtp",
+  "eagle3",
+  "shared_kv",
+  "self_speculative",
+];
 
 describe("topology-aware serving", () => {
   it("executes and replays dynamic batches on every topology family", () => {
@@ -77,5 +88,52 @@ describe("topology-aware serving", () => {
     expect(result.batches.map((batch) => (
       batch.topology.metrics.committedTokens
     ))).toEqual([0, 0, 1]);
+  });
+
+  it("executes speculative serving for every proposer and topology family", () => {
+    const requests = [
+      { id: "r0", arrivalNs: 0, promptTokens: 4, outputTokens: 6 },
+      { id: "r1", arrivalNs: 50_000, promptTokens: 6, outputTokens: 6 },
+    ];
+    for (const family of FAMILIES) {
+      const config: ServingSchedulerConfig = {
+        requests,
+        maxBatchSize: 2,
+        maxBatchTokens: 8,
+        prefillChunkTokens: 4,
+        maxKvTokens: 22,
+        speculative: {
+          family,
+          eligibility: defaultSpeculativeEligibility(family),
+          maxAdditionalTokens: 2,
+          acceptance: {
+            kind: "conditional_empirical",
+            matchProbabilityByPosition: [0.8, 0.6],
+            seed: 17,
+          },
+        },
+      };
+      for (const scenarioName of SCENARIO_PRESET_NAMES) {
+        const result = simulateTopologyServingWorkload(
+          buildScenarioPreset(scenarioName),
+          config,
+        );
+        expect(
+          result.serving.metrics.outputTokens,
+          `${family}:${scenarioName}`,
+        ).toBe(12);
+        expect(
+          result.serving.metrics.proposedDraftTokens,
+          `${family}:${scenarioName}`,
+        ).toBeGreaterThan(0);
+        expect(
+          result.serving.replay.finalKvTokens,
+          `${family}:${scenarioName}`,
+        ).toBe(0);
+        expect(result.batches.every((batch) => (
+          batch.topology.execution.status === "succeeded"
+        )), `${family}:${scenarioName}`).toBe(true);
+      }
+    }
   });
 });

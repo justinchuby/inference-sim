@@ -53,7 +53,7 @@ export function simulateDashboard(
           sequenceCount: batch.work.sequenceCount,
           tokenWork: batch.work.tokenWork,
           prefillSequences: batch.work.prefill.length,
-          decodeSequences: batch.work.decodeRequestIds.length,
+          decodeSequences: batch.work.decode.length,
           durationNs: batch.topology.metrics.totalDurationNs,
         })),
       },

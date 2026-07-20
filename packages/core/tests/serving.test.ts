@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ServingProtocolError,
+  defaultSpeculativeEligibility,
   replayServingTrace,
   simulateServingWorkload,
   type ServingBatchDurationEstimator,
@@ -60,7 +61,7 @@ describe("continuous serving scheduler", () => {
     ]);
     expect(starts.some((event) => (
       event.kind === "batch_start"
-      && event.batch.decodeRequestIds.length > 0
+      && event.batch.decode.length > 0
       && event.batch.prefill.length > 0
     ))).toBe(true);
     expect(result.requests.every((request) => (
@@ -138,5 +139,114 @@ describe("continuous serving scheduler", () => {
     }, duration)).toThrow("requires 8 KV tokens");
     expect(() => simulateServingWorkload(config(), () => 0))
       .toThrowError(ServingProtocolError);
+  });
+
+  it("commits speculative bursts through per-request transactions", () => {
+    const speculative: ServingSchedulerConfig = {
+      requests: [
+        { id: "bonus", arrivalNs: 0, promptTokens: 4, outputTokens: 5 },
+        { id: "mixed", arrivalNs: 0, promptTokens: 4, outputTokens: 5 },
+      ],
+      maxBatchSize: 2,
+      maxBatchTokens: 6,
+      prefillChunkTokens: 4,
+      maxKvTokens: 16,
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 2,
+        acceptance: {
+          kind: "replay",
+          acceptedDraftTokensByRequest: {
+            bonus: [2],
+            mixed: [0, 2],
+          },
+        },
+      },
+    };
+    const result = simulateServingWorkload(speculative, duration);
+    const decode = result.trace.flatMap((event) => (
+      event.kind === "batch_start" ? event.batch.decode : []
+    ));
+
+    expect(result.replay.completedRequests).toBe(2);
+    expect(result.metrics).toMatchObject({
+      outputTokens: 10,
+      decodeTokens: 8,
+      targetForwards: 4,
+      targetVerificationTokens: 10,
+      proposedDraftTokens: 6,
+      acceptedDraftTokens: 4,
+      rejectedDraftTokens: 2,
+      committedTokensPerTargetForward: 2,
+    });
+    expect(decode.map((entry) => entry.outcome)).toEqual([
+      "bonus",
+      "target_only",
+      "correction",
+      "bonus",
+    ]);
+    expect(result.trace.some((event) => (
+      event.kind === "batch_finish"
+      && event.emittedTokens.some((token) => (
+        token.source === "speculative_accepted"
+      ))
+      && event.emittedTokens.some((token) => (
+        token.source === "speculative_authoritative"
+      ))
+    ))).toBe(true);
+    expect(result.requests.every((request) => (
+      request.tokenTimestampsNs.length === 5
+    ))).toBe(true);
+  });
+
+  it("rejects a mutated speculative accepted prefix during replay", () => {
+    const speculative: ServingSchedulerConfig = {
+      requests: [
+        { id: "request", arrivalNs: 0, promptTokens: 4, outputTokens: 4 },
+      ],
+      maxBatchSize: 1,
+      maxBatchTokens: 4,
+      prefillChunkTokens: 4,
+      maxKvTokens: 7,
+      speculative: {
+        family: "mtp",
+        eligibility: defaultSpeculativeEligibility("mtp"),
+        maxAdditionalTokens: 2,
+        acceptance: {
+          kind: "replay",
+          acceptedDraftTokensByRequest: { request: [1, 0] },
+        },
+      },
+    };
+    const result = simulateServingWorkload(speculative, duration);
+    const index = result.trace.findIndex((event) => (
+      event.kind === "batch_start" && event.batch.decode.length > 0
+    ));
+    const event = result.trace[index];
+    if (event?.kind !== "batch_start" || event.batch.decode[0] === undefined) {
+      throw new Error("missing speculative batch");
+    }
+    const firstDecode = event.batch.decode[0];
+    const mutated = result.trace.map((entry, entryIndex) => (
+      entryIndex === index
+        ? {
+            ...event,
+            batch: {
+              ...event.batch,
+              decode: [{
+                ...firstDecode,
+                acceptedDraftTokens: 0,
+                committedTokens: 1,
+                outcome: "correction" as const,
+              }],
+              expectedOutputTokens: 1,
+            },
+          }
+        : entry
+    ));
+
+    expect(() => replayServingTrace(speculative, mutated, duration))
+      .toThrow("violates scheduler decision");
   });
 });

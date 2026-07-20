@@ -17,23 +17,13 @@ import {
   type SpeculativeFamilyContract,
   type SpeculativeProposerFamily,
 } from "./speculative-family.js";
+import {
+  SpeculativeAcceptanceCursor,
+  validateAcceptanceCoverage,
+  type SpeculativeAcceptanceModel,
+} from "./speculative-acceptance.js";
 export type { SpeculativeProposerFamily } from "./speculative-family.js";
-
-export type SpeculativeAcceptanceModel =
-  | {
-      readonly kind: "replay";
-      readonly acceptedDraftTokens: readonly number[];
-    }
-  | {
-      readonly kind: "conditional_empirical";
-      readonly matchProbabilityByPosition: readonly number[];
-      readonly seed: number;
-    }
-  | {
-      readonly kind: "conditional_heuristic";
-      readonly matchProbabilityByPosition: readonly number[];
-      readonly seed: number;
-    };
+export type { SpeculativeAcceptanceModel } from "./speculative-acceptance.js";
 
 export interface SpeculativeWorkloadConfig {
   readonly family: SpeculativeProposerFamily;
@@ -129,9 +119,7 @@ export function simulateSpeculativeWorkload(
   const pagedKv = pagedKvConfig
     ? new PagedKvCacheSimulator(pagedKvConfig)
     : undefined;
-  const rng = config.acceptance.kind === "replay"
-    ? undefined
-    : new DeterministicRng(config.acceptance.seed);
+  const acceptance = new SpeculativeAcceptanceCursor(config.acceptance);
   const maxIterations = config.maxIterations
     ?? Math.max(1, config.outputTokenCount);
   const acceptedPrefixHistogram = Array.from(
@@ -164,12 +152,7 @@ export function simulateSpeculativeWorkload(
       config.maxAdditionalTokens,
       Math.max(0, remaining - 1),
     );
-    const accepted = chooseAcceptedPrefix(
-      config.acceptance,
-      rng,
-      iterations.length,
-      draftTokenCount,
-    );
+    const accepted = acceptance.next(draftTokenCount);
     const kvCheckpoint = pagedKv?.checkpoint();
     pagedKv?.append(draftTokenCount);
     const transactionResult = transaction.runIteration({
@@ -303,48 +286,6 @@ export function simulateSpeculativeWorkload(
   };
 }
 
-function chooseAcceptedPrefix(
-  model: SpeculativeAcceptanceModel,
-  rng: DeterministicRng | undefined,
-  iteration: number,
-  draftTokenCount: number,
-): number {
-  if (draftTokenCount === 0) {
-    return 0;
-  }
-  if (model.kind === "replay") {
-    const accepted = model.acceptedDraftTokens[iteration];
-    if (accepted === undefined) {
-      throw new SpeculativeWorkloadError(
-        `acceptance replay ended before iteration ${iteration}`,
-      );
-    }
-    if (
-      !Number.isSafeInteger(accepted)
-      || accepted < 0
-      || accepted > draftTokenCount
-    ) {
-      throw new SpeculativeWorkloadError(
-        `iteration ${iteration} accepted ${accepted} of ${draftTokenCount} drafts`,
-      );
-    }
-    return accepted;
-  }
-
-  if (!rng) {
-    throw new SpeculativeWorkloadError("conditional model lacks deterministic RNG");
-  }
-  let accepted = 0;
-  for (let position = 0; position < draftTokenCount; position++) {
-    const probability = model.matchProbabilityByPosition[position];
-    if (rng.nextFloat() >= probability) {
-      break;
-    }
-    accepted++;
-  }
-  return accepted;
-}
-
 function validateConfig(config: SpeculativeWorkloadConfig): void {
   assertNonNegative(config.initialTokenLength, "initialTokenLength");
   assertNonNegative(config.outputTokenCount, "outputTokenCount");
@@ -357,47 +298,10 @@ function validateConfig(config: SpeculativeWorkloadConfig): void {
       `maxIterations must be a positive safe integer; got ${config.maxIterations}`,
     );
   }
-  if (config.acceptance.kind !== "replay") {
-    assertNonNegative(config.acceptance.seed, "acceptance seed");
-    if (
-      config.acceptance.matchProbabilityByPosition.length
-      < config.maxAdditionalTokens
-    ) {
-      throw new SpeculativeWorkloadError(
-        "conditional acceptance probabilities do not cover the draft width",
-      );
-    }
-    for (
-      let position = 0;
-      position < config.maxAdditionalTokens;
-      position++
-    ) {
-      const probability =
-        config.acceptance.matchProbabilityByPosition[position];
-      if (!Number.isFinite(probability) || probability < 0 || probability > 1) {
-        throw new SpeculativeWorkloadError(
-          `acceptance probability at position ${position} must be in [0, 1]`,
-        );
-      }
-    }
-  }
-}
-
-class DeterministicRng {
-  private state: number;
-
-  constructor(seed: number) {
-    this.state = (seed >>> 0) || 0x9e3779b9;
-  }
-
-  nextFloat(): number {
-    let value = this.state;
-    value ^= value << 13;
-    value ^= value >>> 17;
-    value ^= value << 5;
-    this.state = value >>> 0;
-    return this.state / 0x1_0000_0000;
-  }
+  validateAcceptanceCoverage(
+    config.acceptance,
+    config.maxAdditionalTokens,
+  );
 }
 
 function assertNonNegative(value: number, label: string): void {

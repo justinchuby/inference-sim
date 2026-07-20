@@ -43,6 +43,7 @@ export {
   simulateServingWorkload,
   type ServingBatchDurationEstimator,
   type ServingBatchWork,
+  type ServingDecodeSlice,
   type ServingMetrics,
   type ServingPrefillSlice,
   type ServingReplayResult,
@@ -50,6 +51,8 @@ export {
   type ServingRequestSpec,
   type ServingSchedulerConfig,
   type ServingSimulationResult,
+  type ServingSpeculativeAcceptanceModel,
+  type ServingSpeculativeConfig,
   type ServingTokenEmission,
   type ServingTraceEvent,
 } from "./serving.js";
@@ -106,9 +109,14 @@ export {
   type SpeculativeProposerExecution,
 } from "./speculative-family.js";
 export {
+  SpeculativeAcceptanceCursor,
+  SpeculativeAcceptanceError,
+  validateAcceptanceCoverage,
+  type SpeculativeAcceptanceModel,
+} from "./speculative-acceptance.js";
+export {
   SpeculativeWorkloadError,
   simulateSpeculativeWorkload,
-  type SpeculativeAcceptanceModel,
   type SpeculativeProposerFamily,
   type SpeculativePagedKvResult,
   type SpeculativeWorkloadConfig,

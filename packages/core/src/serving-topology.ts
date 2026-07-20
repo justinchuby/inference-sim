@@ -4,6 +4,9 @@ import {
   type ServingSchedulerConfig,
   type ServingSimulationResult,
 } from "./serving.js";
+import {
+  speculativeFamilyContract,
+} from "./speculative-family.js";
 import type {
   ConfidenceClass,
   SimulationScenario,
@@ -48,7 +51,15 @@ export interface TopologyServingResult {
 
 export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
+  config?: ServingSchedulerConfig["speculative"],
 ): TopologyWorkloadProfile {
+  const draftTokens = batch.decode.reduce(
+    (sum, entry) => sum + entry.proposedDraftTokens,
+    0,
+  );
+  const family = config
+    ? speculativeFamilyContract(config.family)
+    : undefined;
   return {
     id: `serving-batch:${batch.batchId}`,
     batchSize: 1,
@@ -56,7 +67,13 @@ export function topologyProfileFromServingBatch(
       id: `batch-${batch.batchId}`,
       targetTokenWidth: batch.tokenWork,
       committedTokens: batch.expectedOutputTokens,
-      draftTokens: 0,
+      draftTokens,
+      ...(draftTokens > 0 && family
+        ? {
+            proposerExecution: family.execution,
+            proposerCostScale: family.proposerCostScale,
+          }
+        : {}),
       activeExperts: 1,
       warmLoadBytes: 0,
       coldLoadBytes: 0,
@@ -82,7 +99,7 @@ export function simulateTopologyServingWorkload(
     }
     const topology = simulateTopologyWorkload(
       scenario,
-      topologyProfileFromServingBatch(work),
+      topologyProfileFromServingBatch(work, config.speculative),
       costModel,
     );
     batches.set(work.batchId, { batchId: work.batchId, work, topology });
@@ -136,7 +153,10 @@ export function simulateTopologyServingWorkload(
     assumptions: [
       costModel.source,
       "continuous batches are non-preemptive; arrivals during a batch wait for its completion",
-      "prefill and decode token work share the topology model's linear per-token coefficient",
+      "prefill and target verification share the topology model's linear per-token coefficient",
+      config.speculative
+        ? `${config.speculative.family} proposals use per-request deterministic acceptance streams and transactional restore`
+        : "decode uses one target-authoritative token per sequence step",
       "batch plans execute serially while resources inside each plan retain declared concurrency",
     ],
     serving,

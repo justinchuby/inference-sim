@@ -2,8 +2,22 @@ import {
   DiscreteEventSimulator,
   type ScheduledEvent,
 } from "./event-loop.js";
+import {
+  SpeculativeTransactionSimulator,
+} from "./speculative.js";
+import {
+  buildSpeculativeStateGroups,
+  validateSpeculativeEligibility,
+  type SpeculativeEligibility,
+  type SpeculativeProposerFamily,
+} from "./speculative-family.js";
+import {
+  SpeculativeAcceptanceCursor,
+  validateAcceptanceCoverage,
+  type SpeculativeAcceptanceModel,
+} from "./speculative-acceptance.js";
 
-export const SERVING_TRACE_CONTRACT_REVISION = 1;
+export const SERVING_TRACE_CONTRACT_REVISION = 2;
 
 export interface ServingRequestSpec {
   readonly id: string;
@@ -19,7 +33,33 @@ export interface ServingSchedulerConfig {
   readonly maxBatchTokens: number;
   readonly prefillChunkTokens: number;
   readonly maxKvTokens: number;
+  readonly speculative?: ServingSpeculativeConfig;
   readonly maxEvents?: number;
+}
+
+export type ServingSpeculativeAcceptanceModel =
+  | {
+      readonly kind: "replay";
+      readonly acceptedDraftTokensByRequest: Readonly<
+        Record<string, readonly number[]>
+      >;
+    }
+  | {
+      readonly kind: "conditional_empirical";
+      readonly matchProbabilityByPosition: readonly number[];
+      readonly seed: number;
+    }
+  | {
+      readonly kind: "conditional_heuristic";
+      readonly matchProbabilityByPosition: readonly number[];
+      readonly seed: number;
+    };
+
+export interface ServingSpeculativeConfig {
+  readonly family: SpeculativeProposerFamily;
+  readonly eligibility: SpeculativeEligibility;
+  readonly maxAdditionalTokens: number;
+  readonly acceptance: ServingSpeculativeAcceptanceModel;
 }
 
 export interface ServingPrefillSlice {
@@ -27,10 +67,20 @@ export interface ServingPrefillSlice {
   readonly tokens: number;
 }
 
+export interface ServingDecodeSlice {
+  readonly requestId: string;
+  readonly mode: "target_only" | "speculative";
+  readonly proposedDraftTokens: number;
+  readonly acceptedDraftTokens: number;
+  readonly committedTokens: number;
+  readonly targetTokenWidth: number;
+  readonly outcome: "target_only" | "correction" | "bonus";
+}
+
 export interface ServingBatchWork {
   readonly batchId: number;
   readonly prefill: readonly ServingPrefillSlice[];
-  readonly decodeRequestIds: readonly string[];
+  readonly decode: readonly ServingDecodeSlice[];
   readonly tokenWork: number;
   readonly sequenceCount: number;
   readonly expectedOutputTokens: number;
@@ -43,7 +93,11 @@ export type ServingBatchDurationEstimator = (
 export interface ServingTokenEmission {
   readonly requestId: string;
   readonly tokenIndex: number;
-  readonly source: "prefill" | "decode";
+  readonly source:
+    | "prefill"
+    | "target_decode"
+    | "speculative_accepted"
+    | "speculative_authoritative";
 }
 
 interface ServingTraceBase {
@@ -62,6 +116,7 @@ export type ServingTraceEvent =
       readonly batch: ServingBatchWork;
       readonly durationNs: number;
       readonly kvTokensBefore: number;
+      readonly transientKvTokens: number;
     }
   | ServingTraceBase & {
       readonly kind: "batch_finish";
@@ -99,6 +154,12 @@ export interface ServingMetrics {
   readonly prefillTokens: number;
   readonly decodeTokens: number;
   readonly outputTokens: number;
+  readonly targetForwards: number;
+  readonly targetVerificationTokens: number;
+  readonly proposedDraftTokens: number;
+  readonly acceptedDraftTokens: number;
+  readonly rejectedDraftTokens: number;
+  readonly committedTokensPerTargetForward: number;
   readonly totalDurationNs: number;
   readonly batchServiceNs: number;
   readonly throughputTokensPerSecond: number;
@@ -144,6 +205,10 @@ interface MutableRequest {
   kvTokens: number;
   tokenTimestampsNs: number[];
   completedAtNs?: number;
+  speculative?: {
+    transaction: SpeculativeTransactionSimulator;
+    acceptance: SpeculativeAcceptanceCursor;
+  };
 }
 
 interface RunningBatch {
@@ -167,10 +232,24 @@ export const DEFAULT_SERVING_BATCH_DURATION: ServingBatchDurationEstimator = (
       35_000,
       "default prefill duration",
     ),
-    checkedMultiply(
-      batch.decodeRequestIds.length,
-      70_000,
-      "default decode duration",
+    checkedAdd(
+      checkedMultiply(
+        batch.decode.reduce(
+          (sum, entry) => sum + entry.targetTokenWidth,
+          0,
+        ),
+        70_000,
+        "default decode duration",
+      ),
+      checkedMultiply(
+        batch.decode.reduce(
+          (sum, entry) => sum + entry.proposedDraftTokens,
+          0,
+        ),
+        25_000,
+        "default proposer duration",
+      ),
+      "default decode/proposer duration",
     ),
     "default batch token duration",
   ),
@@ -203,6 +282,10 @@ class ServingSimulator {
   private batchServiceNs = 0;
   private scheduledTokenWork = 0;
   private scheduledSequenceWork = 0;
+  private targetForwards = 0;
+  private targetVerificationTokens = 0;
+  private proposedDraftTokens = 0;
+  private acceptedDraftTokens = 0;
   private dispatchAtNs?: number;
 
   constructor(
@@ -210,14 +293,7 @@ class ServingSimulator {
     private readonly estimateDuration: ServingBatchDurationEstimator,
   ) {
     for (const spec of sortedRequests(config.requests)) {
-      this.requests.set(spec.id, {
-        spec,
-        phase: "unarrived",
-        promptProcessed: 0,
-        outputEmitted: 0,
-        kvTokens: 0,
-        tokenTimestampsNs: [],
-      });
+      this.requests.set(spec.id, createMutableRequest(config, spec));
       this.eventLoop.scheduleAt(spec.arrivalNs, {
         kind: "arrival",
         requestId: spec.id,
@@ -323,12 +399,39 @@ class ServingSimulator {
       work.sequenceCount,
       "scheduled sequence work",
     );
+    this.targetForwards = checkedAdd(
+      this.targetForwards,
+      work.decode.length,
+      "target forwards",
+    );
+    this.targetVerificationTokens = checkedAdd(
+      this.targetVerificationTokens,
+      sumDecode(work, (entry) => entry.targetTokenWidth),
+      "target verification tokens",
+    );
+    this.proposedDraftTokens = checkedAdd(
+      this.proposedDraftTokens,
+      sumDecode(work, (entry) => entry.proposedDraftTokens),
+      "proposed draft tokens",
+    );
+    this.acceptedDraftTokens = checkedAdd(
+      this.acceptedDraftTokens,
+      sumDecode(work, (entry) => entry.acceptedDraftTokens),
+      "accepted draft tokens",
+    );
+    const transientKvTokens = checkedAdd(
+      this.kvTokens,
+      batchKvReservation(work),
+      `batch ${work.batchId} transient KV`,
+    );
+    this.updateKvHighWater(transientKvTokens);
     this.emit({
       kind: "batch_start",
       atNs,
       batch: work,
       durationNs,
       kvTokensBefore: this.kvTokens,
+      transientKvTokens,
     });
     this.eventLoop.scheduleAt(finishNs, {
       kind: "batch_finish",
@@ -362,12 +465,25 @@ class ServingSimulator {
         request.phase = "waiting";
       }
     }
-    for (const requestId of running.work.decodeRequestIds) {
-      const request = requireRequest(this.requests, requestId);
-      request.kvTokens++;
-      this.kvTokens++;
+    for (const decode of running.work.decode) {
+      const request = requireRequest(this.requests, decode.requestId);
+      applyDecodeTransaction(request, decode);
+      request.kvTokens += decode.committedTokens;
+      this.kvTokens += decode.committedTokens;
       this.updateKvHighWater();
-      this.emitToken(request, "decode", atNs, emittedTokens);
+      for (
+        let tokenOffset = 0;
+        tokenOffset < decode.committedTokens;
+        tokenOffset++
+      ) {
+        const source: ServingTokenEmission["source"] =
+          decode.mode === "target_only" || decode.outcome === "target_only"
+            ? "target_decode"
+            : tokenOffset < decode.acceptedDraftTokens
+              ? "speculative_accepted"
+              : "speculative_authoritative";
+        this.emitToken(request, source, atNs, emittedTokens);
+      }
       this.completeIfDone(request, atNs, completedRequestIds);
     }
 
@@ -436,15 +552,15 @@ class ServingSimulator {
     completed.push(request.spec.id);
   }
 
-  private updateKvHighWater(): void {
-    if (this.kvTokens > this.config.maxKvTokens) {
+  private updateKvHighWater(candidateKvTokens = this.kvTokens): void {
+    if (candidateKvTokens > this.config.maxKvTokens) {
       throw new ServingProtocolError(
-        `KV usage ${this.kvTokens} exceeds capacity ${this.config.maxKvTokens}`,
+        `KV usage ${candidateKvTokens} exceeds capacity ${this.config.maxKvTokens}`,
       );
     }
     this.kvHighWaterTokens = Math.max(
       this.kvHighWaterTokens,
-      this.kvTokens,
+      candidateKvTokens,
     );
   }
 
@@ -505,6 +621,14 @@ class ServingSimulator {
       prefillTokens,
       decodeTokens,
       outputTokens,
+      targetForwards: this.targetForwards,
+      targetVerificationTokens: this.targetVerificationTokens,
+      proposedDraftTokens: this.proposedDraftTokens,
+      acceptedDraftTokens: this.acceptedDraftTokens,
+      rejectedDraftTokens:
+        this.proposedDraftTokens - this.acceptedDraftTokens,
+      committedTokensPerTargetForward:
+        this.targetForwards === 0 ? 0 : decodeTokens / this.targetForwards,
       totalDurationNs,
       batchServiceNs: this.batchServiceNs,
       throughputTokensPerSecond: totalDurationNs === 0
@@ -545,14 +669,7 @@ export function replayServingTrace(
   validateServingConfig(config);
   const requests = new Map<string, MutableRequest>();
   for (const spec of sortedRequests(config.requests)) {
-    requests.set(spec.id, {
-      spec,
-      phase: "unarrived",
-      promptProcessed: 0,
-      outputEmitted: 0,
-      kvTokens: 0,
-      tokenTimestampsNs: [],
-    });
+    requests.set(spec.id, createMutableRequest(config, spec));
   }
   let running: RunningBatch | undefined;
   let kvTokens = 0;
@@ -597,9 +714,16 @@ export function replayServingTrace(
         replayFail(`batch ${event.batch.batchId} violates scheduler decision`);
       }
       const durationNs = estimateDuration(expected);
+      const transientKvTokens = checkedAdd(
+        kvTokens,
+        batchKvReservation(expected),
+        `batch ${expected.batchId} transient KV`,
+      );
       if (
         event.durationNs !== durationNs
         || event.kvTokensBefore !== kvTokens
+        || event.transientKvTokens !== transientKvTokens
+        || transientKvTokens > config.maxKvTokens
       ) {
         replayFail(`batch ${event.batch.batchId} timing/KV mismatch`);
       }
@@ -644,11 +768,24 @@ export function replayServingTrace(
           request.phase = "waiting";
         }
       }
-      for (const requestId of running.work.decodeRequestIds) {
-        const request = requireRequest(requests, requestId);
-        request.kvTokens++;
-        kvTokens++;
-        replayEmitToken(request, "decode", event.atNs, emittedTokens);
+      for (const decode of running.work.decode) {
+        const request = requireRequest(requests, decode.requestId);
+        applyDecodeTransaction(request, decode, true);
+        request.kvTokens += decode.committedTokens;
+        kvTokens += decode.committedTokens;
+        for (
+          let tokenOffset = 0;
+          tokenOffset < decode.committedTokens;
+          tokenOffset++
+        ) {
+          const source: ServingTokenEmission["source"] =
+            decode.mode === "target_only" || decode.outcome === "target_only"
+              ? "target_decode"
+              : tokenOffset < decode.acceptedDraftTokens
+                ? "speculative_accepted"
+                : "speculative_authoritative";
+          replayEmitToken(request, source, event.atNs, emittedTokens);
+        }
         if (request.outputEmitted === request.spec.outputTokens) {
           request.phase = "completed";
           request.completedAtNs = event.atNs;
@@ -703,7 +840,7 @@ function selectServingBatch(
   let tokenBudget = config.maxBatchTokens;
   let sequenceBudget = config.maxBatchSize;
   let reservedKv = 0;
-  const decodeRequestIds: string[] = [];
+  const decode: ServingDecodeSlice[] = [];
   const prefill: ServingPrefillSlice[] = [];
   const candidates = [...requests.values()].sort(compareMutableRequests);
 
@@ -715,13 +852,42 @@ function selectServingBatch(
     ) {
       continue;
     }
-    if (currentKvTokens + reservedKv + 1 > config.maxKvTokens) {
+    const remainingOutput =
+      request.spec.outputTokens - request.outputEmitted;
+    const availableKv =
+      config.maxKvTokens - currentKvTokens - reservedKv;
+    const maxTargetTokenWidth = Math.min(tokenBudget, availableKv);
+    if (remainingOutput <= 0 || maxTargetTokenWidth <= 0) {
       continue;
     }
-    decodeRequestIds.push(request.spec.id);
-    reservedKv++;
+    const proposedDraftTokens = config.speculative
+      ? Math.min(
+          config.speculative.maxAdditionalTokens,
+          remainingOutput - 1,
+          maxTargetTokenWidth - 1,
+        )
+      : 0;
+    const acceptedDraftTokens = request.speculative?.acceptance.next(
+      proposedDraftTokens,
+    ) ?? 0;
+    const committedTokens = acceptedDraftTokens + 1;
+    const targetTokenWidth = proposedDraftTokens + 1;
+    decode.push({
+      requestId: request.spec.id,
+      mode: config.speculative ? "speculative" : "target_only",
+      proposedDraftTokens,
+      acceptedDraftTokens,
+      committedTokens,
+      targetTokenWidth,
+      outcome: proposedDraftTokens === 0
+        ? "target_only"
+        : acceptedDraftTokens === proposedDraftTokens
+          ? "bonus"
+          : "correction",
+    });
+    reservedKv += targetTokenWidth;
     sequenceBudget--;
-    tokenBudget--;
+    tokenBudget -= targetTokenWidth;
   }
   for (const request of candidates) {
     if (
@@ -754,10 +920,13 @@ function selectServingBatch(
   return {
     batchId,
     prefill,
-    decodeRequestIds,
+    decode,
     tokenWork,
-    sequenceCount: prefill.length + decodeRequestIds.length,
-    expectedOutputTokens: decodeRequestIds.length + prefill.filter((entry) => {
+    sequenceCount: prefill.length + decode.length,
+    expectedOutputTokens: decode.reduce(
+      (sum, entry) => sum + entry.committedTokens,
+      0,
+    ) + prefill.filter((entry) => {
       const request = requireRequest(requests, entry.requestId);
       return request.promptProcessed + entry.tokens === request.spec.promptTokens;
     }).length,
@@ -772,6 +941,33 @@ function validateServingConfig(config: ServingSchedulerConfig): void {
   assertPositiveSafeInteger(config.maxBatchTokens, "maxBatchTokens");
   assertPositiveSafeInteger(config.prefillChunkTokens, "prefillChunkTokens");
   assertPositiveSafeInteger(config.maxKvTokens, "maxKvTokens");
+  if (config.speculative) {
+    assertNonNegativeSafeInteger(
+      config.speculative.maxAdditionalTokens,
+      "speculative.maxAdditionalTokens",
+    );
+    validateSpeculativeEligibility(
+      config.speculative.family,
+      config.speculative.eligibility,
+    );
+    if (config.speculative.acceptance.kind === "replay") {
+      for (const request of config.requests) {
+        if (
+          config.speculative.acceptance
+            .acceptedDraftTokensByRequest[request.id] === undefined
+        ) {
+          throw new ServingProtocolError(
+            `speculative acceptance replay lacks request ${request.id}`,
+          );
+        }
+      }
+    } else {
+      validateAcceptanceCoverage(
+        config.speculative.acceptance,
+        config.speculative.maxAdditionalTokens,
+      );
+    }
+  }
   if (config.maxEvents !== undefined) {
     assertPositiveSafeInteger(config.maxEvents, "maxEvents");
   }
@@ -817,6 +1013,112 @@ function sortedRequests(
   ));
 }
 
+function createMutableRequest(
+  config: ServingSchedulerConfig,
+  spec: ServingRequestSpec,
+): MutableRequest {
+  const speculative = config.speculative;
+  const peakKv = checkedAdd(
+    spec.promptTokens,
+    spec.outputTokens - 1,
+    `${spec.id} peak KV`,
+  );
+  return {
+    spec,
+    phase: "unarrived",
+    promptProcessed: 0,
+    outputEmitted: 0,
+    kvTokens: 0,
+    tokenTimestampsNs: [],
+    ...(speculative
+      ? {
+          speculative: {
+            transaction: new SpeculativeTransactionSimulator(
+              spec.promptTokens,
+              buildSpeculativeStateGroups(
+                speculative.family,
+                peakKv,
+                speculative.maxAdditionalTokens,
+              ),
+            ),
+            acceptance: new SpeculativeAcceptanceCursor(
+              acceptanceForRequest(speculative.acceptance, spec.id),
+              speculative.acceptance.kind === "replay" ? undefined : spec.id,
+            ),
+          },
+        }
+      : {}),
+  };
+}
+
+function acceptanceForRequest(
+  acceptance: ServingSpeculativeAcceptanceModel,
+  requestId: string,
+): SpeculativeAcceptanceModel {
+  if (acceptance.kind !== "replay") {
+    return acceptance;
+  }
+  return {
+    kind: "replay",
+    acceptedDraftTokens:
+      acceptance.acceptedDraftTokensByRequest[requestId] ?? [],
+  };
+}
+
+function applyDecodeTransaction(
+  request: MutableRequest,
+  decode: ServingDecodeSlice,
+  replay = false,
+): void {
+  if (decode.mode === "target_only") {
+    if (
+      request.speculative
+      || decode.proposedDraftTokens !== 0
+      || decode.acceptedDraftTokens !== 0
+      || decode.committedTokens !== 1
+      || decode.targetTokenWidth !== 1
+      || decode.outcome !== "target_only"
+    ) {
+      decodeFail(replay, `invalid target-only decode for ${request.spec.id}`);
+    }
+    return;
+  }
+  const speculative = request.speculative;
+  if (!speculative) {
+    decodeFail(replay, `request ${request.spec.id} lacks speculative state`);
+  }
+  const result = speculative.transaction.runIteration({
+    draftTokenCount: decode.proposedDraftTokens,
+    acceptedDraftTokenCount: decode.acceptedDraftTokens,
+  });
+  if (
+    result.committedTokenCount !== decode.committedTokens
+    || decode.targetTokenWidth !== decode.proposedDraftTokens + 1
+    || result.finalTokenLength !== request.kvTokens + decode.committedTokens
+  ) {
+    decodeFail(replay, `speculative transaction mismatch for ${request.spec.id}`);
+  }
+}
+
+function decodeFail(replay: boolean, message: string): never {
+  if (replay) {
+    replayFail(message);
+  }
+  throw new ServingProtocolError(message);
+}
+
+function batchKvReservation(batch: ServingBatchWork): number {
+  return batch.prefill.reduce((sum, entry) => sum + entry.tokens, 0)
+    + sumDecode(batch, (entry) => entry.targetTokenWidth);
+}
+
+function sumDecode(
+  batch: ServingBatchWork,
+  select: (entry: ServingDecodeSlice) => number,
+): number {
+  return batch.decode.reduce((sum, entry) => sum + select(entry), 0);
+}
+
 function compareMutableRequests(
   left: MutableRequest,
   right: MutableRequest,
@@ -858,12 +1160,29 @@ function equalBatch(left: ServingBatchWork, right: ServingBatchWork): boolean {
     && left.tokenWork === right.tokenWork
     && left.sequenceCount === right.sequenceCount
     && left.expectedOutputTokens === right.expectedOutputTokens
-    && equalStrings(left.decodeRequestIds, right.decodeRequestIds)
+    && left.decode.length === right.decode.length
+    && left.decode.every((entry, index) => (
+      equalDecode(entry, right.decode[index])
+    ))
     && left.prefill.length === right.prefill.length
     && left.prefill.every((entry, index) => (
       entry.requestId === right.prefill[index]?.requestId
       && entry.tokens === right.prefill[index]?.tokens
     ));
+}
+
+function equalDecode(
+  left: ServingDecodeSlice,
+  right: ServingDecodeSlice | undefined,
+): boolean {
+  return right !== undefined
+    && left.requestId === right.requestId
+    && left.mode === right.mode
+    && left.proposedDraftTokens === right.proposedDraftTokens
+    && left.acceptedDraftTokens === right.acceptedDraftTokens
+    && left.committedTokens === right.committedTokens
+    && left.targetTokenWidth === right.targetTokenWidth
+    && left.outcome === right.outcome;
 }
 
 function equalEmissions(
