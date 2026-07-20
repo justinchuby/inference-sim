@@ -14,7 +14,7 @@ import {
   type SpeculativeWorkloadResult,
 } from "./speculative-workload.js";
 
-export const SPECULATIVE_TOKEN_TRACE_REVISION = 1;
+export const SPECULATIVE_TOKEN_TRACE_REVISION = 2;
 
 export interface SpeculativeTokenTraceProvenance {
   readonly source: string;
@@ -344,12 +344,9 @@ export function simulateSpeculativeTokenTrace(
         `${iteration.id} proposal width exceeds the remaining output budget`,
       );
     }
-    if (
-      iteration.targetTokenIds.length
-      !== iteration.proposalTokenIds.length + 1
-    ) {
+    if (iteration.targetTokenIds.length > iteration.proposalTokenIds.length + 1) {
       throw new SpeculativeTokenTraceError(
-        `${iteration.id} requires exactly one target token per proposal position plus one final target row`,
+        `${iteration.id} contains target-selected tokens beyond the proposal and optional bonus row`,
       );
     }
 
@@ -365,12 +362,41 @@ export function simulateSpeculativeTokenTrace(
         `${iteration.id} rejects its guaranteed target proposal prefix`,
       );
     }
+    const observedMismatch =
+      acceptedDraftTokens < iteration.proposalTokenIds.length
+      && iteration.targetTokenIds.length > acceptedDraftTokens;
+    if (
+      observedMismatch
+      && iteration.targetTokenIds.length !== acceptedDraftTokens + 1
+    ) {
+      throw new SpeculativeTokenTraceError(
+        `${iteration.id} contains target-selected tokens after the first mismatch`,
+      );
+    }
+    if (
+      !observedMismatch
+      && iteration.targetTokenIds.length < iteration.proposalTokenIds.length
+    ) {
+      throw new SpeculativeTokenTraceError(
+        `${iteration.id} omits a target-selected token before proposal verification completed`,
+      );
+    }
     const acceptedAdditional = acceptedDraftTokens - guaranteedTargetTokens;
     const decision = decideSpeculativeIteration(
       proposal,
       acceptedAdditional,
       remainingOutputTokens,
     );
+    const expectedTargetTokenCount = decision.outcome === "bonus"
+      ? iteration.proposalTokenIds.length + 1
+      : decision.outcome === "accepted_tail"
+        ? iteration.proposalTokenIds.length
+        : acceptedDraftTokens + 1;
+    if (iteration.targetTokenIds.length !== expectedTargetTokenCount) {
+      throw new SpeculativeTokenTraceError(
+        `${iteration.id} records ${iteration.targetTokenIds.length} target-selected tokens but ${decision.outcome} requires ${expectedTargetTokenCount}`,
+      );
+    }
     const committedTokenIds = [
       ...iteration.proposalTokenIds.slice(0, acceptedDraftTokens),
       ...(decision.targetAuthoritativeTokens === 1

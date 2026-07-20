@@ -22,7 +22,7 @@ const provenance = {
 } as const;
 
 const mtpTrace: SpeculativeTokenTrace = {
-  revision: 1,
+  revision: 2,
   id: "mtp-correction-bonus-tail",
   provenance,
   family: "mtp",
@@ -33,7 +33,7 @@ const mtpTrace: SpeculativeTokenTrace = {
     {
       id: "correction",
       proposalTokenIds: [10, 99, 100],
-      targetTokenIds: [10, 20, 200, 201],
+      targetTokenIds: [10, 20],
     },
     {
       id: "bonus",
@@ -43,7 +43,7 @@ const mtpTrace: SpeculativeTokenTrace = {
     {
       id: "accepted-tail",
       proposalTokenIds: [40, 41],
-      targetTokenIds: [40, 41, 42],
+      targetTokenIds: [40, 41],
     },
   ],
 };
@@ -138,14 +138,34 @@ describe("speculative token-value traces", () => {
     })).toThrow("must use distinct run ids");
   });
 
-  it("rejects missing target rows and trailing iterations", () => {
+  it("rejects missing, counterfactual, and trailing target evidence", () => {
+    expect(() => simulateSpeculativeTokenTrace({
+      ...mtpTrace,
+      iterations: [{
+        ...mtpTrace.iterations[0]!,
+        targetTokenIds: [10],
+      }, ...mtpTrace.iterations.slice(1)],
+    })).toThrow("omits a target-selected token");
+
     expect(() => simulateSpeculativeTokenTrace({
       ...mtpTrace,
       iterations: [{
         ...mtpTrace.iterations[0]!,
         targetTokenIds: [10, 20, 200],
       }, ...mtpTrace.iterations.slice(1)],
-    })).toThrow("exactly one target token per proposal position");
+    })).toThrow("after the first mismatch");
+
+    expect(() => simulateSpeculativeTokenTrace({
+      ...mtpTrace,
+      iterations: [
+        mtpTrace.iterations[0]!,
+        mtpTrace.iterations[1]!,
+        {
+          ...mtpTrace.iterations[2]!,
+          targetTokenIds: [40, 41, 42],
+        },
+      ],
+    })).toThrow("accepted_tail requires 2");
 
     expect(() => simulateSpeculativeTokenTrace({
       ...mtpTrace,
@@ -163,7 +183,7 @@ describe("speculative token-value traces", () => {
   it("parses a revisioned snake-case contract and rejects typos", () => {
     const parsed = parseSpeculativeTokenTrace({
       speculative_token_trace: {
-        revision: 1,
+        revision: 2,
         id: "parsed",
         provenance: {
           source: "synthetic-test",
@@ -182,7 +202,7 @@ describe("speculative token-value traces", () => {
         iterations: [{
           id: "tail",
           proposal_token_ids: [2],
-          target_token_ids: [2, 3],
+          target_token_ids: [2],
         }],
       },
     });
@@ -191,7 +211,7 @@ describe("speculative token-value traces", () => {
 
     expect(() => parseSpeculativeTokenTrace({
       speculative_token_trace: {
-        revision: 1,
+        revision: 2,
         id: "typo",
         provenance: {
           source: "synthetic-test",
@@ -237,7 +257,7 @@ function traceForFamily(
   const guaranteed =
     family === "mtp" || family === "eagle3" || family === "shared_kv";
   return {
-    revision: 1,
+    revision: 2,
     id: `matrix-${family}`,
     provenance: {
       ...provenance,
@@ -259,7 +279,7 @@ function traceForFamily(
           {
             id: "tail",
             proposalTokenIds: [5],
-            targetTokenIds: [5, 6],
+            targetTokenIds: [5],
           },
         ]
       : [
@@ -271,7 +291,7 @@ function traceForFamily(
           {
             id: "tail",
             proposalTokenIds: [4, 5],
-            targetTokenIds: [4, 5, 6],
+            targetTokenIds: [4, 5],
           },
         ],
   };

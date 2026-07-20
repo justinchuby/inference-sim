@@ -1,5 +1,5 @@
 speculative_token_trace:
-  revision: 1
+  revision: 2
   id: mtp-correction-bonus-tail
   provenance:
     source: synthetic-example
@@ -17,10 +17,10 @@ speculative_token_trace:
   iterations:
     - id: correction
       proposal_token_ids: [10, 99, 100]
-      target_token_ids: [10, 20, 200, 201]
+      target_token_ids: [10, 20]
     - id: bonus
       proposal_token_ids: [21, 30, 31]
       target_token_ids: [21, 30, 31, 32]
     - id: accepted-tail
       proposal_token_ids: [40, 41]
-      target_token_ids: [40, 41, 42]
+      target_token_ids: [40, 41]

@@ -380,27 +380,30 @@ A single average acceptance rate is insufficient because accepted-prefix length
 is a first-mismatch process. The stochastic fallback provides conditional
 `P(match at position i | positions < i matched)`.
 
-The revision-1 token trace binds the evidence to non-empty runtime, target
+The revision-2 token trace binds the evidence to non-empty runtime, target
 model, proposer, tokenizer, and generation-config fingerprints plus distinct
 target-only and speculative run IDs. It records the exact prompt and
 target-only output token IDs. Each iteration records:
 
 ```text
 proposal_token_ids = the full family-specific proposal
-target_token_ids   = one target-selected token for every proposal position
-                     plus one final target row
+target_token_ids   = only tokens actually selected by the target loop:
+                     through the first mismatch, accepted proposal rows plus
+                     the bonus row, or accepted proposal rows at the tail
 ```
 
 The oracle computes the longest equal prefix. A mismatch commits that prefix
-plus `target_token_ids[accepted]` as the correction. Full acceptance commits
+plus `target_token_ids[accepted]` as the correction. Target rows after the
+first mismatch are counterfactual rejected-path evidence and are forbidden.
+Full acceptance commits
 the proposal and, only when output budget remains, the final target row as a
 bonus. A fully accepted tail does not commit the unused final row. For
 target-coupled families, proposal position zero must match target position zero
 or the trace is structurally invalid.
 
 The trace importer fails closed on unknown fields, unsupported revisions,
-duplicate iteration IDs, missing/final target rows, over-wide or over-budget
-proposals, rejected guaranteed prefixes, missing/trailing iterations, and
+duplicate iteration IDs, missing or counterfactual target rows, over-wide or
+over-budget proposals, rejected guaranteed prefixes, missing/trailing iterations, and
 unbound provenance. It then independently replays the derived widths and
 accepted counts through the composite state transaction and requires
 token-decision/state-decision parity at every iteration. Token mismatch against

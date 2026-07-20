@@ -121,7 +121,7 @@ speculative:
     const path = join(directory, "mismatch.yaml");
     await writeFile(path, `
 speculative_token_trace:
-  revision: 1
+  revision: 2
   id: mismatch
   provenance:
     source: synthetic-test
@@ -139,7 +139,7 @@ speculative_token_trace:
   iterations:
     - id: tail
       proposal_token_ids: [8]
-      target_token_ids: [8, 9]
+      target_token_ids: [8]
 `, "utf8");
     const capture = captureIo();
 
