@@ -59,6 +59,17 @@ export interface DeviceCapabilityCost {
   readonly lookupNsPerToken: number;
 }
 
+export type TopologyComputeCapability =
+  | "attention"
+  | "ffn"
+  | "draft"
+  | "lookup";
+
+export interface CalibratedWorkItemRange {
+  readonly minWorkItems: number;
+  readonly maxWorkItems: number;
+}
+
 export interface TopologyCostModel {
   readonly revision: typeof TOPOLOGY_COST_MODEL_REVISION;
   readonly confidence: ConfidenceClass;
@@ -67,6 +78,16 @@ export interface TopologyCostModel {
   readonly activationBytesPerToken: number;
   readonly collectiveBytesPerToken: number;
   readonly coldLoadByteMultiplier: number;
+  readonly applicability?: {
+    readonly scenarioIds: readonly string[];
+    readonly deviceKindLabels: Readonly<Record<SimDeviceKind, string>>;
+  };
+  readonly validWorkItemRanges?: Readonly<
+    Record<
+      SimDeviceKind,
+      Readonly<Record<TopologyComputeCapability, CalibratedWorkItemRange>>
+    >
+  >;
 }
 
 export interface TopologyResourceUtilization {
@@ -235,12 +256,16 @@ export function simulateTopologyWorkload(
   const computeServiceNs = serviceTime(execution, "compute");
   const transferServiceNs = serviceTime(execution, "transfer");
   const collectiveServiceNs = serviceTime(execution, "collective");
+  const confidence = topologyPerformanceConfidence(scenario, costModel);
   return {
     scenarioId: scenario.id,
     profileId: profile.id,
-    confidence: costModel.confidence,
+    confidence,
     assumptions: [
       costModel.source,
+      confidence === costModel.confidence
+        ? `overall timing confidence is ${confidence}`
+        : `overall timing confidence is ${confidence} because scenario device, memory, or link evidence is weaker than the cost model`,
       "decode-only plan; prefill and request batching are outside this profile",
       "compute costs include one device-kind invocation overhead plus linear token work",
       "family-specific proposer multipliers are heuristic and provenance-labeled",
@@ -273,6 +298,23 @@ export function simulateTopologyWorkload(
       ),
     },
   };
+}
+
+function topologyPerformanceConfidence(
+  scenario: SimulationScenario,
+  costModel: TopologyCostModel,
+): ConfidenceClass {
+  const evidence = [
+    costModel.confidence,
+    ...scenario.devices.map((device) => device.provenance.confidence),
+    ...scenario.memoryDomains.map((domain) => domain.provenance.confidence),
+    ...scenario.links.map((link) => link.provenance.confidence),
+  ];
+  if (evidence.includes("heuristic")) {
+    return "heuristic";
+  }
+  // Timing remains an estimate even when the structural inputs are exact or bounded.
+  return "calibrated";
 }
 
 export function compareTopologyWorkloads(
@@ -727,11 +769,12 @@ class WorkloadPlanCompiler {
 
   private computeDuration(
     deviceId: string,
-    capability: "attention" | "ffn" | "draft" | "lookup",
+    capability: TopologyComputeCapability,
     tokenWidth: number,
     activeExperts: number,
   ): number {
-    const costs = this.costModel.deviceCosts[this.device(deviceId).kind];
+    const deviceKind = this.device(deviceId).kind;
+    const costs = this.costModel.deviceCosts[deviceKind];
     const perToken = capability === "attention"
       ? costs.attentionNsPerToken
       : capability === "ffn"
@@ -739,17 +782,32 @@ class WorkloadPlanCompiler {
         : capability === "draft"
           ? costs.draftNsPerToken
           : costs.lookupNsPerToken;
+    const workItems = checkedMultiply(
+      tokenWidth,
+      checkedMultiply(
+        this.profile.batchSize,
+        Math.max(1, activeExperts),
+        "active expert batch",
+      ),
+      "compute token batch",
+    );
+    const validRange = this.costModel.validWorkItemRanges?.[deviceKind][
+      capability
+    ];
+    if (
+      validRange !== undefined
+      && (
+        workItems < validRange.minWorkItems
+        || workItems > validRange.maxWorkItems
+      )
+    ) {
+      throw new TopologyWorkloadError(
+        `${deviceKind} ${capability} work items ${workItems} are outside calibrated range ${validRange.minWorkItems}..${validRange.maxWorkItems}`,
+      );
+    }
     const unshardedDuration = checkedMultiply(
       perToken,
-      checkedMultiply(
-        tokenWidth,
-        checkedMultiply(
-          this.profile.batchSize,
-          Math.max(1, activeExperts),
-          "active expert batch",
-        ),
-        "compute token batch",
-      ),
+      workItems,
       "compute duration",
     );
     const tensorDegree = capability === "draft" || capability === "lookup"
@@ -965,6 +1023,28 @@ function validateInputs(
   if (costModel.source.length === 0) {
     throw new TopologyWorkloadError("cost model source must be non-empty");
   }
+  if (costModel.applicability !== undefined) {
+    if (!costModel.applicability.scenarioIds.includes(scenario.id)) {
+      throw new TopologyWorkloadError(
+        `cost model is not applicable to scenario ${scenario.id}`,
+      );
+    }
+    if (
+      new Set(costModel.applicability.scenarioIds).size
+      !== costModel.applicability.scenarioIds.length
+    ) {
+      throw new TopologyWorkloadError(
+        "cost model applicability scenario ids must be unique",
+      );
+    }
+    for (const kind of ["cpu", "gpu", "npu"] as const) {
+      if (costModel.applicability.deviceKindLabels[kind]?.trim().length === 0) {
+        throw new TopologyWorkloadError(
+          `cost model ${kind} applicability label must be non-empty`,
+        );
+      }
+    }
+  }
   for (const kind of ["cpu", "gpu", "npu"] as const) {
     const costs = costModel.deviceCosts[kind];
     assertPositiveSafeInteger(
@@ -978,6 +1058,32 @@ function validateInputs(
     assertPositiveSafeInteger(costs.ffnNsPerToken, `${kind} ffn cost`);
     assertPositiveSafeInteger(costs.draftNsPerToken, `${kind} draft cost`);
     assertPositiveSafeInteger(costs.lookupNsPerToken, `${kind} lookup cost`);
+    const ranges = costModel.validWorkItemRanges?.[kind];
+    if (ranges !== undefined) {
+      for (
+        const capability of [
+          "attention",
+          "ffn",
+          "draft",
+          "lookup",
+        ] as const
+      ) {
+        const range = ranges[capability];
+        assertPositiveSafeInteger(
+          range.minWorkItems,
+          `${kind} ${capability} minimum work items`,
+        );
+        assertPositiveSafeInteger(
+          range.maxWorkItems,
+          `${kind} ${capability} maximum work items`,
+        );
+        if (range.minWorkItems > range.maxWorkItems) {
+          throw new TopologyWorkloadError(
+            `${kind} ${capability} calibrated range is inverted`,
+          );
+        }
+      }
+    }
   }
   for (const unit of profile.units) {
     if (unit.id.length === 0) {

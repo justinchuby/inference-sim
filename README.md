@@ -62,7 +62,10 @@ Phase 3 has an initial speculative workload slice:
   target/proposer state, transient candidate-KV admission, burst emission, and
   a six-proposer by six-topology execution matrix; and
 - deterministic serving comparison across all six device configurations with
-  ranked latency, throughput, TTFT/ITL, KV, and replay evidence.
+  ranked latency, throughput, TTFT/ITL, KV, and replay evidence; and
+- revisioned topology-cost calibration import with repeated observations,
+  provenance, quality diagnostics, scoped applicability, stable fingerprints,
+  and fail-closed interpolation ranges.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
@@ -107,16 +110,20 @@ pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml
+pnpm sim calibrate examples/calibration-synthetic.yaml
+pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-synthetic.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm dev:web
 ```
 
-`run`, `compare`, `serving`, and `serving-compare` use the bundled heuristic
-cost model. Their output carries the confidence class and assumptions;
-calibrate the coefficients against backend traces before treating results as
-hardware predictions.
+`run`, `compare`, `serving`, `serving-compare`, and `fault-campaign` accept an
+optional final calibration path; without one they use the bundled heuristic
+cost model. The included calibration file is explicitly synthetic and remains
+heuristic. A measured compute dataset does not by itself upgrade results from
+the heuristic built-in topology presets: end-to-end timing uses the weakest
+confidence among compute, device, memory, and link evidence.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

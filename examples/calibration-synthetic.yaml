@@ -1,0 +1,59 @@
+calibration:
+  revision: 1
+  id: synthetic-linear-example
+  provenance:
+    kind: synthetic
+    source: illustrative linear fixture; replace with backend trace measurements
+    software_stack: synthetic example, no runtime stack
+    model_artifact: synthetic-model, no released artifact
+    notes: This file demonstrates the import contract and is not performance evidence.
+  applicability:
+    scenario_ids:
+      - cpu-only
+      - single-gpu-cpu
+      - multi-gpu
+      - gpu-npu
+      - unified-memory
+      - multi-node
+    device_kind_labels:
+      cpu: illustrative CPU class
+      gpu: illustrative GPU class
+      npu: illustrative NPU class
+  model_constants:
+    activation_bytes_per_token: 1048576
+    collective_bytes_per_token: 524288
+    cold_load_byte_multiplier: 2
+  quality:
+    min_samples_per_point: 3
+    max_normalized_rmse: 0.03
+    max_p95_relative_error: 0.03
+  observations:
+    - { id: cpu-invocation-0, device_kind: cpu, capability: invocation, work_items: 0, durations_ns: [396000, 400000, 404000], regime: "no-op launch" }
+    - { id: cpu-attention-1, device_kind: cpu, capability: attention, work_items: 1, durations_ns: [613800, 620000, 626200], regime: "batch=1 fp16" }
+    - { id: cpu-attention-128, device_kind: cpu, capability: attention, work_items: 128, durations_ns: [28274400, 28560000, 28845600], regime: "work_items=128 fp16" }
+    - { id: cpu-ffn-1, device_kind: cpu, capability: ffn, work_items: 1, durations_ns: [693000, 700000, 707000], regime: "batch=1 fp16" }
+    - { id: cpu-ffn-128, device_kind: cpu, capability: ffn, work_items: 128, durations_ns: [38412000, 38800000, 39188000], regime: "work_items=128 fp16" }
+    - { id: cpu-draft-1, device_kind: cpu, capability: draft, work_items: 1, durations_ns: [504900, 510000, 515100], regime: "batch=1 fp16" }
+    - { id: cpu-draft-128, device_kind: cpu, capability: draft, work_items: 128, durations_ns: [14335200, 14480000, 14624800], regime: "work_items=128 fp16" }
+    - { id: cpu-lookup-1, device_kind: cpu, capability: lookup, work_items: 1, durations_ns: [403920, 408000, 412080], regime: "batch=1 token lookup" }
+    - { id: cpu-lookup-128, device_kind: cpu, capability: lookup, work_items: 128, durations_ns: [1409760, 1424000, 1438240], regime: "work_items=128 token lookup" }
+
+    - { id: gpu-invocation-0, device_kind: gpu, capability: invocation, work_items: 0, durations_ns: [118800, 120000, 121200], regime: "no-op launch" }
+    - { id: gpu-attention-1, device_kind: gpu, capability: attention, work_items: 1, durations_ns: [146520, 148000, 149480], regime: "batch=1 fp16" }
+    - { id: gpu-attention-128, device_kind: gpu, capability: attention, work_items: 128, durations_ns: [3666960, 3704000, 3741040], regime: "work_items=128 fp16" }
+    - { id: gpu-ffn-1, device_kind: gpu, capability: ffn, work_items: 1, durations_ns: [156420, 158000, 159580], regime: "batch=1 fp16" }
+    - { id: gpu-ffn-128, device_kind: gpu, capability: ffn, work_items: 128, durations_ns: [4934160, 4984000, 5033840], regime: "work_items=128 fp16" }
+    - { id: gpu-draft-1, device_kind: gpu, capability: draft, work_items: 1, durations_ns: [135630, 137000, 138370], regime: "batch=1 fp16" }
+    - { id: gpu-draft-128, device_kind: gpu, capability: draft, work_items: 128, durations_ns: [2273040, 2296000, 2318960], regime: "work_items=128 fp16" }
+    - { id: gpu-lookup-1, device_kind: gpu, capability: lookup, work_items: 1, durations_ns: [126720, 128000, 129280], regime: "batch=1 token lookup" }
+    - { id: gpu-lookup-128, device_kind: gpu, capability: lookup, work_items: 128, durations_ns: [1132560, 1144000, 1155440], regime: "work_items=128 token lookup" }
+
+    - { id: npu-invocation-0, device_kind: npu, capability: invocation, work_items: 0, durations_ns: [99000, 100000, 101000], regime: "no-op launch" }
+    - { id: npu-attention-1, device_kind: npu, capability: attention, work_items: 1, durations_ns: [120780, 122000, 123220], regime: "batch=1 fp16" }
+    - { id: npu-attention-128, device_kind: npu, capability: attention, work_items: 128, durations_ns: [2886840, 2916000, 2945160], regime: "work_items=128 fp16" }
+    - { id: npu-ffn-1, device_kind: npu, capability: ffn, work_items: 1, durations_ns: [150480, 152000, 153520], regime: "batch=1 fp16" }
+    - { id: npu-ffn-128, device_kind: npu, capability: ffn, work_items: 128, durations_ns: [6688440, 6756000, 6823560], regime: "work_items=128 fp16" }
+    - { id: npu-draft-1, device_kind: npu, capability: draft, work_items: 1, durations_ns: [122760, 124000, 125240], regime: "batch=1 fp16" }
+    - { id: npu-draft-128, device_kind: npu, capability: draft, work_items: 128, durations_ns: [3140280, 3172000, 3203720], regime: "work_items=128 fp16" }
+    - { id: npu-lookup-1, device_kind: npu, capability: lookup, work_items: 1, durations_ns: [106920, 108000, 109080], regime: "batch=1 token lookup" }
+    - { id: npu-lookup-128, device_kind: npu, capability: lookup, work_items: 128, durations_ns: [1112760, 1124000, 1135240], regime: "work_items=128 token lookup" }

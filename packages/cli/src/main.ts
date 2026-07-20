@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import {
+  CALIBRATION_DATASET_REVISION,
+  DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
   analyzeStatic,
   buildSpeculativeStateGroups,
@@ -11,6 +13,7 @@ import {
   compareTopologyWorkloads,
   compileTopologyWorkloadPlan,
   defaultSpeculativeEligibility,
+  fitTopologyCostModel,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
@@ -23,6 +26,9 @@ import {
   topologyProfileFromSpeculative,
   type ExpertCacheWorkloadConfig,
   type ExpertLoadTarget,
+  type CalibratedCapability,
+  type CalibrationDataset,
+  type CalibrationEvidenceKind,
   validateScenario,
   type MemoryPolicyConfig,
   type ParallelismConfig,
@@ -35,7 +41,9 @@ import {
   type SpeculativeWorkloadConfig,
   type ServingSchedulerConfig,
   type ServingSpeculativeConfig,
+  type SimDeviceKind,
   type TopologyServingResult,
+  type TopologyCostModel,
   type TopologyWorkloadProfile,
 } from "@inference-sim/core";
 import {
@@ -67,7 +75,7 @@ export async function runCli(
   io: CliIo = DEFAULT_IO,
 ): Promise<number> {
   try {
-    const [command = "help", argument, secondArgument] = args;
+    const [command = "help", argument, secondArgument, thirdArgument] = args;
     switch (command) {
       case "help":
       case "--help":
@@ -124,6 +132,11 @@ export async function runCli(
         );
         return 0;
       }
+      case "calibrate": {
+        const config = await loadRequiredConfig(argument, "calibrate");
+        printJson(io, fitTopologyCostModel(parseCalibrationDataset(config)));
+        return 0;
+      }
       case "serving": {
         if (!argument) {
           throw new Error("serving requires a scenario preset name");
@@ -132,22 +145,26 @@ export async function runCli(
           throw new Error(`unknown scenario preset ${argument}`);
         }
         const config = await loadRequiredConfig(secondArgument, "serving");
+        const costModel = await loadCostModel(thirdArgument);
         printJson(
           io,
           summarizeServingRun(simulateTopologyServingWorkload(
             buildScenarioPreset(argument as ScenarioPresetName),
             parseServingConfig(config),
+            costModel,
           )),
         );
         return 0;
       }
       case "serving-compare": {
         const config = await loadRequiredConfig(argument, "serving-compare");
+        const costModel = await loadCostModel(secondArgument);
         printJson(
           io,
           summarizeServingComparison(compareTopologyServingWorkloads(
             SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
             parseServingConfig(config),
+            costModel,
           )),
         );
         return 0;
@@ -161,12 +178,14 @@ export async function runCli(
         }
         const config = await loadRequiredConfig(secondArgument, "run");
         const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const costModel = await loadCostModel(thirdArgument);
         printJson(
           io,
           summarizeTopologyRun(
             simulateTopologyWorkload(
               scenario,
               buildTopologyProfile(config),
+              costModel,
             ),
           ),
         );
@@ -175,11 +194,14 @@ export async function runCli(
       case "compare": {
         const config = await loadRequiredConfig(argument, "compare");
         const profile = buildTopologyProfile(config);
+        const costModel = await loadCostModel(secondArgument);
         printJson(io, {
           profileId: profile.id,
+          costModel: summarizeCostModel(costModel),
           comparison: compareTopologyWorkloads(
             SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
             profile,
+            costModel,
           ),
         });
         return 0;
@@ -196,9 +218,11 @@ export async function runCli(
           "fault-campaign",
         );
         const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
           buildTopologyProfile(config),
+          costModel,
         );
         printJson(
           io,
@@ -224,6 +248,163 @@ async function loadRequiredConfig(
     throw new Error(`${command} requires a YAML or JSON config path`);
   }
   return requireRecord(await readConfigFile(path), "config");
+}
+
+async function loadCostModel(
+  path: string | undefined,
+): Promise<TopologyCostModel> {
+  if (path === undefined) {
+    return DEFAULT_TOPOLOGY_COST_MODEL;
+  }
+  const config = requireRecord(await readConfigFile(path), "calibration");
+  return fitTopologyCostModel(parseCalibrationDataset(config)).costModel;
+}
+
+function parseCalibrationDataset(
+  config: Record<string, unknown>,
+): CalibrationDataset {
+  const dataset = requireRecord(config.calibration ?? config, "calibration");
+  const provenance = requireRecord(
+    dataset.provenance,
+    "calibration.provenance",
+  );
+  const applicability = requireRecord(
+    dataset.applicability,
+    "calibration.applicability",
+  );
+  const deviceKindLabels = requireRecord(
+    applicability.device_kind_labels,
+    "calibration.applicability.device_kind_labels",
+  );
+  const modelConstants = requireRecord(
+    dataset.model_constants,
+    "calibration.model_constants",
+  );
+  const quality = requireRecord(dataset.quality, "calibration.quality");
+  const kind = requireCalibrationEvidenceKind(
+    requireString(provenance, "kind", "calibration.provenance"),
+  );
+  const measuredAt = provenance.measured_at === undefined
+    ? undefined
+    : requireString(
+      provenance,
+      "measured_at",
+      "calibration.provenance",
+    );
+  const notes = provenance.notes === undefined
+    ? undefined
+    : requireString(provenance, "notes", "calibration.provenance");
+  return {
+    revision: requireNumber(
+      dataset,
+      "revision",
+      "calibration",
+    ) as typeof CALIBRATION_DATASET_REVISION,
+    id: requireString(dataset, "id", "calibration"),
+    provenance: {
+      kind,
+      source: requireString(
+        provenance,
+        "source",
+        "calibration.provenance",
+      ),
+      ...(measuredAt === undefined ? {} : { measuredAt }),
+      softwareStack: requireString(
+        provenance,
+        "software_stack",
+        "calibration.provenance",
+      ),
+      modelArtifact: requireString(
+        provenance,
+        "model_artifact",
+        "calibration.provenance",
+      ),
+      ...(notes === undefined ? {} : { notes }),
+    },
+    applicability: {
+      scenarioIds: requireStringArray(
+        applicability,
+        "scenario_ids",
+        "calibration.applicability",
+      ),
+      deviceKindLabels: {
+        cpu: requireString(
+          deviceKindLabels,
+          "cpu",
+          "calibration.applicability.device_kind_labels",
+        ),
+        gpu: requireString(
+          deviceKindLabels,
+          "gpu",
+          "calibration.applicability.device_kind_labels",
+        ),
+        npu: requireString(
+          deviceKindLabels,
+          "npu",
+          "calibration.applicability.device_kind_labels",
+        ),
+      },
+    },
+    modelConstants: {
+      activationBytesPerToken: requireNumber(
+        modelConstants,
+        "activation_bytes_per_token",
+        "calibration.model_constants",
+      ),
+      collectiveBytesPerToken: requireNumber(
+        modelConstants,
+        "collective_bytes_per_token",
+        "calibration.model_constants",
+      ),
+      coldLoadByteMultiplier: requireNumber(
+        modelConstants,
+        "cold_load_byte_multiplier",
+        "calibration.model_constants",
+      ),
+    },
+    quality: {
+      minSamplesPerPoint: requireNumber(
+        quality,
+        "min_samples_per_point",
+        "calibration.quality",
+      ),
+      maxNormalizedRmse: requireNumber(
+        quality,
+        "max_normalized_rmse",
+        "calibration.quality",
+      ),
+      maxP95RelativeError: requireNumber(
+        quality,
+        "max_p95_relative_error",
+        "calibration.quality",
+      ),
+    },
+    observations: requireRecordArray(
+      dataset,
+      "observations",
+      "calibration",
+    ).map((observation, index) => {
+      const context = `calibration.observations[${index}]`;
+      return {
+        id: requireString(observation, "id", context),
+        deviceKind: requireDeviceKind(
+          requireString(observation, "device_kind", context),
+          context,
+        ),
+        capability: requireCalibratedCapability(
+          requireString(observation, "capability", context),
+          context,
+        ),
+        workItems: requireNumber(observation, "work_items", context),
+        durationsNs: requireNumberArray(
+          observation,
+          "durations_ns",
+          context,
+        ),
+        regime: requireString(observation, "regime", context),
+      };
+    }),
+  };
 }
 
 function parseStaticConfig(config: Record<string, unknown>) {
@@ -796,6 +977,7 @@ function summarizeServingComparison(
   comparison: ReturnType<typeof compareTopologyServingWorkloads>,
 ) {
   return {
+    assumptions: comparison.runs[0]?.result.assumptions ?? [],
     comparison: comparison.runs.map((run) => ({
       rank: run.rank,
       scenarioId: run.result.scenarioId,
@@ -819,6 +1001,17 @@ function summarizeServingComparison(
         run.result.serving.metrics.acceptedDraftTokens,
       replayAppliedEvents: run.result.serving.replay.appliedEvents,
     })),
+  };
+}
+
+function summarizeCostModel(costModel: TopologyCostModel) {
+  return {
+    revision: costModel.revision,
+    confidence: costModel.confidence,
+    source: costModel.source,
+    ...(costModel.applicability === undefined
+      ? {}
+      : { applicability: costModel.applicability }),
   };
 }
 
@@ -879,6 +1072,44 @@ function requireFamily(value: string): SpeculativeProposerFamily {
   return value as SpeculativeProposerFamily;
 }
 
+function requireCalibrationEvidenceKind(
+  value: string,
+): CalibrationEvidenceKind {
+  if (value !== "measured" && value !== "synthetic") {
+    throw new Error(`unsupported calibration evidence kind ${value}`);
+  }
+  return value;
+}
+
+function requireDeviceKind(
+  value: string,
+  context: string,
+): SimDeviceKind {
+  if (value !== "cpu" && value !== "gpu" && value !== "npu") {
+    throw new Error(`${context}.device_kind must be cpu, gpu, or npu`);
+  }
+  return value;
+}
+
+function requireCalibratedCapability(
+  value: string,
+  context: string,
+): CalibratedCapability {
+  const capabilities: readonly CalibratedCapability[] = [
+    "invocation",
+    "attention",
+    "ffn",
+    "draft",
+    "lookup",
+  ];
+  if (!capabilities.includes(value as CalibratedCapability)) {
+    throw new Error(
+      `${context}.capability must be invocation, attention, ffn, draft, or lookup`,
+    );
+  }
+  return value as CalibratedCapability;
+}
+
 function requireOffloadStrategy(
   value: string,
 ): MemoryPolicyConfig["offloadStrategy"] {
@@ -913,11 +1144,12 @@ Usage:
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
   inference-sim expert-cache <config.yaml|json>
-  inference-sim serving <scenario-preset> <config.yaml|json>
-  inference-sim serving-compare <config.yaml|json>
-  inference-sim run <scenario-preset> <workload.yaml|json>
-  inference-sim compare <workload.yaml|json>
-  inference-sim fault-campaign <scenario-preset> <workload.yaml|json>
+  inference-sim calibrate <calibration.yaml|json>
+  inference-sim serving <scenario-preset> <config.yaml|json> [calibration.yaml|json]
+  inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
+  inference-sim run <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim compare <workload.yaml|json> [calibration.yaml|json]
+  inference-sim fault-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
 `;
 }
 

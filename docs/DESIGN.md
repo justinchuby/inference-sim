@@ -583,6 +583,60 @@ headline number:
 - collective latency versus message size; and
 - cache hit/miss and bytes moved by tier.
 
+### 11.4 Calibration Import Contract
+
+Topology cost calibration uses a revisioned dataset rather than unversioned
+coefficient overrides. A dataset records:
+
+- evidence kind (`measured` or `synthetic`), source, software stack, model
+  artifact, and measurement date for measured evidence;
+- the exact scenario IDs to which the operator measurements may be applied;
+- an explicit CPU, GPU, and NPU class label so a measurement from one product
+  is not silently generalized to every device of the same kind;
+- repeated duration observations for invocation, attention, FFN, draft, and
+  lookup work;
+- the work-item regime for every observation point;
+- activation, collective, and cold-load model constants; and
+- minimum sample count plus normalized-RMSE and P95-relative-error gates.
+
+`work_items` is the unsharded token work presented to the topology model:
+
+```text
+work_items = token_width * batch_size * max(1, active_experts)
+duration   = invocation_overhead + ns_per_work_item * work_items / shard_degree
+```
+
+Each device kind requires an invocation observation at zero work items and at
+least two distinct positive work-item points for every compute capability.
+Every point retains at least three repeated samples. Invocation overhead is the
+median invocation duration. Capability slopes are deterministic least-squares
+fits against that fixed overhead. The importer reports the fitted coefficient,
+sample count, observed range, normalized RMSE, and P95 relative error for all
+15 device/capability groups.
+
+Import fails closed on incomplete coverage, duplicate identities, invalid
+provenance, unsafe integer time values, non-positive fitted coefficients, or a
+quality gate violation. The observed min/max work-item range is embedded in
+the cost model; execution outside that interpolation range is rejected rather
+than extrapolated under a `calibrated` label. A stable dataset fingerprint is
+included for replay and result attribution. It identifies normalized dataset
+content but is not a cryptographic integrity signature.
+
+Synthetic datasets exercise the import path but remain `heuristic`. Measured
+operator coefficients may make the cost model `calibrated`; an end-to-end
+latency result is `calibrated` only when its device, memory-domain, and link
+evidence is also calibrated. The weakest performance evidence determines the
+result label; the current conservative aggregation includes all performance
+evidence in the applicable scenario. Built-in topology presets remain
+heuristic, so importing measured kernel timings alone does not turn their
+latency rankings into hardware predictions.
+
+The current fitted model is deliberately linear and device-kind scoped. It
+does not yet fit roofline knees, sequence-length effects, collective curves,
+cache-tier distributions, or per-product device overrides. Those require a
+later calibration revision rather than backward-incompatible interpretation
+of revision 1 data.
+
 ## 12. Static Analysis Requirements
 
 The current static analyzer is useful scaffolding, but production-quality
@@ -837,8 +891,12 @@ chunked prefill, exact KV admission/release, TTFT/ITL, and per-batch topology
 execution with independent replay. It composes all six proposer contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
-topology execution matrix. Measured calibration, adaptive prefetch policy, and
-differential token-value traces remain; self-speculative remains design-only.
+topology execution matrix. Revisioned calibration import now preserves repeated
+operator observations, provenance, applicability, quality diagnostics, and
+valid interpolation ranges, with fail-closed execution outside those ranges.
+Backend trace collection, measured transport/collective calibration, adaptive
+prefetch policy, and differential token-value traces remain; self-speculative
+remains design-only.
 The same serving workload can also execute across all six topology presets and
 produce a deterministic latency ranking with per-run replay evidence.
 
@@ -863,7 +921,10 @@ scheduler trace/replay, accepted/rejected draft work, batch work, and topology
 operation summaries.
 The `serving-compare` command runs that same request and acceptance
 configuration across all six topology presets and reports a stable ranked
-summary without duplicating six full traces in CLI output.
+summary without duplicating six full traces in CLI output. The `calibrate`
+command validates and fits revisioned YAML/JSON datasets; topology and serving
+commands accept an optional calibration path and reject scenario or
+work-item-range mismatches.
 The `fault-campaign` command compiles that workload, executes and replays a
 successful baseline, then injects deterministic mid-operation faults into each
 used device/link and the next topology epoch.

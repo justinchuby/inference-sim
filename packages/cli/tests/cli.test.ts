@@ -261,6 +261,61 @@ serving:
     ))).toBe(true);
   });
 
+  it("fits and imports a scoped calibration dataset", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const calibrationPath = join(directory, "calibration.json");
+    const servingPath = join(directory, "serving.yaml");
+    await writeFile(
+      calibrationPath,
+      JSON.stringify(calibrationConfig(["multi-gpu"])),
+      "utf8",
+    );
+    await writeFile(servingPath, `
+serving:
+  max_batch_size: 1
+  max_batch_tokens: 4
+  prefill_chunk_tokens: 2
+  max_kv_tokens: 12
+  requests:
+    - { id: a, arrival_ns: 0, prompt_tokens: 2, output_tokens: 2 }
+`, "utf8");
+
+    const fitCapture = captureIo();
+    expect(await runCli(
+      ["calibrate", calibrationPath],
+      fitCapture.io,
+    )).toBe(0);
+    const fit = JSON.parse(fitCapture.stdout()) as {
+      confidence: string;
+      datasetFingerprint: string;
+      diagnostics: unknown[];
+    };
+    expect(fit.confidence).toBe("heuristic");
+    expect(fit.datasetFingerprint).toMatch(/^fnv1a32:/);
+    expect(fit.diagnostics).toHaveLength(15);
+
+    const runCapture = captureIo();
+    expect(await runCli(
+      ["serving", "multi-gpu", servingPath, calibrationPath],
+      runCapture.io,
+    )).toBe(0);
+    const run = JSON.parse(runCapture.stdout()) as {
+      confidence: string;
+      assumptions: string[];
+    };
+    expect(run.confidence).toBe("heuristic");
+    expect(run.assumptions[0]).toContain("cli-calibration-fixture");
+
+    const rejectedCapture = captureIo();
+    expect(await runCli(
+      ["serving", "cpu-only", servingPath, calibrationPath],
+      rejectedCapture.io,
+    )).toBe(1);
+    expect(rejectedCapture.stderr()).toContain(
+      "cost model is not applicable to scenario cpu-only",
+    );
+  });
+
   it("runs a workload through topology resources", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "target-only.yaml");
@@ -344,3 +399,83 @@ target_only:
     ))).toBe(true);
   });
 });
+
+function calibrationConfig(scenarioIds: readonly string[]) {
+  const costs = {
+    cpu: {
+      invocation: 400_000,
+      attention: 220_000,
+      ffn: 300_000,
+      draft: 110_000,
+      lookup: 8_000,
+    },
+    gpu: {
+      invocation: 120_000,
+      attention: 28_000,
+      ffn: 38_000,
+      draft: 17_000,
+      lookup: 8_000,
+    },
+    npu: {
+      invocation: 100_000,
+      attention: 22_000,
+      ffn: 52_000,
+      draft: 24_000,
+      lookup: 8_000,
+    },
+  } as const;
+  const observations = Object.entries(costs).flatMap(([deviceKind, device]) => [
+    {
+      id: `${deviceKind}-invocation-0`,
+      device_kind: deviceKind,
+      capability: "invocation",
+      work_items: 0,
+      durations_ns: [device.invocation - 1, device.invocation, device.invocation + 1],
+      regime: "test no-op",
+    },
+    ...(["attention", "ffn", "draft", "lookup"] as const).flatMap(
+      (capability) => [1, 8].map((workItems) => {
+        const center = device.invocation + device[capability] * workItems;
+        return {
+          id: `${deviceKind}-${capability}-${workItems}`,
+          device_kind: deviceKind,
+          capability,
+          work_items: workItems,
+          durations_ns: [center - 1, center, center + 1],
+          regime: "test batch",
+        };
+      }),
+    ),
+  ]);
+  return {
+    calibration: {
+      revision: 1,
+      id: "cli-calibration-fixture",
+      provenance: {
+        kind: "synthetic",
+        source: "CLI test fixture",
+        software_stack: "test stack",
+        model_artifact: "test model",
+      },
+      applicability: {
+        scenario_ids: scenarioIds,
+        device_kind_labels: {
+          cpu: "test CPU",
+          gpu: "test GPU",
+          npu: "test NPU",
+        },
+      },
+      model_constants: {
+        activation_bytes_per_token: 1_048_576,
+        collective_bytes_per_token: 524_288,
+        cold_load_byte_multiplier: 2,
+      },
+      quality: {
+        min_samples_per_point: 3,
+        max_normalized_rmse: 0.01,
+        max_p95_relative_error: 0.01,
+      },
+      observations,
+    },
+  };
+}

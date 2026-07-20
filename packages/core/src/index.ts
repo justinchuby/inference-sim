@@ -234,6 +234,22 @@ export {
   validateFrozenPlan,
 } from "./frozen-plan.js";
 export {
+  CALIBRATION_DATASET_REVISION,
+  CalibrationError,
+  fitTopologyCostModel,
+  validateCalibrationDataset,
+  type CalibratedCapability,
+  type CalibrationApplicability,
+  type CalibrationDataset,
+  type CalibrationDatasetProvenance,
+  type CalibrationEvidenceKind,
+  type CalibrationFitDiagnostic,
+  type CalibrationFitResult,
+  type CalibrationModelConstants,
+  type CalibrationObservation,
+  type CalibrationQualityPolicy,
+} from "./calibration.js";
+export {
   DEFAULT_TOPOLOGY_COST_MODEL,
   TOPOLOGY_COST_MODEL_REVISION,
   TopologyWorkloadError,
@@ -246,6 +262,8 @@ export {
   type DeviceCapabilityCost,
   type TopologyComparisonEntry,
   type TopologyCostModel,
+  type TopologyComputeCapability,
+  type CalibratedWorkItemRange,
   type TopologyResourceUtilization,
   type TopologyWorkUnit,
   type TopologyWorkloadMetrics,

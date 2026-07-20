@@ -157,11 +157,15 @@ export function simulateTopologyServingWorkload(
     }
   }
   const totalDurationNs = serving.metrics.totalDurationNs;
+  const confidence = orderedBatches[0]?.topology.confidence
+    ?? costModel.confidence;
   return {
     scenarioId: scenario.id,
-    confidence: costModel.confidence,
+    confidence,
     assumptions: [
       costModel.source,
+      orderedBatches[0]?.topology.assumptions[1]
+        ?? `overall timing confidence is ${confidence}`,
       "continuous batches are non-preemptive; arrivals during a batch wait for its completion",
       "prefill and target verification share fixed invocation plus linear token cost",
       config.speculative
