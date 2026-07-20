@@ -116,6 +116,7 @@ describe("dashboard result artifact import", () => {
   it("binds only contracts used by the selected execution path", () => {
     expect(Object.keys(dashboardArtifactContracts(config)).sort()).toEqual([
       "frozen_plan",
+      "hardware_compute_registry",
       "paged_kv",
       "roofline_summary",
       "scenario_schema",
@@ -133,6 +134,7 @@ describe("dashboard result artifact import", () => {
       },
     })).sort()).toEqual([
       "frozen_plan",
+      "hardware_compute_registry",
       "roofline_summary",
       "scenario_schema",
       "serving_trace",
@@ -149,6 +151,7 @@ describe("dashboard result artifact import", () => {
       "concurrent_plan_trace",
       "expert_cache",
       "frozen_plan",
+      "hardware_compute_registry",
       "roofline_summary",
       "scenario_schema",
       "serving_expert_cache",

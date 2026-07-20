@@ -18,7 +18,13 @@ import type {
   SimLinkSpec,
   SimulationScenario,
 } from "@inference-sim/core";
-import { configureSmallLanNetwork } from "@inference-sim/core";
+import {
+  HARDWARE_COMPUTE_PROFILES,
+  configureSmallLanNetwork,
+  denseHardwareComputePeak,
+  hardwareComputeDtypes,
+  hardwareComputeProfile,
+} from "@inference-sim/core";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -354,6 +360,10 @@ function DeviceEditor({
     update: (domain: MemoryDomainSpec) => MemoryDomainSpec,
   ) => void;
 }): React.JSX.Element {
+  const computeProfiles = HARDWARE_COMPUTE_PROFILES.filter((profile) => (
+    profile.deviceKind === device.kind
+  ));
+  const selectedProfile = hardwareComputeProfile(device.computeProfileId);
   return (
     <section className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
@@ -367,6 +377,57 @@ function DeviceEditor({
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <EditorField label="Hardware compute profile" className="sm:col-span-2">
+          <Select
+            value={device.computeProfileId ?? "__unspecified__"}
+            onValueChange={(value) => onDeviceChange((current) => {
+              if (value === "__unspecified__") {
+                const { computeProfileId: _removed, ...rest } = current;
+                return rest;
+              }
+              const profile = hardwareComputeProfile(value);
+              const dtypes = profile === undefined
+                ? []
+                : hardwareComputeDtypes(profile);
+              return {
+                ...current,
+                computeProfileId: value,
+                supportedDtypes: dtypes.length === 0
+                  ? current.supportedDtypes
+                  : dtypes,
+              };
+            })}
+          >
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__unspecified__">Unspecified hardware</SelectItem>
+              {computeProfiles.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.vendor} {profile.model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {selectedProfile === undefined ? (
+            <p className="mt-1.5 text-[11px] leading-4 text-zinc-500">
+              No official peak is bound. The simulator may use a calibrated or heuristic effective ceiling.
+            </p>
+          ) : (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-4 text-zinc-500">
+              <span>{computeProfileSummary(selectedProfile)}</span>
+              {selectedProfile.sources[0] === undefined ? null : (
+                <a
+                  className="font-semibold text-sky-700 hover:underline"
+                  href={selectedProfile.sources[0].url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Official source
+                </a>
+              )}
+            </div>
+          )}
+        </EditorField>
         <EditorField label="Execution provider">
           <TextInput
             value={device.executionProvider}
@@ -497,6 +558,28 @@ function DeviceEditor({
       ))}
     </section>
   );
+}
+
+function computeProfileSummary(
+  profile: (typeof HARDWARE_COMPUTE_PROFILES)[number],
+): string {
+  const dense = profile.peaks.filter((item) => item.sparsity === "dense");
+  if (dense.length === 0) {
+    return profile.peaks.length === 0
+      ? "Vendor has not published an absolute dtype-specific peak."
+      : "Published peaks exist, but dense semantics are not explicit.";
+  }
+  const dtypes = [...new Set(dense.map((item) => item.dtype))];
+  return dtypes.map((dtype) => denseHardwareComputePeak(profile.id, dtype)!)
+    .map((item) => (
+    `${item.dtype.toUpperCase()} ${formatComputePeak(item.operationsPerSecond)}`
+  )).join(" · ");
+}
+
+function formatComputePeak(operationsPerSecond: number): string {
+  return operationsPerSecond >= 1e15
+    ? `${(operationsPerSecond / 1e15).toLocaleString(undefined, { maximumFractionDigits: 3 })} POPS`
+    : `${(operationsPerSecond / 1e12).toLocaleString(undefined, { maximumFractionDigits: 1 })} TOPS`;
 }
 
 function ResourceManagerEditor({

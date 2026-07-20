@@ -112,7 +112,7 @@ function parseDevices(value: unknown, scenarioLabel: string): void {
         "supportedDtypes",
         "maxConcurrentCompute",
         "provenance",
-      ], [], label);
+      ], ["computeProfileId"], label);
       requireStrings(
         device,
         ["id", "nodeId", "kind", "executionProvider"],
@@ -121,6 +121,9 @@ function parseDevices(value: unknown, scenarioLabel: string): void {
       requireStringArray(device.memoryDomainIds, `${label} memoryDomainIds`);
       requireStringArray(device.capabilities, `${label} capabilities`);
       requireStringArray(device.supportedDtypes, `${label} supportedDtypes`);
+      if (device.computeProfileId !== undefined) {
+        requireNonEmptyString(device.computeProfileId, `${label} computeProfileId`);
+      }
       requireFiniteNumber(
         device.maxConcurrentCompute,
         `${label} maxConcurrentCompute`,

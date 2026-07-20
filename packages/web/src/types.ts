@@ -103,7 +103,7 @@ export type RooflinePhase =
   | "moe";
 
 export interface DashboardRooflineResult {
-  readonly revision: 1;
+  readonly revision: 2;
   readonly status: "available" | "unavailable";
   readonly confidence: ConfidenceClass;
   readonly assumptions: readonly string[];
@@ -111,8 +111,10 @@ export interface DashboardRooflineResult {
   readonly computeRoof?: {
     readonly label: string;
     readonly flopsPerSecond: number;
-    readonly evidence: "calibrated_effective" | "heuristic_effective";
+    readonly evidence: "vendor_peak" | "calibrated_effective" | "heuristic_effective";
     readonly dtype: string;
+    readonly profileIds?: readonly string[];
+    readonly sourceUrls?: readonly string[];
   };
   readonly bandwidthRoofs: readonly {
     readonly id: string;

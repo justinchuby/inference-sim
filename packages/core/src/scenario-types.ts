@@ -53,6 +53,7 @@ export interface SimDeviceSpec {
   readonly memoryDomainIds: readonly string[];
   readonly capabilities: readonly ComputeCapability[];
   readonly supportedDtypes: readonly string[];
+  readonly computeProfileId?: string;
   readonly maxConcurrentCompute: number;
   readonly provenance: EvidenceProvenance;
 }

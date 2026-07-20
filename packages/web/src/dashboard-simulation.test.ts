@@ -77,7 +77,7 @@ describe("simulateDashboard", () => {
     });
 
     expect(result.roofline).toMatchObject({
-      revision: 1,
+      revision: 2,
       status: "available",
       computeRoof: { dtype: "fp16" },
     });
@@ -93,7 +93,7 @@ describe("simulateDashboard", () => {
     ))).toBe(true);
   });
 
-  it("does not invent a low-bit compute roof", () => {
+  it("uses the activation roof instead of inventing a low-bit weight roof", () => {
     const result = simulateDashboard({
       ...base,
       scenarioName: "rtx-5090-desktop",
@@ -112,11 +112,15 @@ describe("simulateDashboard", () => {
     });
 
     expect(result.roofline?.status).toBe("available");
-    expect(result.roofline?.computeRoof).toBeUndefined();
+    expect(result.roofline?.computeRoof).toMatchObject({
+      dtype: "fp16",
+      evidence: "vendor_peak",
+      flopsPerSecond: 209.5e12,
+    });
     expect(result.roofline?.bandwidthRoofs.length).toBeGreaterThan(0);
-    expect(result.roofline?.points.every(
-      (point) => point.limitingRoofId === "unresolved",
-    )).toBe(true);
+    expect(result.roofline?.assumptions.some((assumption) => (
+      assumption.includes("Weight-only quantization")
+    ))).toBe(true);
   });
 
   it("labels speculative verification as its own roofline phase", () => {
@@ -140,7 +144,7 @@ describe("simulateDashboard", () => {
   it("fails closed when roofline model evidence is absent", () => {
     const result = simulateDashboard({ ...base, mode: "expert-cache" });
     expect(result.roofline).toMatchObject({
-      revision: 1,
+      revision: 2,
       status: "unavailable",
     });
     expect(result.roofline?.unavailableReason).toContain("select a model");

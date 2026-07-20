@@ -16,7 +16,7 @@ function result(
   compute = 1e14,
 ): DashboardRooflineResult {
   return {
-    revision: 1,
+    revision: 2,
     status: "available",
     confidence: "heuristic",
     assumptions: [],

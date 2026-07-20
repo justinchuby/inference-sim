@@ -317,6 +317,17 @@ function RooflineChart({
           ? " this dtype has no defensible compute ceiling, so none is invented."
           : ` the horizontal line is a ${roofline.computeRoof.evidence.replaceAll("_", " ")} ceiling for ${roofline.computeRoof.dtype}.`}
       </p>
+      {roofline.computeRoof?.evidence === "vendor_peak"
+        && roofline.computeRoof.sourceUrls?.[0] !== undefined ? (
+          <a
+            className="inline-flex text-xs font-semibold text-sky-700 hover:underline"
+            href={roofline.computeRoof.sourceUrls[0]}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View official compute specification
+          </a>
+        ) : null}
       <div className={`grid gap-3 border-l-2 px-3 py-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] ${interpretationTone}`} role="status">
         <div>
           <div className="text-[11px] font-bold uppercase text-current opacity-70">
@@ -396,7 +407,7 @@ function RooflineChart({
               : null}
             <Line data={samples} dataKey="bandwidth" name={`${selectedRoof.label} bandwidth`} stroke="#d97706" strokeWidth={2} dot={false} isAnimationActive={false} />
             {roofline.computeRoof
-              ? <Line data={samples} dataKey="compute" name="Effective compute" stroke="#047857" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+              ? <Line data={samples} dataKey="compute" name={roofline.computeRoof.label} stroke="#047857" strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
               : null}
             <Scatter data={data} dataKey="rate" name="Predicted work" fill="#0369a1" isAnimationActive={false} />
           </ComposedChart>

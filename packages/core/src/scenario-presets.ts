@@ -61,6 +61,7 @@ const PRESET_FACTORIES: Readonly<
   "rtx-4090-desktop": () => buildDiscreteComputer({
     id: "rtx-4090-desktop",
     gpuId: "desktop:rtx4090",
+    gpuComputeProfileId: "nvidia-geforce-rtx-4090",
     hostCapacityBytes: 64 * GiB,
     hostResourceLimitBytes: 56 * GiB,
     hostBandwidthBytesPerSec: 83 * GBps,
@@ -73,6 +74,7 @@ const PRESET_FACTORIES: Readonly<
   "rtx-5090-desktop": () => buildDiscreteComputer({
     id: "rtx-5090-desktop",
     gpuId: "desktop:rtx5090",
+    gpuComputeProfileId: "nvidia-geforce-rtx-5090",
     hostCapacityBytes: 128 * GiB,
     hostResourceLimitBytes: 112 * GiB,
     hostBandwidthBytesPerSec: 90 * GBps,
@@ -87,6 +89,8 @@ const PRESET_FACTORIES: Readonly<
     nodeId: "mac-mini",
     gpuId: "mac-mini:m4-pro-gpu",
     npuId: "mac-mini:m4-pro-neural-engine",
+    gpuComputeProfileId: "apple-m4-pro-gpu",
+    npuComputeProfileId: "apple-m4-pro-neural-engine",
     capacityBytes: 64 * GiB,
     resourceLimitBytes: 56 * GiB,
     bandwidthBytesPerSec: 273 * GBps,
@@ -98,6 +102,8 @@ const PRESET_FACTORIES: Readonly<
     nodeId: "mac-studio",
     gpuId: "mac-studio:m3-ultra-gpu",
     npuId: "mac-studio:m3-ultra-neural-engine",
+    gpuComputeProfileId: "apple-m3-ultra-gpu",
+    npuComputeProfileId: "apple-m3-ultra-neural-engine",
     capacityBytes: 512 * GiB,
     resourceLimitBytes: 480 * GiB,
     bandwidthBytesPerSec: 819 * GBps,
@@ -132,6 +138,7 @@ export function buildScenarioPreset(name: ScenarioPresetName): SimulationScenari
 interface DiscreteComputerConfig {
   readonly id: string;
   readonly gpuId: string;
+  readonly gpuComputeProfileId: string;
   readonly hostCapacityBytes: number;
   readonly hostResourceLimitBytes: number;
   readonly hostBandwidthBytesPerSec: number;
@@ -163,6 +170,7 @@ function buildDiscreteComputer(
     "CUDAExecutionProvider",
     [vramDomainId, hostDomainId],
     ["attention", "ffn", "collective", "copy", "sampling", "draft"],
+    config.gpuComputeProfileId,
   );
   return scenario({
     id: config.id,
@@ -250,6 +258,8 @@ interface UnifiedComputerConfig {
   readonly nodeId: string;
   readonly gpuId: string;
   readonly npuId: string;
+  readonly gpuComputeProfileId?: string;
+  readonly npuComputeProfileId?: string;
   readonly capacityBytes: number;
   readonly resourceLimitBytes: number;
   readonly bandwidthBytesPerSec: number;
@@ -276,6 +286,7 @@ function buildUnifiedComputer(
     config.executionProvider,
     [unifiedDomainId],
     ["attention", "ffn", "copy", "sampling", "draft"],
+    config.gpuComputeProfileId,
   );
   const npu = device(
     config.npuId,
@@ -284,6 +295,7 @@ function buildUnifiedComputer(
     config.executionProvider,
     [unifiedDomainId],
     ["attention", "copy", "draft"],
+    config.npuComputeProfileId,
   );
   return scenario({
     id: config.id,
@@ -1467,6 +1479,7 @@ function device(
   executionProvider: string,
   memoryDomainIds: readonly string[],
   capabilities: SimDeviceSpec["capabilities"],
+  computeProfileId?: string,
 ): SimDeviceSpec {
   return {
     id,
@@ -1478,6 +1491,7 @@ function device(
       ? [...capabilities, "lookup"]
       : capabilities,
     supportedDtypes: ["fp16", "fp8", "int8"],
+    ...(computeProfileId === undefined ? {} : { computeProfileId }),
     maxConcurrentCompute: 1,
     provenance: HEURISTIC,
   };

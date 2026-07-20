@@ -13,6 +13,7 @@ import {
   type TransferRequirement,
   type TransferRoute,
 } from "./scenario-types.js";
+import { hardwareComputeProfile } from "./hardware-compute-profiles.js";
 
 const SCENARIO_FAMILIES = [
   "cpu_only",
@@ -338,6 +339,22 @@ export function validateScenario(
       `${path}.supportedDtypes`,
       add,
     );
+    if (device.computeProfileId !== undefined) {
+      const profile = hardwareComputeProfile(device.computeProfileId);
+      if (profile === undefined) {
+        add(
+          "unknown_compute_profile",
+          `${path}.computeProfileId`,
+          `unknown hardware compute profile ${device.computeProfileId}`,
+        );
+      } else if (profile.deviceKind !== device.kind) {
+        add(
+          "compute_profile_kind_mismatch",
+          `${path}.computeProfileId`,
+          `${profile.model} is a ${profile.deviceKind} profile, not ${device.kind}`,
+        );
+      }
+    }
     if (device.memoryDomainIds.length === 0) {
       add("no_memory", `${path}.memoryDomainIds`, "must not be empty");
     }

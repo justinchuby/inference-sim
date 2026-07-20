@@ -5,13 +5,17 @@ import type {
   TopologyServingResult,
   TopologyWorkloadResult,
 } from "@inference-sim/core";
+import {
+  denseHardwareComputePeak,
+  hardwareComputeProfile,
+} from "@inference-sim/core";
 import type {
   DashboardModelBinding,
   DashboardRooflineResult,
   RooflinePhase,
 } from "./types.js";
 
-export const ROOFLINE_SUMMARY_REVISION = 1;
+export const ROOFLINE_SUMMARY_REVISION = 2;
 
 interface RooflineInput {
   readonly scenario: SimulationScenario;
@@ -57,10 +61,10 @@ export function buildDashboardRoofline(
     );
   }
   const targetDevices = targetDeviceIds(input.scenario);
-  const computeDtype = model.modelFormat?.weightQuantization === "none"
-    ? model.modelFormat.weightDtypes[0]?.toLowerCase() ?? "fp16"
-    : model.modelFormat?.weightQuantization ?? "unknown";
-  const computeRoof = effectiveComputeRoof(
+  const computeDtype = model.modelFormat?.activationDtype?.toLowerCase()
+    ?? model.modelFormat?.weightDtypes[0]?.toLowerCase()
+    ?? "fp16";
+  const computeRoof = resolvedComputeRoof(
     input,
     targetDevices,
     computeDtype,
@@ -124,7 +128,10 @@ export function buildDashboardRoofline(
       ?? "heuristic",
     assumptions: [
       "Arithmetic intensity is model FLOPs divided by active weight bytes at the selected execution width.",
-      "The compute roof is an effective ceiling from the active topology cost model, not a vendor hardware peak.",
+      computeRoof?.evidence === "vendor_peak"
+        ? "The compute roof sums official dense peaks for every active device with a compatible hardware profile."
+        : "Without a bound compatible hardware profile, the compute roof is an effective ceiling from the topology cost model.",
+      "Weight-only quantization changes active bytes but does not select a pure integer compute roof when activations use floating point.",
       "Interconnect and storage roofs are counterfactual ceilings unless the replay actually routes model data through that tier.",
       "Pipeline component FLOPs are allocated in proportion to component weight bytes and are heuristic.",
       "Speculative proposer work is excluded unless a separate proposer execution profile is available.",
@@ -243,11 +250,40 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
   }];
 }
 
-function effectiveComputeRoof(
+function resolvedComputeRoof(
   input: RooflineInput,
   deviceIds: readonly string[],
   dtype: string,
 ): DashboardRooflineResult["computeRoof"] | undefined {
+  const devices = deviceIds.map((id) => input.scenario.devices.find(
+    (candidate) => candidate.id === id,
+  )).filter((device) => device !== undefined);
+  const boundProfiles = devices.filter((device) => (
+    device.computeProfileId !== undefined
+  ));
+  if (boundProfiles.length > 0) {
+    if (boundProfiles.length !== devices.length) return undefined;
+    const peaks = boundProfiles.map((device) => ({
+      device,
+      profile: hardwareComputeProfile(device.computeProfileId),
+      peak: denseHardwareComputePeak(device.computeProfileId, dtype),
+    }));
+    if (peaks.some((item) => item.profile === undefined || item.peak === undefined)) {
+      return undefined;
+    }
+    return {
+      label: "Official dense compute",
+      flopsPerSecond: peaks.reduce((sum, item) => (
+        sum + item.peak!.operationsPerSecond
+      ), 0),
+      evidence: "vendor_peak",
+      dtype,
+      profileIds: peaks.map((item) => item.profile!.id),
+      sourceUrls: [...new Set(peaks.flatMap((item) => (
+        item.profile!.sources.map((itemSource) => itemSource.url)
+      )))],
+    };
+  }
   if (["int4", "int2", "int1", "nf4", "mixed", "unknown"].includes(dtype)) {
     return undefined;
   }
@@ -256,9 +292,8 @@ function effectiveComputeRoof(
     return undefined;
   }
   let total = 0;
-  for (const id of deviceIds) {
-    const device = input.scenario.devices.find((candidate) => candidate.id === id);
-    if (device === undefined || !device.supportedDtypes.includes(dtype)) {
+  for (const device of devices) {
+    if (!device.supportedDtypes.includes(dtype)) {
       continue;
     }
     const cost = input.costModel.deviceCosts[device.kind];

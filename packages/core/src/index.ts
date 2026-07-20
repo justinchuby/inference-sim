@@ -305,6 +305,17 @@ export {
   type TransferRoute,
 } from "./scenario-types.js";
 export {
+  HARDWARE_COMPUTE_PROFILES,
+  HARDWARE_COMPUTE_REGISTRY_REVISION,
+  denseHardwareComputePeak,
+  hardwareComputeDtypes,
+  hardwareComputeProfile,
+  type HardwareComputeDtype,
+  type HardwareComputePeak,
+  type HardwareComputeProfile,
+  type HardwareComputeSource,
+} from "./hardware-compute-profiles.js";
+export {
   ScenarioValidationError,
   assertValidScenario,
   calculateLinkDurationNs,

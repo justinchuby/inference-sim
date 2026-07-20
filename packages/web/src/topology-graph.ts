@@ -2,6 +2,7 @@ import type {
   NetworkResourceSpec,
   SimulationScenario,
 } from "@inference-sim/core";
+import { hardwareComputeProfile } from "@inference-sim/core";
 
 export interface TopologyGraphNodeData {
   readonly category: "system" | "device" | "memory" | "network";
@@ -170,6 +171,8 @@ export function buildTopologyGraph(
             `${device.maxConcurrentCompute} compute lane${device.maxConcurrentCompute === 1 ? "" : "s"}`,
             compactList(device.capabilities),
             compactList(device.supportedDtypes),
+            hardwareComputeProfile(device.computeProfileId)?.model
+              ?? "compute peak not bound",
           ],
         },
       });
