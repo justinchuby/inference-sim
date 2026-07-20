@@ -183,6 +183,33 @@ describe("dashboard result artifact import", () => {
     );
   });
 
+  it("round-trips model dtype and quantization evidence", () => {
+    const quantizedConfig: DashboardRunConfig = {
+      ...config,
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "int4"),
+      serving: {
+        ...config.serving,
+        decodeMode: "target_only",
+      },
+    };
+    const artifact = createDashboardArtifact(
+      quantizedConfig,
+      simulateDashboardExecution(quantizedConfig),
+    );
+    const parsed = parseDashboardArtifactFileText(
+      serializeSimulationResultArtifact(artifact),
+      "int4-run.json",
+    );
+
+    expect(parsed.config.modelBinding?.modelFormat).toEqual(
+      quantizedConfig.modelBinding?.modelFormat,
+    );
+    expect(parsed.config.modelBinding?.weightBytes).toBe(
+      quantizedConfig.modelBinding?.weightBytes,
+    );
+  });
+
   it("strictly round-trips and replays a selected multi-node count", () => {
     const multiNodeConfig: DashboardRunConfig = {
       ...config,

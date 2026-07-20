@@ -51,11 +51,28 @@ export interface DashboardModelBinding {
   readonly componentCount: number;
   readonly totalParameters: number;
   readonly weightBytes: number;
+  readonly modelFormat?: DashboardModelFormat;
   readonly executionProfile: DashboardModelExecutionProfile;
   readonly pipelineExecution?: TopologyPipelineWork;
   readonly executionCoverage: DashboardModelExecutionCoverage;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
+}
+
+export interface DashboardModelFormat {
+  readonly weightDtypes: readonly string[];
+  readonly weightQuantization:
+    | "none"
+    | "fp8"
+    | "int8"
+    | "int4"
+    | "nf4"
+    | "mixed"
+    | "unknown";
+  readonly kvCacheDtype: QuantType | "unknown";
+  readonly activationDtype: QuantType | "unknown";
+  readonly evidence: "preset_declared" | "onnx_inferred";
+  readonly runtimeDtypesDefaulted: boolean;
 }
 
 export interface DashboardModelExecutionCoverage {
@@ -134,6 +151,7 @@ export interface DashboardResult {
     readonly fingerprint: string;
     readonly totalParameters: number;
     readonly weightBytes: number;
+    readonly modelFormat?: DashboardModelFormat;
   };
   readonly scenario: {
     readonly id: string;

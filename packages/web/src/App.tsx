@@ -3,6 +3,7 @@ import {
   buildMultiNodeLanScenario,
   buildScenarioPreset,
   buildTopology,
+  type QuantType,
   type ScenarioPresetName,
   type SimulationScenario,
 } from "@inference-sim/core";
@@ -126,6 +127,7 @@ import type {
   DashboardArtifactExpectation,
   DashboardArtifactReplay,
   DashboardModelBinding,
+  DashboardModelFormat,
   DashboardResult,
   DashboardRunConfig,
   FrozenPlanBrowserResult,
@@ -136,6 +138,14 @@ import type {
   WorkerResponse,
   WorkloadMode,
 } from "./types.js";
+
+const BUILTIN_WEIGHT_DTYPES = [
+  "fp16",
+  "bf16",
+  "fp8",
+  "int8",
+  "int4",
+] as const satisfies readonly QuantType[];
 
 const COMPUTER_SCENARIOS: ReadonlyArray<{
   readonly value: DashboardRunConfig["scenarioName"];
@@ -618,10 +628,17 @@ export function App(): React.JSX.Element {
 
   const selectBuiltinModel = useCallback((
     preset: DashboardModelPreset,
+    weightDtype?: QuantType,
   ) => {
+    const currentWeightDtype = config.modelBinding?.source === "builtin_model"
+      ? config.modelBinding.modelFormat?.weightDtypes[0]
+      : undefined;
+    const selectedWeightDtype = weightDtype
+      ?? BUILTIN_WEIGHT_DTYPES.find((dtype) => dtype === currentWeightDtype)
+      ?? "fp16";
     changeConfig({
       ...config,
-      modelBinding: createBuiltinModelBinding(preset),
+      modelBinding: createBuiltinModelBinding(preset, selectedWeightDtype),
       mode: "serving",
       serving: {
         ...config.serving,
@@ -2036,7 +2053,10 @@ function ConfigurationPanel({
     files: readonly File[],
     label: string,
   ) => void;
-  readonly onBuiltinModel: (preset: DashboardModelPreset) => void;
+  readonly onBuiltinModel: (
+    preset: DashboardModelPreset,
+    weightDtype?: QuantType,
+  ) => void;
   readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
@@ -2079,8 +2099,13 @@ function ConfigurationPanel({
   ]);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
   const selectedModelValue = config.modelBinding?.source === "builtin_model"
-    ? config.modelBinding.targetModelFingerprint.replace(/^builtin:/, "")
+    ? config.modelBinding.executionProfile.modelId
     : "local";
+  const selectedWeightDtype = config.modelBinding?.source === "builtin_model"
+    ? BUILTIN_WEIGHT_DTYPES.find(
+        (dtype) => dtype === config.modelBinding?.modelFormat?.weightDtypes[0],
+      ) ?? "fp16"
+    : undefined;
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
       <div className="configuration-scroll">
@@ -2162,6 +2187,37 @@ function ConfigurationPanel({
                 : null}
             </SelectContent>
           </Select>
+          {selectedWeightDtype === undefined
+            ? null
+            : (
+                <label className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-zinc-600">
+                  <span className="shrink-0 font-medium">Weight format</span>
+                  <Select
+                    value={selectedWeightDtype}
+                    disabled={disabled || modelPackage.importing}
+                    onValueChange={(value) => {
+                      onBuiltinModel(
+                        selectedModelValue as DashboardModelPreset,
+                        value as QuantType,
+                      );
+                    }}
+                  >
+                    <SelectTrigger
+                      aria-label="Weight format"
+                      className="h-8 w-32"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {BUILTIN_WEIGHT_DTYPES.map((dtype) => (
+                        <SelectItem key={dtype} value={dtype}>
+                          {formatDtype(dtype)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
           <div className="mt-1.5 grid grid-cols-2 gap-1.5">
             <Button
               type="button"
@@ -2202,6 +2258,9 @@ function ConfigurationPanel({
                       )} {config.modelBinding.pipelineExecution?.replacesTarget
                         ? "primary forward estimate"
                         : "/ token"}
+                    </div>
+                    <div className="mt-0.5 leading-4">
+                      {formatModelFormat(config.modelBinding.modelFormat)}
                     </div>
                   </div>
                 </div>
@@ -3668,6 +3727,14 @@ function Results({
               : `${result.scenario.id} · no model timing bound`}
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-400">
+            {result.model?.modelFormat
+              ? (
+                  <>
+                    {formatModelFormat(result.model.modelFormat)}
+                    <br />
+                  </>
+                )
+              : null}
             {result.topology.planSteps.toLocaleString()} plan steps ·{" "}
             {result.topology.operationCounts.compute.toLocaleString()} compute ·{" "}
             {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
@@ -4535,6 +4602,26 @@ function ModelPackageOverview({
                     )}
                   />
                   <DiagnosticValue
+                    label="Weight dtype"
+                    value={componentMetrics === undefined
+                      ? "N/A"
+                      : componentMetrics.weightDtypes
+                        .map(formatDtype)
+                        .join(" / ")}
+                  />
+                  <DiagnosticValue
+                    label="Quantization"
+                    value={componentMetrics?.weightQuantization === undefined
+                      ? "Unknown"
+                      : formatQuantization(
+                        componentMetrics.weightQuantization === "fp32"
+                            || componentMetrics.weightQuantization === "fp16"
+                            || componentMetrics.weightQuantization === "bf16"
+                          ? "none"
+                          : componentMetrics.weightQuantization,
+                      )}
+                  />
+                  <DiagnosticValue
                     label="Forward work"
                     value={componentMetrics?.forwardFlopsPerToken === undefined
                       ? "Unavailable"
@@ -5030,6 +5117,68 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KiB`;
   }
   return `${bytes.toFixed(0)} B`;
+}
+
+function formatModelFormat(
+  format: DashboardModelFormat | undefined,
+): string {
+  if (format === undefined) {
+    return "Weight dtype and quantization unspecified";
+  }
+  const runtimeSuffix = format.runtimeDtypesDefaulted
+    ? " (runtime defaults)"
+    : "";
+  return [
+    `weights ${format.weightDtypes.map(formatDtype).join(" / ")}`,
+    formatQuantization(format.weightQuantization),
+    `KV ${formatDtype(format.kvCacheDtype)}`,
+    `activations ${formatDtype(format.activationDtype)}${runtimeSuffix}`,
+  ].join(" · ");
+}
+
+function formatDtype(dtype: string): string {
+  switch (dtype.toLowerCase()) {
+    case "float":
+    case "fp32":
+      return "FP32";
+    case "float16":
+    case "fp16":
+      return "FP16";
+    case "bfloat16":
+    case "bf16":
+      return "BF16";
+    case "fp8":
+      return "FP8";
+    case "int8":
+      return "INT8";
+    case "uint8":
+      return "UINT8";
+    case "int4":
+      return "INT4";
+    case "uint4":
+      return "UINT4";
+    case "nf4":
+      return "NF4";
+    case "unknown":
+      return "Unknown";
+    default:
+      return dtype.toUpperCase();
+  }
+}
+
+function formatQuantization(
+  quantization: DashboardModelFormat["weightQuantization"],
+): string {
+  switch (quantization) {
+    case "none":
+      return "unquantized";
+    case "mixed":
+      return "mixed quantization";
+    case "unknown":
+      return "quantization unknown";
+    default:
+      return `${formatDtype(quantization)} quantized`;
+  }
 }
 
 function formatSignedBytes(bytes: number): string {

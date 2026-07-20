@@ -21,6 +21,30 @@ import {
 } from "./model-binding.js";
 
 describe("model UI metrics", () => {
+  it("binds weight dtype to storage cost and experiment identity", () => {
+    const fp16 = createBuiltinModelBinding("llama-3-8b", "fp16");
+    const int4 = createBuiltinModelBinding("llama-3-8b", "int4");
+
+    expect(fp16.modelFormat).toMatchObject({
+      weightDtypes: ["fp16"],
+      weightQuantization: "none",
+      kvCacheDtype: "fp16",
+      activationDtype: "fp16",
+      evidence: "preset_declared",
+    });
+    expect(int4.modelFormat).toMatchObject({
+      weightDtypes: ["int4"],
+      weightQuantization: "int4",
+    });
+    expect(int4.weightBytes).toBe(fp16.weightBytes / 4);
+    expect(int4.executionProfile.attentionWeightBytesPerToken).toBe(
+      fp16.executionProfile.attentionWeightBytesPerToken / 4,
+    );
+    expect(int4.targetModelFingerprint).not.toBe(
+      fp16.targetModelFingerprint,
+    );
+  });
+
   it("keeps exact inventory separate from heuristic work and bandwidth bounds", () => {
     const modelPackage = packageWithDenseModel();
     const scenario = buildScenarioPreset("multi-gpu");
@@ -34,6 +58,15 @@ describe("model UI metrics", () => {
     expect(metrics.activeWeightBytesPerToken).toBe(4_000);
     expect(metrics.hotMemoryBandwidthBytesPerSec).toBe(6_000_000_000_000);
     expect(metrics.bandwidthCeilingTokensPerSec).toBe(1_500_000_000);
+    expect(metrics.components[0]?.weightDtypes).toEqual(["float16"]);
+    expect(createImportedModelBinding(modelPackage).modelFormat).toMatchObject({
+      weightDtypes: ["float16"],
+      weightQuantization: "none",
+      kvCacheDtype: "fp16",
+      activationDtype: "fp16",
+      evidence: "onnx_inferred",
+      runtimeDtypesDefaulted: true,
+    });
   });
 
   it("calculates an ideal hardware roofline without utilization factors", () => {

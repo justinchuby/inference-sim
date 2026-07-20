@@ -19,6 +19,7 @@ export interface ModelComponentMetrics {
   readonly graphNodes: number;
   readonly operatorKinds: number;
   readonly topOperators: readonly string[];
+  readonly weightDtypes: readonly string[];
   readonly forwardFlopsPerToken?: number;
   readonly activeWeightBytesPerToken?: number;
   readonly weightQuantization?: QuantType;
@@ -150,6 +151,9 @@ function summarizeComponent(
   model: ImportedOnnxModel,
 ): ModelComponentMetrics {
   const architecture = model.manifest.architecture;
+  const weightDtypes = [...new Set(model.manifest.initializers
+    .filter((initializer) => initializer.dimensions.length >= 2)
+    .map((initializer) => initializer.dataType))].sort();
   const base = {
     fileName: model.fileName,
     modelName: architecture.modelType
@@ -168,6 +172,7 @@ function summarizeComponent(
       ))
       .slice(0, 3)
       .map((operator) => `${operator.opType} ${operator.count}`),
+    weightDtypes: weightDtypes.length === 0 ? ["unknown"] : weightDtypes,
   };
   if (!model.manifest.profileReadiness.ready) {
     return base;

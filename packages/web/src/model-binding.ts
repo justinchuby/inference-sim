@@ -2,6 +2,7 @@ import {
   buildModelProfile,
   resolveOnnxModelProfile,
   type ModelProfile,
+  type QuantType,
   type TopologyPipelinePhase,
   type TopologyPipelineWork,
 } from "@inference-sim/core";
@@ -9,6 +10,7 @@ import type { ImportedModelPackage } from "./model-package-import.js";
 import type {
   DashboardModelBinding,
   DashboardModelExecutionProfile,
+  DashboardModelFormat,
 } from "./types.js";
 
 export const DASHBOARD_MODEL_PRESETS = [
@@ -23,20 +25,31 @@ export type DashboardModelPreset = typeof DASHBOARD_MODEL_PRESETS[number];
 
 export function createBuiltinModelBinding(
   preset: DashboardModelPreset,
+  weightDtype: QuantType = "fp16",
+  kvCacheDtype: QuantType = "fp16",
 ): DashboardModelBinding {
-  const model = buildModelProfile(preset);
+  const model = buildModelProfile(preset, weightDtype, kvCacheDtype);
+  const fingerprint = `builtin:${preset}:${weightDtype}:${kvCacheDtype}`;
   const moeLimitations = model.moe === undefined
     ? []
     : ["model_moe_routing_not_bound_to_expert_workload"];
   return {
     source: "builtin_model",
     displayName: model.name,
-    modelFingerprints: [`builtin:${preset}`],
-    targetModelFingerprint: `builtin:${preset}`,
+    modelFingerprints: [fingerprint],
+    targetModelFingerprint: fingerprint,
     componentCount: 1,
     totalParameters: model.totalParams,
     weightBytes: totalModelWeightBytes(model),
-    executionProfile: executionProfile(model, `builtin:${preset}`),
+    modelFormat: {
+      weightDtypes: [weightDtype],
+      weightQuantization: quantizationKind(weightDtype),
+      kvCacheDtype: model.quantization.kvCache,
+      activationDtype: model.quantization.activations,
+      evidence: "preset_declared",
+      runtimeDtypesDefaulted: false,
+    },
+    executionProfile: executionProfile(model, preset),
     executionCoverage: {
       fidelity: moeLimitations.length === 0 ? "complete" : "partial",
       scope: "full_model",
@@ -67,6 +80,7 @@ export function createImportedModelBinding(
         assessedCoverage,
         "model_moe_routing_not_bound_to_expert_workload",
       );
+  const modelFormat = importedModelFormat(modelPackage, model);
   return {
     source: "local_model_package",
     displayName: modelPackage.metadata.components.length > 1
@@ -91,6 +105,7 @@ export function createImportedModelBinding(
       ),
       0,
     ),
+    modelFormat,
     executionProfile: model === undefined
       ? genericExecutionProfile(target)
       : executionProfile(model, fingerprint),
@@ -102,6 +117,90 @@ export function createImportedModelBinding(
     speculativeFamilies:
       modelPackage.metadata.speculative.availableFamilies,
   };
+}
+
+function importedModelFormat(
+  modelPackage: ImportedModelPackage,
+  targetProfile: ModelProfile | undefined,
+): DashboardModelFormat {
+  const bytesByDtype = new Map<string, number>();
+  const quantizations = new Set<DashboardModelFormat["weightQuantization"]>();
+  for (const importedModel of modelPackage.models) {
+    for (const initializer of importedModel.manifest.initializers) {
+      if (initializer.dimensions.length < 2) {
+        continue;
+      }
+      bytesByDtype.set(
+        initializer.dataType,
+        (bytesByDtype.get(initializer.dataType) ?? 0)
+          + initializer.logicalByteLength,
+      );
+      quantizations.add(quantizationKindForOnnxDtype(initializer.dataType));
+    }
+  }
+  const weightDtypes = [...bytesByDtype.entries()]
+    .sort((left, right) => (
+      right[1] - left[1] || left[0].localeCompare(right[0])
+    ))
+    .map(([dtype]) => dtype);
+  const knownQuantizations = [...quantizations].filter(
+    (quantization) => quantization !== "unknown",
+  );
+  const weightQuantization = knownQuantizations.length === 0
+    ? "unknown"
+    : new Set(knownQuantizations).size === 1
+        && !quantizations.has("unknown")
+      ? knownQuantizations[0]!
+      : "mixed";
+  return {
+    weightDtypes: weightDtypes.length === 0 ? ["unknown"] : weightDtypes,
+    weightQuantization,
+    kvCacheDtype: targetProfile?.quantization.kvCache ?? "unknown",
+    activationDtype: targetProfile?.quantization.activations ?? "unknown",
+    evidence: "onnx_inferred",
+    runtimeDtypesDefaulted: targetProfile !== undefined,
+  };
+}
+
+function quantizationKind(
+  dtype: QuantType,
+): DashboardModelFormat["weightQuantization"] {
+  switch (dtype) {
+    case "fp32":
+    case "fp16":
+    case "bf16":
+      return "none";
+    case "fp8":
+    case "int8":
+    case "int4":
+    case "nf4":
+      return dtype;
+  }
+}
+
+function quantizationKindForOnnxDtype(
+  dtype: string,
+): DashboardModelFormat["weightQuantization"] {
+  switch (dtype) {
+    case "float":
+    case "float16":
+    case "bfloat16":
+      return "none";
+    case "float8e4m3fn":
+    case "float8e4m3fnuz":
+    case "float8e5m2":
+    case "float8e5m2fnuz":
+    case "float8e8m0":
+      return "fp8";
+    case "int8":
+    case "uint8":
+      return "int8";
+    case "int4":
+    case "uint4":
+      return "int4";
+    default:
+      return "unknown";
+  }
 }
 
 function addCoverageLimitation(

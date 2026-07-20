@@ -337,6 +337,7 @@ function parseModelBinding(
     "componentCount",
     "totalParameters",
     "weightBytes",
+    "modelFormat",
     "executionProfile",
     "pipelineExecution",
     "executionCoverage",
@@ -368,6 +369,9 @@ function parseModelBinding(
   const pipelineExecution = binding.pipelineExecution === undefined
     ? undefined
     : parsePipelineExecution(binding.pipelineExecution);
+  const modelFormat = binding.modelFormat === undefined
+    ? undefined
+    : parseModelFormat(binding.modelFormat);
   return {
     source: requireEnum(
       binding.source,
@@ -401,6 +405,7 @@ function parseModelBinding(
       Number.MAX_SAFE_INTEGER,
       "modelBinding weightBytes",
     ),
+    ...(modelFormat === undefined ? {} : { modelFormat }),
     executionProfile: parseModelExecutionProfile(binding.executionProfile),
     ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
     executionCoverage: parseModelExecutionCoverage(
@@ -408,6 +413,66 @@ function parseModelBinding(
     ),
     ...(pipelineStrategy === undefined ? {} : { pipelineStrategy }),
     speculativeFamilies,
+  };
+}
+
+function parseModelFormat(
+  input: unknown,
+): NonNullable<
+  NonNullable<DashboardRunConfig["modelBinding"]>["modelFormat"]
+> {
+  const format = requireRecord(input, "modelBinding modelFormat");
+  assertOnlyKeys(format, [
+    "weightDtypes",
+    "weightQuantization",
+    "kvCacheDtype",
+    "activationDtype",
+    "evidence",
+    "runtimeDtypesDefaulted",
+  ], "modelBinding modelFormat");
+  const weightDtypes = requireStringArray(
+    format.weightDtypes,
+    "modelBinding modelFormat weightDtypes",
+  );
+  if (weightDtypes.length === 0) {
+    throw new Error("modelBinding modelFormat weightDtypes must not be empty");
+  }
+  const quantTypes = [
+    "fp32",
+    "fp16",
+    "bf16",
+    "fp8",
+    "int8",
+    "int4",
+    "nf4",
+    "unknown",
+  ] as const;
+  return {
+    weightDtypes,
+    weightQuantization: requireEnum(
+      format.weightQuantization,
+      ["none", "fp8", "int8", "int4", "nf4", "mixed", "unknown"] as const,
+      "modelBinding modelFormat weightQuantization",
+    ),
+    kvCacheDtype: requireEnum(
+      format.kvCacheDtype,
+      quantTypes,
+      "modelBinding modelFormat kvCacheDtype",
+    ),
+    activationDtype: requireEnum(
+      format.activationDtype,
+      quantTypes,
+      "modelBinding modelFormat activationDtype",
+    ),
+    evidence: requireEnum(
+      format.evidence,
+      ["preset_declared", "onnx_inferred"] as const,
+      "modelBinding modelFormat evidence",
+    ),
+    runtimeDtypesDefaulted: requireBoolean(
+      format.runtimeDtypesDefaulted,
+      "modelBinding modelFormat runtimeDtypesDefaulted",
+    ),
   };
 }
 

@@ -628,6 +628,9 @@ function modelSummary(
         fingerprint: binding.targetModelFingerprint,
         totalParameters: binding.totalParameters,
         weightBytes: binding.weightBytes,
+        ...(binding.modelFormat === undefined
+          ? {}
+          : { modelFormat: binding.modelFormat }),
       };
 }
 
