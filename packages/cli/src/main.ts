@@ -14,10 +14,12 @@ import {
   defaultSpeculativeEligibility,
   fitTopologyCostModel,
   parseCalibrationDataset,
+  parseSpeculativeTokenTrace,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
+  simulateSpeculativeTokenTrace,
   simulateTopologyServingWorkload,
   simulateTopologyWorkload,
   runPlanFaultCampaign,
@@ -119,6 +121,36 @@ export async function runCli(
           simulateSpeculativeWorkload(parseSpeculativeConfig(config)),
         );
         return 0;
+      }
+      case "speculative-trace": {
+        const config = await loadRequiredConfig(
+          argument,
+          "speculative-trace",
+        );
+        const result = simulateSpeculativeTokenTrace(
+          parseSpeculativeTokenTrace(config),
+        );
+        if (secondArgument) {
+          if (
+            !SCENARIO_PRESET_NAMES.includes(
+              secondArgument as ScenarioPresetName,
+            )
+          ) {
+            throw new Error(`unknown scenario preset ${secondArgument}`);
+          }
+          const costModel = await loadCostModel(thirdArgument);
+          printJson(io, {
+            trace: result,
+            topology: simulateTopologyWorkload(
+              buildScenarioPreset(secondArgument as ScenarioPresetName),
+              topologyProfileFromSpeculative(result.workload),
+              costModel,
+            ),
+          });
+        } else {
+          printJson(io, result);
+        }
+        return result.differential.matchesTargetOnly ? 0 : 2;
       }
       case "expert-cache": {
         const config = await loadRequiredConfig(argument, "expert-cache");
@@ -955,6 +987,7 @@ Usage:
   inference-sim validate <scenario.yaml|json>
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
+  inference-sim speculative-trace <trace.yaml|json> [scenario-preset] [calibration.yaml|json]
   inference-sim expert-cache <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
   inference-sim serving <scenario-preset> <config.yaml|json> [calibration.yaml|json]

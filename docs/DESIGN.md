@@ -372,13 +372,43 @@ output tail.
 
 Acceptance behavior is configured using one of:
 
-1. replayed token-level target/proposer traces;
+1. revisioned token-level target/proposer traces;
 2. empirical conditional acceptance by draft position and context bucket; or
 3. an explicitly heuristic stochastic model with a fixed seed.
 
 A single average acceptance rate is insufficient because accepted-prefix length
 is a first-mismatch process. The stochastic fallback provides conditional
 `P(match at position i | positions < i matched)`.
+
+The revision-1 token trace binds the evidence to non-empty runtime, target
+model, proposer, tokenizer, and generation-config fingerprints plus distinct
+target-only and speculative run IDs. It records the exact prompt and
+target-only output token IDs. Each iteration records:
+
+```text
+proposal_token_ids = the full family-specific proposal
+target_token_ids   = one target-selected token for every proposal position
+                     plus one final target row
+```
+
+The oracle computes the longest equal prefix. A mismatch commits that prefix
+plus `target_token_ids[accepted]` as the correction. Full acceptance commits
+the proposal and, only when output budget remains, the final target row as a
+bonus. A fully accepted tail does not commit the unused final row. For
+target-coupled families, proposal position zero must match target position zero
+or the trace is structurally invalid.
+
+The trace importer fails closed on unknown fields, unsupported revisions,
+duplicate iteration IDs, missing/final target rows, over-wide or over-budget
+proposals, rejected guaranteed prefixes, missing/trailing iterations, and
+unbound provenance. It then independently replays the derived widths and
+accepted counts through the composite state transaction and requires
+token-decision/state-decision parity at every iteration. Token mismatch against
+the target-only output is reported separately from malformed evidence.
+
+This proves deterministic selected-token and logical-state parity for the
+captured configuration. It does not prove logit equality, sampling-distribution
+equality, numerical kernel equivalence, or physical cache-byte equality.
 
 ### 9.5 Timing and Resource Interaction
 
@@ -883,8 +913,9 @@ Remaining Phase 2 work:
 - calibrated roofline and collective models; and
 - request batching and prefill/decode overlap.
 
-Status: in progress. The executable slice supports deterministic
-accepted-prefix replay and seeded conditional first-mismatch acceptance, drives the
+Status: in progress. The executable slice supports deterministic revisioned
+token-value traces, accepted-prefix replay, and seeded conditional
+first-mismatch acceptance, drives the
 composite checkpoint/restore transaction until an exact output budget is
 committed, checks final logical-length parity against target-only execution,
 and reports accepted-prefix, position acceptance, correction/bonus/accepted-tail,
@@ -911,9 +942,11 @@ candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
 topology execution matrix. Revisioned calibration import now preserves repeated
 operator observations, provenance, applicability, quality diagnostics, and
 valid interpolation ranges, with fail-closed execution outside those ranges.
-Backend trace collection, measured transport/collective calibration, adaptive
-prefetch policy, and differential token-value traces remain; self-speculative
-remains design-only.
+Token-value traces now reconstruct correction, bonus, and accepted-tail values,
+compare them with a bound target-only run, replay the same decisions through
+composite state, and execute a 6 proposer x 6 topology matrix. Backend trace
+export, measured transport/collective calibration, and adaptive prefetch policy
+remain; self-speculative remains design-only.
 The same serving workload can also execute across all six topology presets and
 produce a deterministic latency ranking with per-run replay evidence.
 
@@ -932,6 +965,11 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
+The `speculative-trace` command verifies a revisioned YAML/JSON token trace and
+optionally executes its derived workload on a topology preset. It exits zero on
+parity, two on a well-formed token mismatch, and one on malformed evidence or
+execution failure.
+
 The `serving` command executes arrival-driven target-only or speculative
 continuous batching on a selected topology and reports request timing,
 scheduler trace/replay, accepted/rejected draft work, batch work, and topology

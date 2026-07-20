@@ -87,6 +87,84 @@ speculative:
     expect(output.pagedKv.snapshot.reservedBytes).toBe(2048);
   });
 
+  it("verifies token values and optionally executes their topology", async () => {
+    const path = new URL(
+      "../../../examples/speculative-token-trace-mtp.yaml",
+      import.meta.url,
+    ).pathname;
+    const capture = captureIo();
+
+    expect(await runCli([
+      "speculative-trace",
+      path,
+      "single-gpu-cpu",
+    ], capture.io)).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      trace: {
+        differential: { matchesTargetOnly: boolean };
+        committedOutputTokenIds: number[];
+      };
+      topology: {
+        execution: { status: string };
+        metrics: { committedTokens: number };
+      };
+    };
+    expect(output.trace.differential.matchesTargetOnly).toBe(true);
+    expect(output.trace.committedOutputTokenIds)
+      .toEqual([10, 20, 21, 30, 31, 32, 40, 41]);
+    expect(output.topology.execution.status).toBe("succeeded");
+    expect(output.topology.metrics.committedTokens).toBe(8);
+  });
+
+  it("returns status 2 with the first token differential", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const path = join(directory, "mismatch.yaml");
+    await writeFile(path, `
+speculative_token_trace:
+  revision: 1
+  id: mismatch
+  provenance:
+    source: synthetic-test
+    runtime_revision: onnx-genai-test
+    model_fingerprint: target-model-test
+    proposer_fingerprint: draft-model-test
+    tokenizer_fingerprint: tokenizer-test
+    generation_config_fingerprint: greedy-test
+    target_only_run_id: target-only-test
+    speculative_run_id: speculative-test
+  family: draft_model
+  prompt_token_ids: [1]
+  expected_output_token_ids: [7]
+  max_additional_tokens: 1
+  iterations:
+    - id: tail
+      proposal_token_ids: [8]
+      target_token_ids: [8, 9]
+`, "utf8");
+    const capture = captureIo();
+
+    expect(await runCli(["speculative-trace", path], capture.io)).toBe(2);
+    const output = JSON.parse(capture.stdout()) as {
+      differential: {
+        matchesTargetOnly: boolean;
+        firstMismatch: {
+          outputIndex: number;
+          expectedTokenId: number;
+          actualTokenId: number;
+        };
+      };
+    };
+    expect(output.differential).toEqual({
+      matchesTargetOnly: false,
+      comparedTokenCount: 1,
+      firstMismatch: {
+        outputIndex: 0,
+        expectedTokenId: 7,
+        actualTokenId: 8,
+      },
+    });
+  });
+
   it("returns a nonzero status with a concise error", async () => {
     const capture = captureIo();
     expect(await runCli(["scenario", "does-not-exist"], capture.io)).toBe(1);

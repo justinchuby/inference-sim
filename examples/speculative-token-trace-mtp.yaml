@@ -1,0 +1,26 @@
+speculative_token_trace:
+  revision: 1
+  id: mtp-correction-bonus-tail
+  provenance:
+    source: synthetic-example
+    runtime_revision: onnx-genai-synthetic
+    model_fingerprint: target-model-synthetic
+    proposer_fingerprint: mtp-sidecar-synthetic
+    tokenizer_fingerprint: tokenizer-synthetic
+    generation_config_fingerprint: greedy-max-length-synthetic
+    target_only_run_id: target-only-synthetic-001
+    speculative_run_id: speculative-synthetic-001
+  family: mtp
+  prompt_token_ids: [101, 102, 103]
+  expected_output_token_ids: [10, 20, 21, 30, 31, 32, 40, 41]
+  max_additional_tokens: 2
+  iterations:
+    - id: correction
+      proposal_token_ids: [10, 99, 100]
+      target_token_ids: [10, 20, 200, 201]
+    - id: bonus
+      proposal_token_ids: [21, 30, 31]
+      target_token_ids: [21, 30, 31, 32]
+    - id: accepted-tail
+      proposal_token_ids: [40, 41]
+      target_token_ids: [40, 41, 42]

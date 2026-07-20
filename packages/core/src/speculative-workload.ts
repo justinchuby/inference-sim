@@ -29,12 +29,20 @@ import {
 export type { SpeculativeProposerFamily } from "./speculative-family.js";
 export type { SpeculativeAcceptanceModel } from "./speculative-acceptance.js";
 
+export type SpeculativeProposalWidthModel =
+  | { readonly kind: "max_width" }
+  | {
+      readonly kind: "replay";
+      readonly proposedAdditionalTokens: readonly number[];
+    };
+
 export interface SpeculativeWorkloadConfig {
   readonly family: SpeculativeProposerFamily;
   readonly eligibility: SpeculativeEligibility;
   readonly initialTokenLength: number;
   readonly outputTokenCount: number;
   readonly maxAdditionalTokens: number;
+  readonly proposal?: SpeculativeProposalWidthModel;
   readonly stateGroups: readonly SpeculativeStateGroupConfig[];
   readonly acceptance: SpeculativeAcceptanceModel;
   readonly maxIterations?: number;
@@ -170,10 +178,34 @@ export function simulateSpeculativeWorkload(
         `workload exceeded maximum iteration count ${maxIterations}`,
       );
     }
-    const proposal = planSpeculativeProposal({
+    const maximumProposal = planSpeculativeProposal({
       proposalPrefix: familyContract.proposalPrefix,
       remainingOutputTokens: remaining,
       maxAdditionalTokens: config.maxAdditionalTokens,
+    });
+    const replayedAdditionalTokens = config.proposal?.kind === "replay"
+      ? config.proposal.proposedAdditionalTokens[iterations.length]
+      : maximumProposal.proposedAdditionalTokens;
+    if (replayedAdditionalTokens === undefined) {
+      throw new SpeculativeWorkloadError(
+        `proposal-width replay ended before iteration ${iterations.length}`,
+      );
+    }
+    assertNonNegative(
+      replayedAdditionalTokens,
+      `proposal width at iteration ${iterations.length}`,
+    );
+    if (
+      replayedAdditionalTokens > maximumProposal.proposedAdditionalTokens
+    ) {
+      throw new SpeculativeWorkloadError(
+        `iteration ${iterations.length} proposed ${replayedAdditionalTokens} additional tokens but the limit is ${maximumProposal.proposedAdditionalTokens}`,
+      );
+    }
+    const proposal = planSpeculativeProposal({
+      proposalPrefix: familyContract.proposalPrefix,
+      remainingOutputTokens: remaining,
+      maxAdditionalTokens: replayedAdditionalTokens,
     });
     const acceptedAdditionalTokenCount = acceptance.next(
       proposal.proposedAdditionalTokens,
@@ -337,6 +369,22 @@ function validateConfig(config: SpeculativeWorkloadConfig): void {
   assertNonNegative(config.initialTokenLength, "initialTokenLength");
   assertNonNegative(config.outputTokenCount, "outputTokenCount");
   assertNonNegative(config.maxAdditionalTokens, "maxAdditionalTokens");
+  if (config.proposal?.kind === "replay") {
+    for (
+      let index = 0;
+      index < config.proposal.proposedAdditionalTokens.length;
+      index++
+    ) {
+      const proposed =
+        config.proposal.proposedAdditionalTokens[index] as number;
+      assertNonNegative(proposed, `proposal.proposedAdditionalTokens[${index}]`);
+      if (proposed > config.maxAdditionalTokens) {
+        throw new SpeculativeWorkloadError(
+          `proposal.proposedAdditionalTokens[${index}] exceeds maxAdditionalTokens`,
+        );
+      }
+    }
+  }
   if (
     config.maxIterations !== undefined
     && (!Number.isSafeInteger(config.maxIterations) || config.maxIterations <= 0)

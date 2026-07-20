@@ -128,6 +128,30 @@ describe("simulateSpeculativeWorkload", () => {
     );
   });
 
+  it("replays early-stopped proposal widths without padding drafts", () => {
+    const result = simulateSpeculativeWorkload({
+      ...replayConfig(),
+      outputTokenCount: 5,
+      proposal: {
+        kind: "replay",
+        proposedAdditionalTokens: [1, 2],
+      },
+      acceptance: {
+        kind: "replay",
+        acceptedDraftTokens: [0, 2],
+      },
+    });
+
+    expect(result.iterations.map((iteration) => ({
+      additional: iteration.proposedAdditionalTokens,
+      proposal: iteration.proposedDraftTokens,
+      outcome: iteration.outcome,
+    }))).toEqual([
+      { additional: 1, proposal: 2, outcome: "correction" },
+      { additional: 2, proposal: 3, outcome: "accepted_tail" },
+    ]);
+  });
+
   it("keeps paged KV aligned through speculative page allocation and rollback", () => {
     const result = simulateSpeculativeWorkload({
       ...replayConfig(),

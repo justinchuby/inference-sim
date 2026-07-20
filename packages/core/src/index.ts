@@ -131,11 +131,26 @@ export {
   simulateSpeculativeWorkload,
   type SpeculativeProposerFamily,
   type SpeculativePagedKvResult,
+  type SpeculativeProposalWidthModel,
   type SpeculativeWorkloadConfig,
   type SpeculativeWorkloadIteration,
   type SpeculativeWorkloadMetrics,
   type SpeculativeWorkloadResult,
 } from "./speculative-workload.js";
+export {
+  SPECULATIVE_TOKEN_TRACE_REVISION,
+  SpeculativeTokenTraceError,
+  parseSpeculativeTokenTrace,
+  simulateSpeculativeTokenTrace,
+  validateSpeculativeTokenTrace,
+  type SpeculativeTokenDifferential,
+  type SpeculativeTokenMismatch,
+  type SpeculativeTokenTrace,
+  type SpeculativeTokenTraceIteration,
+  type SpeculativeTokenTraceIterationResult,
+  type SpeculativeTokenTraceProvenance,
+  type SpeculativeTokenTraceResult,
+} from "./speculative-token-trace.js";
 export {
   PAGED_KV_CONTRACT_REVISION,
   PagedKvCacheSimulator,
