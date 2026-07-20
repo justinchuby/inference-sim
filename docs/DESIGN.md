@@ -585,6 +585,24 @@ LRU victims, latency, capacity, and route-to-access correspondence. Metrics
 include hot/warm/cold outcomes, bytes moved, evictions, load counts, stall time,
 and per-tier high-water bytes.
 
+Adaptive prefetch is a bounded warm-tier feedback policy, not a future-route
+oracle. After configured token intervals, it ranks only previously completed
+route observations by frequency, then recency, then expert ID. Candidates
+below the minimum observation count, already warm, already pending to warm, or
+outside the exact reservation budget are excluded. Selection is capped per
+decision and never reserves hot-tier bytes. Each policy decision is recorded
+before its adaptive prefetch request; replay reconstructs the observation
+history and rejects changed, omitted, or relabeled decisions. This policy can
+reduce future cold misses, but its copies, evictions, and bandwidth remain
+fully charged in the cache protocol's latency and byte ledger.
+
+The current FrozenPlan projection reflects the demand-tier changes caused by
+completed prefetches. It does not yet assign cold-to-warm copies to a physical
+link because the scenario schema has no cold-storage domain; mapping them to a
+host-to-device link would be false. Storage-domain topology and background
+prefetch contention remain required before interpreting those copies as
+device-link utilization.
+
 ### 9.8 Continuous Serving and Chunked Prefill
 
 Serving workloads declare request identity, arrival time, prompt/output token
@@ -1034,7 +1052,8 @@ and release metrics, and independent trace replay; the speculative workload
 checks that its final KV length matches committed target state. Expert-cache
 workloads now model seeded weighted routing without replacement, exact
 hot/warm byte capacities and reservations, deterministic LRU eviction,
-asynchronous initial prefetch, stalls, metrics, and independent replay.
+asynchronous initial prefetch, history-driven adaptive warm prefetch, stalls,
+metrics, and independent replay.
 Speculative and expert-cache logical traces now compile into FrozenPlan
 resources across all six required topology families. Default link duration
 uses each declared directed link's latency and bandwidth; imported revision 2
@@ -1057,8 +1076,8 @@ Token-value traces now reconstruct correction, bonus, and accepted-tail values,
 compare them with a bound target-only run, replay the same decisions through
 composite state, and execute a 6 proposer x 6 topology matrix. The companion
 onnx-genai integration branch now provides explicit opt-in iteration capture
-and an atomic runtime-artifact writer; merging that producer, collecting real
-hardware calibration datasets, and adaptive prefetch policy remain.
+and an atomic runtime-artifact writer; merging that producer and collecting
+real hardware calibration datasets remain.
 self-speculative remains design-only.
 The same serving workload can also execute across all six topology presets and
 produce a deterministic latency ranking with per-run replay evidence.

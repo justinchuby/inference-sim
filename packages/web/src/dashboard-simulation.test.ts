@@ -34,6 +34,7 @@ const base: DashboardRunConfig = {
     expertCount: 12,
     hotSlots: 4,
     warmSlots: 6,
+    adaptivePrefetch: true,
   },
 };
 
@@ -133,6 +134,8 @@ describe("simulateDashboard", () => {
     expect(first).toEqual(second);
     expect(first.expertCache?.routes).toHaveLength(32);
     expect(first.expertCache?.metrics.hotHitRate).toBeGreaterThanOrEqual(0);
+    expect(first.expertCache?.metrics.adaptivePrefetchDecisions)
+      .toBeGreaterThan(0);
     expect(first.topology.operationCounts.transfer).toBeGreaterThan(0);
   });
 

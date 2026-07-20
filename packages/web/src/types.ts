@@ -57,6 +57,7 @@ export interface DashboardRunConfig {
     readonly expertCount: number;
     readonly hotSlots: number;
     readonly warmSlots: number;
+    readonly adaptivePrefetch: boolean;
   };
 }
 

@@ -60,8 +60,8 @@ Phase 3 has an initial speculative workload slice:
 - speculative KV high-water, allocation, release, and final-reservation
   metrics.
 - byte-capacity hot/warm expert caches with weighted routing without
-  replacement, deterministic LRU eviction, asynchronous prefetch, and
-  independent trace replay; and
+  replacement, deterministic LRU eviction, asynchronous initial plus
+  history-driven adaptive warm prefetch, and independent trace replay; and
 - speculative and expert-cache traces compiled onto all six topology families
   with replay-verified resource utilization and relative comparisons; and
 - a six-proposer by six-device-topology execution/replay matrix with

@@ -1,6 +1,6 @@
 import { DiscreteEventSimulator } from "./event-loop.js";
 
-export const EXPERT_CACHE_CONTRACT_REVISION = 1;
+export const EXPERT_CACHE_CONTRACT_REVISION = 2;
 
 export type ExpertCacheTier = "hot" | "warm" | "cold";
 export type ExpertLoadTarget = "hot" | "warm";
@@ -10,6 +10,13 @@ export interface ExpertSpec {
   readonly id: string;
   readonly bytes: number;
   readonly routingWeight?: number;
+}
+
+export interface AdaptiveExpertPrefetchPolicy {
+  readonly targetTier: "warm";
+  readonly minObservations: number;
+  readonly intervalTokens: number;
+  readonly maxExpertsPerDecision: number;
 }
 
 export interface ExpertCacheConfig {
@@ -22,6 +29,7 @@ export interface ExpertCacheConfig {
   readonly routingSeed: number;
   readonly initialHotExpertIds?: readonly string[];
   readonly initialWarmExpertIds?: readonly string[];
+  readonly adaptivePrefetch?: AdaptiveExpertPrefetchPolicy;
   readonly sourceId?: string;
 }
 
@@ -48,6 +56,8 @@ export interface ExpertCacheMetrics {
   readonly coldMisses: number;
   readonly demandLoads: number;
   readonly prefetchLoads: number;
+  readonly adaptivePrefetchDecisions: number;
+  readonly adaptivePrefetchSelections: number;
   readonly evictions: number;
   readonly bytesMoved: number;
   readonly stallNs: number;
@@ -104,6 +114,14 @@ export type ExpertCacheTraceEvent = ExpertCacheTraceEnvelope & (
       readonly kind: "prefetch";
       readonly atNs: number;
       readonly targetTier: ExpertLoadTarget;
+      readonly expertIds: readonly string[];
+      readonly trigger: "manual" | "adaptive";
+    }
+  | {
+      readonly kind: "prefetch_decision";
+      readonly tokenIndex: number;
+      readonly atNs: number;
+      readonly observedRoutes: number;
       readonly expertIds: readonly string[];
     }
   | {
@@ -173,6 +191,8 @@ interface MutableMetrics {
   coldMisses: number;
   demandLoads: number;
   prefetchLoads: number;
+  adaptivePrefetchDecisions: number;
+  adaptivePrefetchSelections: number;
   evictions: number;
   bytesMoved: number;
   stallNs: number;
@@ -182,6 +202,11 @@ interface MutableMetrics {
 
 interface CompletionEvent {
   readonly loadId: string;
+}
+
+interface ExpertRouteHistory {
+  count: number;
+  lastTokenIndex: number;
 }
 
 export class ExpertCacheProtocolError extends Error {
@@ -206,6 +231,7 @@ export class ExpertCacheSimulator {
   private readonly warm = new Map<string, number>();
   private readonly pending = new Map<string, ExpertPendingLoadSnapshot>();
   private readonly pendingByTarget = new Map<string, string>();
+  private readonly routeHistory = new Map<string, ExpertRouteHistory>();
   private readonly events: ExpertCacheTraceEvent[] = [];
   private readonly eventLoop = new DiscreteEventSimulator<CompletionEvent>();
   private readonly rng: DeterministicRng;
@@ -217,6 +243,7 @@ export class ExpertCacheSimulator {
   private nextLoadId = 1;
   private nextRequestId = 1;
   private nextSourceSequence = 0;
+  private observedRoutes = 0;
 
   constructor(config: ExpertCacheConfig) {
     validateConfig(config);
@@ -338,6 +365,8 @@ export class ExpertCacheSimulator {
       sourceTiers,
       stallNs,
     });
+    this.observeRoute(request.tokenIndex, expertIds);
+    this.runAdaptivePrefetch(request.tokenIndex, readyAtNs);
     return {
       requestId,
       expertIds,
@@ -352,6 +381,15 @@ export class ExpertCacheSimulator {
     expertIds: readonly string[],
     targetTier: ExpertLoadTarget,
     atNs: number,
+  ): readonly string[] {
+    return this.prefetchWithTrigger(expertIds, targetTier, atNs, "manual");
+  }
+
+  private prefetchWithTrigger(
+    expertIds: readonly string[],
+    targetTier: ExpertLoadTarget,
+    atNs: number,
+    trigger: "manual" | "adaptive",
   ): readonly string[] {
     this.advanceTo(atNs);
     const uniqueIds = unique(expertIds);
@@ -380,6 +418,7 @@ export class ExpertCacheSimulator {
       atNs,
       targetTier,
       expertIds: uniqueIds,
+      trigger,
     });
 
     const loadIds: string[] = [];
@@ -393,6 +432,53 @@ export class ExpertCacheSimulator {
       );
     }
     return loadIds;
+  }
+
+  private observeRoute(
+    tokenIndex: number,
+    expertIds: readonly string[],
+  ): void {
+    this.observedRoutes++;
+    for (const id of expertIds) {
+      const history = this.routeHistory.get(id) ?? {
+        count: 0,
+        lastTokenIndex: -1,
+      };
+      history.count++;
+      history.lastTokenIndex = tokenIndex;
+      this.routeHistory.set(id, history);
+    }
+  }
+
+  private runAdaptivePrefetch(tokenIndex: number, atNs: number): void {
+    const policy = this.config.adaptivePrefetch;
+    if (
+      policy === undefined
+      || (tokenIndex + 1) % policy.intervalTokens !== 0
+    ) {
+      return;
+    }
+    const expertIds = selectAdaptivePrefetchExperts({
+      policy,
+      experts: this.experts,
+      history: this.routeHistory,
+      warm: this.warm,
+      pendingByTarget: this.pendingByTarget,
+      warmReservedBytes: this.warmReservedBytes,
+      warmCapacityBytes: this.config.warmCapacityBytes,
+    });
+    this.metrics.adaptivePrefetchDecisions++;
+    this.metrics.adaptivePrefetchSelections += expertIds.length;
+    this.commitEvent({
+      kind: "prefetch_decision",
+      tokenIndex,
+      atNs,
+      observedRoutes: this.observedRoutes,
+      expertIds,
+    });
+    if (expertIds.length > 0) {
+      this.prefetchWithTrigger(expertIds, "warm", atNs, "adaptive");
+    }
   }
 
   advanceTo(timestampNs: number): void {
@@ -630,21 +716,42 @@ export function replayExpertCacheTrace(
   const pending = new Map<string, ExpertPendingLoadSnapshot>();
   const pendingByTarget = new Map<string, string>();
   const outstandingRoutes = new Map<string, {
+    readonly tokenIndex: number;
     readonly requestedAtNs: number;
     readonly expertIds: readonly string[];
     readonly sourceTiers: readonly ExpertCacheTier[];
   }>();
   const metrics = emptyMetrics();
   const rng = new DeterministicRng(config.routingSeed);
+  const routeHistory = new Map<string, ExpertRouteHistory>();
   let hotReservedBytes = 0;
   let warmReservedBytes = 0;
   let currentTimeNs = 0;
   let accessClock = 0;
   let sourceId = "";
+  let observedRoutes = 0;
+  let expectedDecision: {
+    readonly tokenIndex: number;
+    readonly atNs: number;
+    readonly observedRoutes: number;
+    readonly expertIds: readonly string[];
+  } | undefined;
+  let expectedAdaptivePrefetch: readonly string[] | undefined;
 
   for (let index = 0; index < trace.length; index++) {
     const event = trace[index];
     try {
+      if (expectedDecision !== undefined && event.kind !== "prefetch_decision") {
+        replayFail(
+          `adaptive prefetch decision after token ${expectedDecision.tokenIndex} was omitted`,
+        );
+      }
+      if (
+        expectedAdaptivePrefetch !== undefined
+        && event.kind !== "prefetch"
+      ) {
+        replayFail("adaptive prefetch request was omitted");
+      }
       if (event.contractRevision !== EXPERT_CACHE_CONTRACT_REVISION) {
         replayFail(`unsupported contract revision ${event.contractRevision}`);
       }
@@ -685,6 +792,7 @@ export function replayExpertCacheTrace(
             replayFail(`duplicate request id ${event.requestId}`);
           }
           outstandingRoutes.set(event.requestId, {
+            tokenIndex: event.tokenIndex,
             requestedAtNs: event.atNs,
             expertIds: [...event.expertIds],
             sourceTiers: event.expertIds.map((id) => (
@@ -698,6 +806,9 @@ export function replayExpertCacheTrace(
         case "prefetch": {
           requireMonotonicTime(event.atNs, currentTimeNs);
           currentTimeNs = event.atNs;
+          if (event.trigger !== "manual" && event.trigger !== "adaptive") {
+            replayFail(`unsupported prefetch trigger ${String(event.trigger)}`);
+          }
           if (unique(event.expertIds).length !== event.expertIds.length) {
             replayFail("prefetch expert ids must be unique");
           }
@@ -705,6 +816,45 @@ export function replayExpertCacheTrace(
             if (!experts.has(id)) {
               replayFail(`prefetch references unknown expert ${id}`);
             }
+          }
+          if (event.trigger === "adaptive") {
+            if (expectedAdaptivePrefetch === undefined) {
+              replayFail("unexpected adaptive prefetch request");
+            }
+            assertArrayEqual(
+              expectedAdaptivePrefetch,
+              event.expertIds,
+              "adaptive prefetch experts",
+            );
+            expectedAdaptivePrefetch = undefined;
+          } else if (expectedAdaptivePrefetch !== undefined) {
+            replayFail("adaptive prefetch request was replaced by manual work");
+          }
+          break;
+        }
+        case "prefetch_decision": {
+          if (expectedDecision === undefined) {
+            replayFail("unexpected adaptive prefetch decision");
+          }
+          if (
+            event.tokenIndex !== expectedDecision.tokenIndex
+            || event.atNs !== expectedDecision.atNs
+            || event.observedRoutes !== expectedDecision.observedRoutes
+          ) {
+            replayFail(
+              `adaptive prefetch decision metadata mismatch for token ${event.tokenIndex}`,
+            );
+          }
+          assertArrayEqual(
+            expectedDecision.expertIds,
+            event.expertIds,
+            "adaptive prefetch decision experts",
+          );
+          metrics.adaptivePrefetchDecisions++;
+          metrics.adaptivePrefetchSelections += event.expertIds.length;
+          expectedDecision = undefined;
+          if (event.expertIds.length > 0) {
+            expectedAdaptivePrefetch = [...event.expertIds];
           }
           break;
         }
@@ -873,6 +1023,36 @@ export function replayExpertCacheTrace(
           }
           metrics.stallNs += event.stallNs;
           outstandingRoutes.delete(event.requestId);
+          observedRoutes++;
+          for (const id of event.expertIds) {
+            const history = routeHistory.get(id) ?? {
+              count: 0,
+              lastTokenIndex: -1,
+            };
+            history.count++;
+            history.lastTokenIndex = route.tokenIndex;
+            routeHistory.set(id, history);
+          }
+          const policy = config.adaptivePrefetch;
+          if (
+            policy !== undefined
+            && (route.tokenIndex + 1) % policy.intervalTokens === 0
+          ) {
+            expectedDecision = {
+              tokenIndex: route.tokenIndex,
+              atNs: event.readyAtNs,
+              observedRoutes,
+              expertIds: selectAdaptivePrefetchExperts({
+                policy,
+                experts,
+                history: routeHistory,
+                warm,
+                pendingByTarget,
+                warmReservedBytes,
+                warmCapacityBytes: config.warmCapacityBytes,
+              }),
+            };
+          }
           break;
         }
       }
@@ -884,6 +1064,15 @@ export function replayExpertCacheTrace(
         `event ${index}: ${errorMessage(error)}`,
       );
     }
+  }
+
+  if (expectedDecision !== undefined) {
+    replayFail(
+      `adaptive prefetch decision after token ${expectedDecision.tokenIndex} was omitted`,
+    );
+  }
+  if (expectedAdaptivePrefetch !== undefined) {
+    replayFail("adaptive prefetch request was omitted");
   }
 
   return {
@@ -1033,6 +1222,45 @@ function chooseVictims(
   );
 }
 
+function selectAdaptivePrefetchExperts(input: {
+  readonly policy: AdaptiveExpertPrefetchPolicy;
+  readonly experts: ReadonlyMap<string, ExpertSpec>;
+  readonly history: ReadonlyMap<string, ExpertRouteHistory>;
+  readonly warm: ReadonlyMap<string, number>;
+  readonly pendingByTarget: ReadonlyMap<string, string>;
+  readonly warmReservedBytes: number;
+  readonly warmCapacityBytes: number;
+}): string[] {
+  const ranked = [...input.history.entries()]
+    .filter(([id, history]) => (
+      history.count >= input.policy.minObservations
+      && !input.warm.has(id)
+      && !input.pendingByTarget.has(targetKey(id, "warm"))
+    ))
+    .sort((left, right) => (
+      right[1].count - left[1].count
+      || right[1].lastTokenIndex - left[1].lastTokenIndex
+      || left[0].localeCompare(right[0])
+    ));
+  const selected: string[] = [];
+  let incomingBytes = 0;
+  for (const [id] of ranked) {
+    if (selected.length >= input.policy.maxExpertsPerDecision) {
+      break;
+    }
+    const expertBytes = input.experts.get(id)?.bytes;
+    const availableBytes = input.warmCapacityBytes
+      - input.warmReservedBytes
+      - incomingBytes;
+    if (expertBytes === undefined || expertBytes > availableBytes) {
+      continue;
+    }
+    selected.push(id);
+    incomingBytes += expertBytes;
+  }
+  return selected;
+}
+
 function selectWithoutReplacement(
   experts: readonly ExpertSpec[],
   topK: number,
@@ -1072,6 +1300,30 @@ function validateConfig(config: ExpertCacheConfig): void {
     "cold-to-warm latency",
   );
   assertNonNegativeSafeInteger(config.routingSeed, "routing seed");
+  if (config.adaptivePrefetch !== undefined) {
+    if (config.adaptivePrefetch.targetTier !== "warm") {
+      throw new ExpertCacheProtocolError(
+        "adaptive prefetch target tier must be warm",
+      );
+    }
+    assertPositiveSafeInteger(
+      config.adaptivePrefetch.minObservations,
+      "adaptive prefetch minimum observations",
+    );
+    assertPositiveSafeInteger(
+      config.adaptivePrefetch.intervalTokens,
+      "adaptive prefetch interval tokens",
+    );
+    assertPositiveSafeInteger(
+      config.adaptivePrefetch.maxExpertsPerDecision,
+      "adaptive prefetch maximum experts per decision",
+    );
+    if (config.warmCapacityBytes === 0) {
+      throw new ExpertCacheProtocolError(
+        "adaptive prefetch requires positive warm capacity",
+      );
+    }
+  }
   if (config.experts.length === 0) {
     throw new ExpertCacheProtocolError("at least one expert is required");
   }
@@ -1165,6 +1417,8 @@ function emptyMetrics(): MutableMetrics {
     coldMisses: 0,
     demandLoads: 0,
     prefetchLoads: 0,
+    adaptivePrefetchDecisions: 0,
+    adaptivePrefetchSelections: 0,
     evictions: 0,
     bytesMoved: 0,
     stallNs: 0,

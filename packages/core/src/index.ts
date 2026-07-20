@@ -186,6 +186,7 @@ export {
   ExpertCacheSimulator,
   replayExpertCacheTrace,
   simulateExpertCacheWorkload,
+  type AdaptiveExpertPrefetchPolicy,
   type ExpertCacheConfig,
   type ExpertCacheMetrics,
   type ExpertCacheReplayResult,

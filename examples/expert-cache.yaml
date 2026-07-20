@@ -7,6 +7,11 @@ expert_cache:
   routing_seed: 17
   initial_hot_expert_ids: [expert-0, expert-1]
   initial_warm_expert_ids: [expert-2, expert-3]
+  adaptive_prefetch:
+    target_tier: warm
+    min_observations: 2
+    interval_tokens: 2
+    max_experts_per_decision: 2
   experts:
     - { id: expert-0, bytes: 67108864, routing_weight: 1.4 }
     - { id: expert-1, bytes: 67108864, routing_weight: 1.2 }

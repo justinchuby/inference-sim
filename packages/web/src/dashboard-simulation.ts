@@ -346,6 +346,16 @@ function runExpertCache(
       initialWarmExpertIds: experts
         .slice(hotSlots, hotSlots + warmSlots)
         .map((expert) => expert.id),
+      ...(config.expertCache.adaptivePrefetch && warmSlots > 0
+        ? {
+            adaptivePrefetch: {
+              targetTier: "warm" as const,
+              minObservations: 2,
+              intervalTokens: 2,
+              maxExpertsPerDecision: Math.min(topK, warmSlots),
+            },
+          }
+        : {}),
     },
     tokenCount: clampInteger(config.expertCache.tokenCount, 1, 512),
     topK,

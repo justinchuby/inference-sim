@@ -686,6 +686,22 @@ function parseExpertCacheConfig(
   const prefetch = config.initial_prefetch === undefined
     ? undefined
     : requireRecord(config.initial_prefetch, "initial_prefetch");
+  const adaptivePrefetch = cache.adaptive_prefetch === undefined
+    ? undefined
+    : requireRecord(
+        cache.adaptive_prefetch,
+        "expert_cache.adaptive_prefetch",
+      );
+  const adaptiveTarget = adaptivePrefetch === undefined
+    ? undefined
+    : requireString(
+        adaptivePrefetch,
+        "target_tier",
+        "expert_cache.adaptive_prefetch",
+      );
+  if (adaptiveTarget !== undefined && adaptiveTarget !== "warm") {
+    throw new Error("expert_cache.adaptive_prefetch.target_tier must be warm");
+  }
   return {
     cache: {
       experts,
@@ -732,6 +748,28 @@ function parseExpertCacheConfig(
         [],
         "expert_cache",
       ),
+      ...(adaptivePrefetch === undefined
+        ? {}
+        : {
+            adaptivePrefetch: {
+              targetTier: "warm" as const,
+              minObservations: requireNumber(
+                adaptivePrefetch,
+                "min_observations",
+                "expert_cache.adaptive_prefetch",
+              ),
+              intervalTokens: requireNumber(
+                adaptivePrefetch,
+                "interval_tokens",
+                "expert_cache.adaptive_prefetch",
+              ),
+              maxExpertsPerDecision: requireNumber(
+                adaptivePrefetch,
+                "max_experts_per_decision",
+                "expert_cache.adaptive_prefetch",
+              ),
+            },
+          }),
     },
     tokenCount: requireNumber(workload, "token_count", "workload"),
     topK: requireNumber(workload, "top_k", "workload"),

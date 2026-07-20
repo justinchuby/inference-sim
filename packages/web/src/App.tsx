@@ -122,6 +122,7 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     expertCount: 16,
     hotSlots: 6,
     warmSlots: 8,
+    adaptivePrefetch: true,
   },
 };
 
@@ -1014,6 +1015,36 @@ function ConfigurationPanel({
               )}
         </TabsContent>
         <TabsContent value="expert-cache" className="space-y-5">
+          <div className="mb-4">
+            <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
+              Warm prefetch
+            </span>
+            <div className="grid grid-cols-2 gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1">
+              {([
+                [false, "Off"],
+                [true, "Adaptive"],
+              ] as const).map(([value, label]) => (
+                <Button
+                  key={label}
+                  type="button"
+                  className="h-8"
+                  variant={config.expertCache.adaptivePrefetch
+                    === value ? "default" : "ghost"}
+                  disabled={disabled || (value && config.expertCache.warmSlots === 0)}
+                  aria-pressed={config.expertCache.adaptivePrefetch === value}
+                  onClick={() => onChange({
+                    ...config,
+                    expertCache: {
+                      ...config.expertCache,
+                      adaptivePrefetch: value,
+                    },
+                  })}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
           <SliderField
             label="Token routes"
             value={config.expertCache.tokenCount}
@@ -1550,7 +1581,7 @@ function expertMetrics(result: DashboardResult) {
     {
       label: "Throughput",
       value: formatRate(topology.tokensPerSecond),
-      detail: `${metrics.demandLoads} demand loads`,
+      detail: `${metrics.demandLoads} demand loads · ${metrics.adaptivePrefetchSelections} adaptive prefetches`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
     {

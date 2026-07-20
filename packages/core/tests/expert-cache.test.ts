@@ -167,4 +167,83 @@ describe("ExpertCacheSimulator", () => {
     expect(first.routes).toHaveLength(4);
     expect(first.snapshot.metrics.routes).toBe(4);
   });
+
+  it("adapts warm prefetch only from observed route history", () => {
+    const result = simulateExpertCacheWorkload({
+      cache: {
+        ...config,
+        initialWarmExpertIds: [],
+        adaptivePrefetch: {
+          targetTier: "warm",
+          minObservations: 1,
+          intervalTokens: 1,
+          maxExpertsPerDecision: 2,
+        },
+      },
+      tokenCount: 4,
+      topK: 2,
+      tokenIntervalNs: 10,
+    });
+    const observed = new Set<string>();
+    for (const event of result.trace) {
+      if (event.kind === "route") {
+        event.expertIds.forEach((id) => observed.add(id));
+      }
+      if (event.kind === "prefetch_decision") {
+        expect(event.expertIds.every((id) => observed.has(id))).toBe(true);
+      }
+    }
+    expect(result.snapshot.metrics.adaptivePrefetchDecisions).toBe(4);
+    expect(result.snapshot.metrics.adaptivePrefetchSelections)
+      .toBeGreaterThan(0);
+    expect(replayExpertCacheTrace(result.trace).snapshot)
+      .toEqual(result.snapshot);
+  });
+
+  it("rejects a mutated or omitted adaptive prefetch decision", () => {
+    const result = simulateExpertCacheWorkload({
+      cache: {
+        ...config,
+        initialWarmExpertIds: [],
+        adaptivePrefetch: {
+          targetTier: "warm",
+          minObservations: 1,
+          intervalTokens: 1,
+          maxExpertsPerDecision: 1,
+        },
+      },
+      tokenCount: 2,
+      topK: 1,
+      tokenIntervalNs: 10,
+    });
+    const mutated: ExpertCacheTraceEvent[] = structuredClone(result.trace);
+    const decision = mutated.find(
+      (event) => event.kind === "prefetch_decision",
+    );
+    if (!decision || decision.kind !== "prefetch_decision") {
+      throw new Error("missing adaptive prefetch decision");
+    }
+    decision.expertIds = [
+      decision.expertIds[0] === "e0" ? "e1" : "e0",
+    ];
+    expect(() => replayExpertCacheTrace(mutated))
+      .toThrowError(ExpertCacheReplayError);
+
+    const omitted = result.trace.filter(
+      (event) => event.kind !== "prefetch_decision",
+    );
+    expect(() => replayExpertCacheTrace(omitted))
+      .toThrowError(ExpertCacheReplayError);
+
+    const relabeled: ExpertCacheTraceEvent[] = structuredClone(result.trace);
+    const adaptive = relabeled.find((event) => (
+      event.kind === "prefetch" && event.trigger === "adaptive"
+    ));
+    if (!adaptive || adaptive.kind !== "prefetch") {
+      throw new Error("missing adaptive prefetch request");
+    }
+    adaptive.trigger = "manual";
+    expect(() => replayExpertCacheTrace(relabeled))
+      .toThrowError(ExpertCacheReplayError);
+  });
 });
