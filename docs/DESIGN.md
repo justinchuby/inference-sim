@@ -1380,8 +1380,14 @@ legacy static-analysis examples, and executes speculative workload configs.
 It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
+All CLI commands that consume one scenario resolve a shared scenario-target
+grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
+materialization, workload execution, serving, runtime-capture verification,
+fault campaigns, concurrent campaigns, and node operations use that resolver.
+The two comparison commands deliberately retain the six fixed topology
+families, keeping their ranking population stable.
 The `speculative-trace` command verifies a revisioned YAML/JSON token trace and
-optionally executes its derived workload on a topology preset. It exits zero on
+optionally executes its derived workload on a scenario target. It exits zero on
 parity, two on a well-formed token mismatch, and one on malformed evidence or
 execution failure.
 The `speculative-capture` command binds separate target-only and speculative

@@ -5,6 +5,7 @@ import {
   SERVING_EXPERT_CACHE_CONTRACT_REVISION,
   analyzeStatic,
   bindParsedRuntimeCaptures,
+  buildMultiGpuRingScenario,
   buildSpeculativeStateGroups,
   buildModelProfile,
   buildScenarioPreset,
@@ -98,18 +99,13 @@ export async function runCli(
       case "presets":
         printJson(io, {
           scenarios: SCENARIO_PRESET_NAMES,
+          parameterizedScenario: "multi-gpu-ring-<2..64>",
           hardware: listPresets(),
           models: listModelPresets(),
         });
         return 0;
       case "scenario": {
-        if (!argument) {
-          throw new Error("scenario requires a preset name");
-        }
-        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
-          throw new Error(`unknown scenario preset ${argument}`);
-        }
-        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
+        const scenario = resolveScenarioTarget(argument, "scenario");
         printJson(io, {
           scenario,
           memoryLedger: calculateScenarioMemoryLedger(scenario),
@@ -146,18 +142,15 @@ export async function runCli(
           parseSpeculativeTokenTrace(config),
         );
         if (secondArgument) {
-          if (
-            !SCENARIO_PRESET_NAMES.includes(
-              secondArgument as ScenarioPresetName,
-            )
-          ) {
-            throw new Error(`unknown scenario preset ${secondArgument}`);
-          }
+          const scenario = resolveScenarioTarget(
+            secondArgument,
+            "speculative-trace",
+          );
           const costModel = await loadCostModel(thirdArgument);
           printJson(io, {
             trace: result,
             topology: simulateTopologyWorkload(
-              buildScenarioPreset(secondArgument as ScenarioPresetName),
+              scenario,
               topologyProfileFromSpeculative(result.workload),
               costModel,
             ),
@@ -186,18 +179,15 @@ export async function runCli(
           trace: bound.result,
         };
         if (thirdArgument) {
-          if (
-            !SCENARIO_PRESET_NAMES.includes(
-              thirdArgument as ScenarioPresetName,
-            )
-          ) {
-            throw new Error(`unknown scenario preset ${thirdArgument}`);
-          }
+          const scenario = resolveScenarioTarget(
+            thirdArgument,
+            "speculative-capture",
+          );
           const costModel = await loadCostModel(fourthArgument);
           printJson(io, {
             ...summary,
             topology: simulateTopologyWorkload(
-              buildScenarioPreset(thirdArgument as ScenarioPresetName),
+              scenario,
               topologyProfileFromSpeculative(bound.result.workload),
               costModel,
             ),
@@ -221,19 +211,14 @@ export async function runCli(
         return 0;
       }
       case "serving": {
-        if (!argument) {
-          throw new Error("serving requires a scenario preset name");
-        }
-        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
-          throw new Error(`unknown scenario preset ${argument}`);
-        }
+        const scenario = resolveScenarioTarget(argument, "serving");
         const config = await loadRequiredConfig(secondArgument, "serving");
         const costModel = await loadCostModel(thirdArgument);
         const expertCache = parseServingExpertCacheConfig(config);
         printJson(
           io,
           summarizeServingRun(simulateTopologyServingWorkload(
-            buildScenarioPreset(argument as ScenarioPresetName),
+            scenario,
             parseServingConfig(config),
             costModel,
             expertCache,
@@ -257,14 +242,8 @@ export async function runCli(
         return 0;
       }
       case "run": {
-        if (!argument) {
-          throw new Error("run requires a scenario preset name");
-        }
-        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
-          throw new Error(`unknown scenario preset ${argument}`);
-        }
+        const scenario = resolveScenarioTarget(argument, "run");
         const config = await loadRequiredConfig(secondArgument, "run");
-        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
         const costModel = await loadCostModel(thirdArgument);
         printJson(
           io,
@@ -295,17 +274,11 @@ export async function runCli(
         return 0;
       }
       case "fault-campaign": {
-        if (!argument) {
-          throw new Error("fault-campaign requires a scenario preset name");
-        }
-        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
-          throw new Error(`unknown scenario preset ${argument}`);
-        }
+        const scenario = resolveScenarioTarget(argument, "fault-campaign");
         const config = await loadRequiredConfig(
           secondArgument,
           "fault-campaign",
         );
-        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
@@ -319,19 +292,14 @@ export async function runCli(
         return 0;
       }
       case "concurrent-campaign": {
-        if (!argument) {
-          throw new Error(
-            "concurrent-campaign requires a scenario preset name",
-          );
-        }
-        if (!SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)) {
-          throw new Error(`unknown scenario preset ${argument}`);
-        }
+        const scenario = resolveScenarioTarget(
+          argument,
+          "concurrent-campaign",
+        );
         const config = await loadRequiredConfig(
           secondArgument,
           "concurrent-campaign",
         );
-        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
@@ -349,34 +317,18 @@ export async function runCli(
         return 0;
       }
       case "node-failover": {
-        if (
-          !argument
-          || !SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)
-        ) {
-          throw new Error(
-            `unknown failed scenario preset ${String(argument)}`,
-          );
-        }
-        if (
-          !secondArgument
-          || !SCENARIO_PRESET_NAMES.includes(
-            secondArgument as ScenarioPresetName,
-          )
-        ) {
-          throw new Error(
-            `unknown recovery scenario preset ${String(secondArgument)}`,
-          );
-        }
+        const failedScenario = resolveScenarioTarget(
+          argument,
+          "node-failover failed scenario",
+        );
+        const recoveryBase = resolveScenarioTarget(
+          secondArgument,
+          "node-failover recovery scenario",
+        );
         const config = await loadRequiredConfig(thirdArgument, "node-failover");
         const failover = requireRecord(
           config.node_failover,
           "node_failover",
-        );
-        const failedScenario = buildScenarioPreset(
-          argument as ScenarioPresetName,
-        );
-        const recoveryBase = buildScenarioPreset(
-          secondArgument as ScenarioPresetName,
         );
         const recoveryScenario = {
           ...recoveryBase,
@@ -428,18 +380,15 @@ export async function runCli(
         return 0;
       }
       case "concurrent-node-failure": {
-        if (
-          !argument
-          || !SCENARIO_PRESET_NAMES.includes(argument as ScenarioPresetName)
-        ) {
-          throw new Error(`unknown scenario preset ${String(argument)}`);
-        }
+        const scenario = resolveScenarioTarget(
+          argument,
+          "concurrent-node-failure",
+        );
         const config = await loadRequiredConfig(
           secondArgument,
           "concurrent-node-failure",
         );
         const failure = requireRecord(config.node_failure, "node_failure");
-        const scenario = buildScenarioPreset(argument as ScenarioPresetName);
         const costModel = await loadCostModel(thirdArgument);
         const plan = compileTopologyWorkloadPlan(
           scenario,
@@ -485,6 +434,23 @@ export async function runCli(
     io.stderr(`inference-sim: ${message}\n`);
     return 1;
   }
+}
+
+function resolveScenarioTarget(
+  value: string | undefined,
+  command: string,
+): SimulationScenario {
+  if (value === undefined) {
+    throw new Error(`${command} requires a scenario target`);
+  }
+  if (SCENARIO_PRESET_NAMES.includes(value as ScenarioPresetName)) {
+    return buildScenarioPreset(value as ScenarioPresetName);
+  }
+  const ringMatch = /^multi-gpu-ring-([1-9]\d*)$/.exec(value);
+  if (ringMatch !== null) {
+    return buildMultiGpuRingScenario(Number(ringMatch[1]));
+  }
+  throw new Error(`unknown scenario preset or ring target ${value}`);
 }
 
 async function loadRequiredConfig(
@@ -1474,22 +1440,25 @@ function helpText(): string {
 
 Usage:
   inference-sim presets
-  inference-sim scenario <preset>
+  inference-sim scenario <scenario-target>
   inference-sim validate <scenario.yaml|json>
   inference-sim static <config.yaml|json>
   inference-sim speculative <config.yaml|json>
-  inference-sim speculative-trace <trace.yaml|json> [scenario-preset] [calibration.yaml|json]
-  inference-sim speculative-capture <target-only.yaml|json> <speculative.yaml|json> [scenario-preset] [calibration.yaml|json]
+  inference-sim speculative-trace <trace.yaml|json> [scenario-target] [calibration.yaml|json]
+  inference-sim speculative-capture <target-only.yaml|json> <speculative.yaml|json> [scenario-target] [calibration.yaml|json]
   inference-sim expert-cache <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
-  inference-sim serving <scenario-preset> <config.yaml|json> [calibration.yaml|json]
+  inference-sim serving <scenario-target> <config.yaml|json> [calibration.yaml|json]
   inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
-  inference-sim run <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim run <scenario-target> <workload.yaml|json> [calibration.yaml|json]
   inference-sim compare <workload.yaml|json> [calibration.yaml|json]
-  inference-sim fault-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
-  inference-sim concurrent-campaign <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
-  inference-sim node-failover <failed-preset> <recovery-preset> <workload.yaml|json> [calibration.yaml|json]
-  inference-sim concurrent-node-failure <scenario-preset> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim fault-campaign <scenario-target> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim concurrent-campaign <scenario-target> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim node-failover <failed-target> <recovery-target> <workload.yaml|json> [calibration.yaml|json]
+  inference-sim concurrent-node-failure <scenario-target> <workload.yaml|json> [calibration.yaml|json]
+
+Scenario target:
+  one of the listed presets, or multi-gpu-ring-N for N=2..64
 `;
 }
 

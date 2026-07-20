@@ -145,6 +145,7 @@ pnpm test
 
 pnpm sim presets
 pnpm sim scenario gpu-npu
+pnpm sim scenario multi-gpu-ring-4
 pnpm sim static examples/mixtral-dgx-h100.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim speculative-trace examples/speculative-token-trace-mtp.yaml single-gpu-cpu
@@ -153,10 +154,12 @@ pnpm sim expert-cache examples/expert-cache.yaml
 pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
 pnpm sim serving multi-gpu examples/serving-speculative-experts.yaml
+pnpm sim serving multi-gpu-ring-4 examples/serving-speculative.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml
 pnpm sim calibrate examples/calibration-synthetic.yaml
 pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-synthetic.yaml
 pnpm sim run multi-gpu examples/target-only.yaml
+pnpm sim run multi-gpu-ring-8 examples/target-only.yaml
 pnpm sim compare examples/target-only.yaml
 pnpm sim fault-campaign multi-gpu examples/target-only.yaml
 pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
@@ -176,6 +179,11 @@ Calibration revision 2 scopes communication curves to an exact scenario,
 ordered directed-link path, participant count, algorithm, and observed byte
 range. Imported calibration never silently falls back to topology bandwidth or
 extrapolates beyond that range.
+
+CLI commands that take one scenario accept either a listed preset or
+`multi-gpu-ring-N` for `N=2..64`. `compare` and `serving-compare` intentionally
+retain the six fixed topology families so a parameterized target does not
+silently change the comparison population.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

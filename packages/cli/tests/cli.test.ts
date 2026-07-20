@@ -31,10 +31,12 @@ describe("CLI", () => {
     expect(await runCli(["presets"], capture.io)).toBe(0);
     const output = JSON.parse(capture.stdout()) as {
       scenarios: string[];
+      parameterizedScenario: string;
       hardware: { topologies: string[] };
       models: string[];
     };
     expect(output.scenarios).toContain("gpu-npu");
+    expect(output.parameterizedScenario).toBe("multi-gpu-ring-<2..64>");
     expect(output.hardware.topologies).toContain("dgx-h100");
     expect(output.models).toContain("deepseek-v2");
   });
@@ -56,6 +58,40 @@ describe("CLI", () => {
       (entry) => entry.domainId === "node0:storage",
     )?.reservedBytes).toBe(
       512 * 1024 ** 3,
+    );
+  });
+
+  it("materializes a parameterized multi-GPU scenario target", async () => {
+    const capture = captureIo();
+
+    expect(await runCli(
+      ["scenario", "multi-gpu-ring-4"],
+      capture.io,
+    )).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      scenario: {
+        id: string;
+        devices: unknown[];
+        groups: Array<{ id: string; orderedRanks: unknown[] }>;
+      };
+      memoryLedger: Array<{ domainId: string }>;
+    };
+    expect(output.scenario.id).toBe("multi-gpu-ring-4");
+    expect(output.scenario.devices).toHaveLength(5);
+    expect(output.scenario.groups.find(
+      (group) => group.id === "tp",
+    )?.orderedRanks).toHaveLength(4);
+    expect(output.memoryLedger.filter(
+      (entry) => entry.domainId.endsWith(":vram"),
+    )).toHaveLength(4);
+
+    const rejected = captureIo();
+    expect(await runCli(
+      ["scenario", "multi-gpu-ring-65"],
+      rejected.io,
+    )).toBe(1);
+    expect(rejected.stderr()).toContain(
+      "multi-GPU ring count must be a safe integer from 2 through 64",
     );
   });
 
@@ -298,7 +334,7 @@ serving:
     const capture = captureIo();
 
     expect(await runCli(
-      ["serving", "single-gpu-cpu", path],
+      ["serving", "multi-gpu-ring-4", path],
       capture.io,
     )).toBe(0);
     const output = JSON.parse(capture.stdout()) as {
@@ -309,7 +345,7 @@ serving:
       };
       batches: unknown[];
     };
-    expect(output.scenarioId).toBe("single-gpu-cpu");
+    expect(output.scenarioId).toBe("multi-gpu-ring-4");
     expect(output.serving.metrics.requests).toBe(2);
     expect(output.serving.metrics.outputTokens).toBe(5);
     expect(output.serving.replay.completedRequests).toBe(2);
@@ -516,6 +552,22 @@ target_only:
     expect(output.operationCounts.collective).toBe(8);
     expect(output.metrics.committedTokens).toBe(8);
     expect(output.metrics.totalDurationNs).toBeGreaterThan(0);
+
+    const eightGpuCapture = captureIo();
+    expect(await runCli(
+      ["run", "multi-gpu-ring-8", path],
+      eightGpuCapture.io,
+    )).toBe(0);
+    const eightGpu = JSON.parse(eightGpuCapture.stdout()) as {
+      scenarioId: string;
+      status: string;
+      operationCounts: { collective: number };
+    };
+    expect(eightGpu).toMatchObject({
+      scenarioId: "multi-gpu-ring-8",
+      status: "succeeded",
+      operationCounts: { collective: 8 },
+    });
   });
 
   it("compares one workload across all topology presets", async () => {
@@ -549,13 +601,13 @@ target_only:
 
     expect(
       await runCli(
-        ["fault-campaign", "multi-gpu", path],
+        ["fault-campaign", "multi-gpu-ring-4", path],
         firstCapture.io,
       ),
     ).toBe(0);
     expect(
       await runCli(
-        ["fault-campaign", "multi-gpu", path],
+        ["fault-campaign", "multi-gpu-ring-4", path],
         secondCapture.io,
       ),
     ).toBe(0);
@@ -574,8 +626,12 @@ target_only:
       "node:node0",
       "device:node0:gpu0",
       "device:node0:gpu1",
-      "link:node0:nvlink:forward",
-      "link:node0:nvlink:reverse",
+      "device:node0:gpu2",
+      "device:node0:gpu3",
+      "link:node0:nvlink01:forward",
+      "link:node0:nvlink12:forward",
+      "link:node0:nvlink23:forward",
+      "link:node0:nvlink30:forward",
       "epoch:1",
     ]);
     expect(output.cases.every((entry) => (
