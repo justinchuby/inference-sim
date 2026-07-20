@@ -4,10 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f8fa" />
+    <meta http-equiv="Cache-Control" content="no-cache" />
     <title>Inference Sim</title>
+    <script data-cfasync="false">
+      (() => {
+        const recoveryKey = "inference-sim-asset-recovery";
+        window.addEventListener("error", (event) => {
+          const target = event.target;
+          const assetUrl = target?.src ?? target?.href;
+          if (typeof assetUrl !== "string" || !assetUrl.includes("/inference-sim/assets/")) return;
+          const lastRecovery = Number(sessionStorage.getItem(recoveryKey) ?? 0);
+          if (Date.now() - lastRecovery < 60_000) return;
+          sessionStorage.setItem(recoveryKey, String(Date.now()));
+          const next = new URL(window.location.href);
+          next.searchParams.set("asset-recovery", String(Date.now()));
+          window.location.replace(next);
+        }, true);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/main.tsx" data-cfasync="false"></script>
   </body>
 </html>

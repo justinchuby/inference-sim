@@ -36,8 +36,17 @@ jobs:
           pnpm --filter @inference-sim/core build
           pnpm --filter @inference-sim/onnx-inspector build
 
+      - name: Preserve currently deployed assets
+        run: |
+          node scripts/preserve-deployed-assets.mjs \
+            https://www.justinchuby.com/inference-sim/ \
+            packages/web/.previous-pages-assets
+
       - name: Build web app for Pages
         run: pnpm --filter @inference-sim/web build:pages
+
+      - name: Retain previous asset generation
+        run: cp -Rn packages/web/.previous-pages-assets/. packages/web/dist/assets/
 
       - name: Configure Pages
         uses: actions/configure-pages@v6
