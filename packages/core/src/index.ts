@@ -288,6 +288,8 @@ export {
   type GovernorOwner,
   type MemoryDomainKind,
   type MemoryDomainSpec,
+  type NetworkResourceSpec,
+  type NetworkTransportMode,
   type PartitionPlacement,
   type ScenarioExecutionPolicy,
   type ScenarioValidationIssue,
@@ -305,6 +307,7 @@ export {
 export {
   ScenarioValidationError,
   assertValidScenario,
+  calculateLinkDurationNs,
   calculateScenarioMemoryLedger,
   domainSupportsClass,
   findTransferPath,
@@ -315,8 +318,11 @@ export {
   ALL_SCENARIO_PRESET_NAMES,
   COMPUTER_PRESET_NAMES,
   SCENARIO_PRESET_NAMES,
+  buildMultiNodeLanScenario,
   buildMultiGpuRingScenario,
   buildScenarioPreset,
+  type MultiNodeLanNodeCount,
+  type MultiNodeLanOptions,
   type ScenarioPresetName,
 } from "./scenario-presets.js";
 export {

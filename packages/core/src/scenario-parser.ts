@@ -34,7 +34,7 @@ export function parseSimulationScenarioBoundary(
     "workload",
     "execution",
     "calibration",
-  ], [], label);
+  ], ["networkResources"], label);
   requireExact(
     scenario.schemaVersion,
     SCENARIO_SCHEMA_VERSION,
@@ -43,6 +43,9 @@ export function parseSimulationScenarioBoundary(
   requireStrings(scenario, ["id", "family"], label);
   parseMemoryDomains(scenario.memoryDomains, label);
   parseDevices(scenario.devices, label);
+  if (scenario.networkResources !== undefined) {
+    parseNetworkResources(scenario.networkResources, label);
+  }
   parseLinks(scenario.links, label);
   parsePlacements(scenario.placements, label);
   parseTransfers(scenario.transfers, label);
@@ -126,6 +129,41 @@ function parseDevices(value: unknown, scenarioLabel: string): void {
     });
 }
 
+function parseNetworkResources(value: unknown, scenarioLabel: string): void {
+  requireRecordArray(value, `${scenarioLabel} networkResources`)
+    .forEach((resource, index) => {
+      const label = `${scenarioLabel} networkResources[${index}]`;
+      assertKeys(resource, [
+        "id",
+        "kind",
+        "bandwidthBytesPerSec",
+        "latencyNs",
+        "concurrencyLanes",
+        "supportedTransports",
+        "directMemoryDomainIds",
+        "provenance",
+      ], ["nodeId"], label);
+      requireStrings(resource, ["id", "kind"], label);
+      if (resource.nodeId !== undefined) {
+        requireNonEmptyString(resource.nodeId, `${label} nodeId`);
+      }
+      requireNumbers(
+        resource,
+        ["bandwidthBytesPerSec", "latencyNs", "concurrencyLanes"],
+        label,
+      );
+      requireStringArray(
+        resource.supportedTransports,
+        `${label} supportedTransports`,
+      );
+      requireStringArray(
+        resource.directMemoryDomainIds,
+        `${label} directMemoryDomainIds`,
+      );
+      parseProvenance(resource.provenance, `${label} provenance`);
+    });
+}
+
 function parseLinks(value: unknown, scenarioLabel: string): void {
   requireRecordArray(value, `${scenarioLabel} links`)
     .forEach((link, index) => {
@@ -139,7 +177,7 @@ function parseLinks(value: unknown, scenarioLabel: string): void {
         "latencyNs",
         "concurrencyLanes",
         "provenance",
-      ], [], label);
+      ], ["transport", "networkResourceIds"], label);
       requireStrings(
         link,
         ["id", "sourceDomainId", "targetDomainId", "kind"],
@@ -150,6 +188,15 @@ function parseLinks(value: unknown, scenarioLabel: string): void {
         ["bandwidthBytesPerSec", "latencyNs", "concurrencyLanes"],
         label,
       );
+      if (link.transport !== undefined) {
+        requireNonEmptyString(link.transport, `${label} transport`);
+      }
+      if (link.networkResourceIds !== undefined) {
+        requireStringArray(
+          link.networkResourceIds,
+          `${label} networkResourceIds`,
+        );
+      }
       parseProvenance(link.provenance, `${label} provenance`);
     });
 }

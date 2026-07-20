@@ -4,6 +4,8 @@ import {
   type CommunicatorGroupSpec,
   type EvidenceProvenance,
   type MemoryDomainSpec,
+  type NetworkResourceSpec,
+  type NetworkTransportMode,
   type PartitionPlacement,
   type SimDeviceSpec,
   type SimLinkSpec,
@@ -850,152 +852,220 @@ function buildUnified(): SimulationScenario {
 }
 
 function buildMultiNode(): SimulationScenario {
-  const cpu0 = device(
-    "node0:cpu0",
-    "node0",
-    "cpu",
-    "CPUExecutionProvider",
-    ["node0:host"],
-    ["copy", "sampling"],
-  );
-  const gpu0 = device(
-    "node0:gpu0",
-    "node0",
-    "gpu",
-    "CUDAExecutionProvider",
-    ["node0:gpu0:vram", "node0:host"],
-    ["attention", "ffn", "collective", "copy", "draft"],
-  );
-  const cpu1 = device(
-    "node1:cpu0",
-    "node1",
-    "cpu",
-    "CPUExecutionProvider",
-    ["node1:host"],
-    ["copy", "sampling"],
-  );
-  const gpu1 = device(
-    "node1:gpu0",
-    "node1",
-    "gpu",
-    "CUDAExecutionProvider",
-    ["node1:gpu0:vram", "node1:host"],
-    ["attention", "ffn", "collective", "copy", "draft"],
-  );
+  return buildMultiNodeLanScenario(2);
+}
+
+export type MultiNodeLanNodeCount = 2 | 3 | 4;
+
+export interface MultiNodeLanOptions {
+  readonly advanced?: boolean;
+  readonly linkKind?: "ethernet" | "infiniband";
+  readonly transport?: NetworkTransportMode;
+  readonly bandwidthBytesPerSec?: number;
+  readonly latencyNs?: number;
+  readonly linkConcurrencyLanes?: number;
+  readonly nicBandwidthBytesPerSec?: number;
+  readonly nicLatencyNs?: number;
+  readonly nicConcurrencyLanes?: number;
+  readonly fabricBandwidthBytesPerSec?: number;
+  readonly fabricLatencyNs?: number;
+  readonly fabricConcurrencyLanes?: number;
+}
+
+export function buildMultiNodeLanScenario(
+  nodeCount: MultiNodeLanNodeCount,
+  options: MultiNodeLanOptions = {},
+): SimulationScenario {
+  if (![2, 3, 4].includes(nodeCount)) {
+    throw new Error("small LAN node count must be 2, 3, or 4");
+  }
+  const advanced = options.advanced ?? false;
+  const linkKind = options.linkKind ?? "ethernet";
+  const transport = options.transport
+    ?? (linkKind === "ethernet" ? "tcp" : "rdma_host");
+  if (transport === "gpudirect_rdma" && !advanced) {
+    throw new Error("GPUDirect RDMA requires advanced LAN modeling");
+  }
+  const nodes = Array.from({ length: nodeCount }, (_, index) => {
+    const nodeId = `node${index}`;
+    const cpu = device(
+      `${nodeId}:cpu0`,
+      nodeId,
+      "cpu",
+      "CPUExecutionProvider",
+      [`${nodeId}:host`],
+      ["copy", "sampling"],
+    );
+    const gpu = device(
+      `${nodeId}:gpu0`,
+      nodeId,
+      "gpu",
+      "CUDAExecutionProvider",
+      [`${nodeId}:gpu0:vram`, `${nodeId}:host`],
+      ["attention", "ffn", "collective", "copy", "draft"],
+    );
+    return { index, nodeId, cpu, gpu };
+  });
+  const networkResources: NetworkResourceSpec[] = advanced
+    ? [
+        ...nodes.map(({ nodeId }): NetworkResourceSpec => ({
+          id: `${nodeId}:nic0`,
+          kind: "nic",
+          nodeId,
+          bandwidthBytesPerSec:
+            options.nicBandwidthBytesPerSec ?? 25 * GBps,
+          latencyNs: options.nicLatencyNs ?? 700,
+          concurrencyLanes: options.nicConcurrencyLanes ?? 2,
+          supportedTransports: [transport],
+          directMemoryDomainIds: transport === "gpudirect_rdma"
+            ? [`${nodeId}:gpu0:vram`]
+            : [],
+          provenance: HEURISTIC,
+        })),
+        {
+          id: "lan:fabric0",
+          kind: "switch",
+          bandwidthBytesPerSec:
+            options.fabricBandwidthBytesPerSec ?? 50 * GBps,
+          latencyNs: options.fabricLatencyNs ?? 500,
+          concurrencyLanes: options.fabricConcurrencyLanes ?? nodeCount,
+          supportedTransports: [transport],
+          directMemoryDomainIds: [],
+          provenance: HEURISTIC,
+        },
+      ]
+    : [];
+  const networkLinks: SimLinkSpec[] = [];
+  for (let source = 0; source < nodes.length; source++) {
+    for (let target = 0; target < nodes.length; target++) {
+      if (source === target) {
+        continue;
+      }
+      const sourceNode = nodes[source];
+      const targetNode = nodes[target];
+      const endpoint = (nodeId: string): string => (
+        transport === "gpudirect_rdma"
+          ? `${nodeId}:gpu0:vram`
+          : `${nodeId}:host`
+      );
+      networkLinks.push({
+        id: `lan:${sourceNode.nodeId}:${targetNode.nodeId}`,
+        sourceDomainId: endpoint(sourceNode.nodeId),
+        targetDomainId: endpoint(targetNode.nodeId),
+        kind: linkKind,
+        bandwidthBytesPerSec: options.bandwidthBytesPerSec
+          ?? (linkKind === "ethernet" ? 10 * GBps : 50 * GBps),
+        latencyNs: options.latencyNs
+          ?? (linkKind === "ethernet" ? 10_000 : 3_000),
+        concurrencyLanes: options.linkConcurrencyLanes ?? 1,
+        transport,
+        ...(advanced
+          ? {
+              networkResourceIds: [
+                `${sourceNode.nodeId}:nic0`,
+                "lan:fabric0",
+                `${targetNode.nodeId}:nic0`,
+              ],
+            }
+          : {}),
+        provenance: HEURISTIC,
+      });
+    }
+  }
   return scenario({
-    id: "multi-node",
+    id: nodeCount === 2 ? "multi-node" : `multi-node-${nodeCount}`,
     family: "multi_node",
-    domains: [
+    domains: nodes.flatMap(({ nodeId, cpu, gpu }) => [
       domain(
-        "node0:host",
-        "node0",
+        `${nodeId}:host`,
+        nodeId,
         "host",
         256 * GiB,
         100 * GBps,
         ["pageable", "pinned"],
-        [cpu0.id, gpu0.id],
-        { kind: "host", nodeId: "node0" },
+        [cpu.id, gpu.id],
+        { kind: "host", nodeId },
       ),
       domain(
-        "node0:gpu0:vram",
-        "node0",
+        `${nodeId}:gpu0:vram`,
+        nodeId,
         "device",
         80 * GiB,
         2_000 * GBps,
         ["device"],
-        [gpu0.id],
-        { kind: "device", deviceId: gpu0.id },
+        [gpu.id],
+        { kind: "device", deviceId: gpu.id },
       ),
-      domain(
-        "node1:host",
-        "node1",
-        "host",
-        256 * GiB,
-        100 * GBps,
-        ["pageable", "pinned"],
-        [cpu1.id, gpu1.id],
-        { kind: "host", nodeId: "node1" },
-      ),
-      domain(
-        "node1:gpu0:vram",
-        "node1",
-        "device",
-        80 * GiB,
-        2_000 * GBps,
-        ["device"],
-        [gpu1.id],
-        { kind: "device", deviceId: gpu1.id },
-      ),
-    ],
-    devices: [cpu0, gpu0, cpu1, gpu1],
+    ]),
+    devices: nodes.flatMap(({ cpu, gpu }) => [cpu, gpu]),
+    networkResources,
     links: [
-      ...bidirectionalLink(
-        "node0:pcie",
-        "node0:host",
-        "node0:gpu0:vram",
+      ...nodes.flatMap(({ nodeId }) => bidirectionalLink(
+        `${nodeId}:pcie`,
+        `${nodeId}:host`,
+        `${nodeId}:gpu0:vram`,
         "pcie",
         32 * GBps,
         1_500,
-      ),
-      ...bidirectionalLink(
-        "node1:pcie",
-        "node1:host",
-        "node1:gpu0:vram",
-        "pcie",
-        32 * GBps,
-        1_500,
-      ),
-      ...bidirectionalLink(
-        "cluster:rdma",
-        "node0:host",
-        "node1:host",
-        "infiniband",
-        50 * GBps,
-        3_000,
-      ),
+      )),
+      ...networkLinks,
     ],
-    placements: [
-      placement("target-shard-0", gpu0.id, ["attention", "ffn", "collective"], [
-        allocation("weights-0", "node0:gpu0:vram", 36 * GiB, "device", "weights"),
-        allocation("kv-0", "node0:gpu0:vram", 8 * GiB, "device", "kv"),
-        allocation(
-          "workspace-0",
-          "node0:gpu0:vram",
-          128 * MiB,
-          "device",
-          "workspace",
-        ),
-        allocation("staging-0", "node0:host", 1 * GiB, "pinned", "staging"),
-      ]),
-      placement("target-shard-1", gpu1.id, ["attention", "ffn", "collective"], [
-        allocation("weights-1", "node1:gpu0:vram", 36 * GiB, "device", "weights"),
-        allocation("kv-1", "node1:gpu0:vram", 8 * GiB, "device", "kv"),
-        allocation(
-          "workspace-1",
-          "node1:gpu0:vram",
-          128 * MiB,
-          "device",
-          "workspace",
-        ),
-        allocation("staging-1", "node1:host", 1 * GiB, "pinned", "staging"),
-      ]),
-    ],
+    placements: nodes.map(({ index, nodeId, gpu }) => (
+      placement(
+        `target-shard-${index}`,
+        gpu.id,
+        ["attention", "ffn", "collective"],
+        [
+          allocation(
+            `weights-${index}`,
+            `${nodeId}:gpu0:vram`,
+            Math.floor(72 * GiB / nodeCount),
+            "device",
+            "weights",
+          ),
+          allocation(
+            `kv-${index}`,
+            `${nodeId}:gpu0:vram`,
+            Math.floor(16 * GiB / nodeCount),
+            "device",
+            "kv",
+          ),
+          allocation(
+            `workspace-${index}`,
+            `${nodeId}:gpu0:vram`,
+            128 * MiB,
+            "device",
+            "workspace",
+          ),
+          allocation(
+            `staging-${index}`,
+            `${nodeId}:host`,
+            1 * GiB,
+            "pinned",
+            "staging",
+          ),
+        ],
+      )
+    )),
     transfers: [
       transfer(
         "cross-node-collective",
         "node0:gpu0:vram",
         "node1:gpu0:vram",
         64 * 1024 ** 2,
-        true,
-        ["staging-0", "staging-1"],
+        transport !== "gpudirect_rdma",
+        transport === "gpudirect_rdma" ? [] : ["staging-0", "staging-1"],
       ),
     ],
-    groups: [group("tp", [[0, gpu0.id], [1, gpu1.id]])],
+    groups: [group(
+      "tp",
+      nodes.map(({ index, gpu }) => [index, gpu.id]),
+    )],
     parallelism: {
       composition: "overlap_by_capability",
-      tensor: 2,
+      tensor: nodeCount,
       pipeline: 1,
-      expert: 2,
+      expert: nodeCount,
       data: 1,
     },
   });
@@ -1006,6 +1076,7 @@ interface ScenarioParts {
   family: SimulationScenario["family"];
   domains: readonly MemoryDomainSpec[];
   devices: readonly SimDeviceSpec[];
+  networkResources?: readonly NetworkResourceSpec[];
   links?: readonly SimLinkSpec[];
   placements: readonly PartitionPlacement[];
   transfers?: readonly TransferRequirement[];
@@ -1039,6 +1110,9 @@ function scenario(parts: ScenarioParts): SimulationScenario {
     family: parts.family,
     memoryDomains: storage.domains,
     devices: storage.devices,
+    ...(parts.networkResources === undefined
+      ? {}
+      : { networkResources: parts.networkResources }),
     links: storage.links,
     placements: storage.placements,
     transfers: parts.transfers ?? [],

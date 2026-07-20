@@ -4,6 +4,7 @@ import {
   SCENARIO_PRESET_NAMES,
   assertValidScenario,
   buildMultiGpuRingScenario,
+  buildMultiNodeLanScenario,
   buildScenarioPreset,
   buildSpeculativeStateGroups,
   compareTopologyWorkloads,
@@ -29,6 +30,38 @@ function expertPlacement(
 }
 
 describe("topology-aware workload execution", () => {
+  it("executes and replays an advanced four-node GPUDirect LAN", () => {
+    const scenario = buildMultiNodeLanScenario(4, {
+      advanced: true,
+      linkKind: "infiniband",
+      transport: "gpudirect_rdma",
+      fabricConcurrencyLanes: 1,
+    });
+    const result = simulateTopologyWorkload(
+      scenario,
+      targetOnlyTopologyProfile(2),
+    );
+    const collectives = result.plan.steps.filter((step) => (
+      step.operation.kind === "collective"
+    ));
+    const networkReservations = result.execution.trace.operations.flatMap(
+      (event) => event.resources.filter((resource) => (
+        resource.resourceId.startsWith("network:")
+      )),
+    );
+
+    expect(result.execution.status).toBe("succeeded");
+    expect(collectives.length).toBeGreaterThan(0);
+    expect(networkReservations.some(
+      (resource) => resource.resourceId === "network:lan:fabric0",
+    )).toBe(true);
+    expect(replayPlanTrace(
+      scenario,
+      result.plan,
+      result.execution.trace,
+    ).completedAtNs).toBe(result.execution.completedAtNs);
+  });
+
   it("places pipeline components by preference and transfers dataflow", () => {
     const result = simulateTopologyWorkload(
       buildScenarioPreset("gpu-npu"),

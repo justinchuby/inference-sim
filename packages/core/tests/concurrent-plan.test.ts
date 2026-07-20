@@ -4,6 +4,7 @@ import {
   SCENARIO_PRESET_NAMES,
   PlanReplayError,
   StreamingConcurrentPlanRuntime,
+  buildMultiNodeLanScenario,
   buildScenarioPreset,
   compileTopologyWorkloadPlan,
   executeConcurrentFrozenPlans,
@@ -677,5 +678,101 @@ describe("concurrent FrozenPlan execution", () => {
         reason: "late node failure",
       },
     )).toThrowError("node fault occurs after executions completed");
+  });
+
+  it("serializes different links that share a one-lane LAN fabric", () => {
+    const scenario = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      transport: "gpudirect_rdma",
+      fabricConcurrencyLanes: 1,
+      nicConcurrencyLanes: 2,
+    });
+    const transferPlan = (
+      executionId: string,
+      linkId: string,
+      participant: string,
+      read: string,
+      write: string,
+    ): FrozenPlan => ({
+      contractRevision: PLAN_CONTRACT_REVISION,
+      id: `fabric-${executionId}`,
+      executionId,
+      topologyEpoch: scenario.execution.topologyEpoch,
+      steps: [{
+        id: 0,
+        participants: [participant],
+        dependencies: [],
+        reads: [read],
+        writes: [write],
+        operation: {
+          kind: "transfer",
+          linkId,
+          durationNs: 100,
+        },
+      }],
+    });
+    const result = executeConcurrentFrozenPlans(scenario, [
+      {
+        plan: transferPlan(
+          "forward",
+          "lan:node0:node1",
+          "rank-0",
+          "weights-0",
+          "workspace-1",
+        ),
+        arrivalNs: 0,
+        admissionOrder: 0,
+      },
+      {
+        plan: transferPlan(
+          "reverse",
+          "lan:node1:node0",
+          "rank-1",
+          "weights-1",
+          "workspace-0",
+        ),
+        arrivalNs: 0,
+        admissionOrder: 1,
+      },
+    ]);
+    const operations = result.trace.operations.map(({ event }) => event);
+
+    expect(operations.map((event) => [event.startNs, event.finishNs])).toEqual([
+      [0, 100],
+      [100, 200],
+    ]);
+    expect(operations.every((event) => (
+      event.resources.some(
+        (resource) => resource.resourceId === "network:lan:fabric0",
+      )
+    ))).toBe(true);
+    expect(replayConcurrentPlanTrace(
+      scenario,
+      [
+        {
+          plan: transferPlan(
+            "forward",
+            "lan:node0:node1",
+            "rank-0",
+            "weights-0",
+            "workspace-1",
+          ),
+          arrivalNs: 0,
+          admissionOrder: 0,
+        },
+        {
+          plan: transferPlan(
+            "reverse",
+            "lan:node1:node0",
+            "rank-1",
+            "weights-1",
+            "workspace-0",
+          ),
+          arrivalNs: 0,
+          admissionOrder: 1,
+        },
+      ],
+      result.trace,
+    ).completedAtNs).toBe(200);
   });
 });

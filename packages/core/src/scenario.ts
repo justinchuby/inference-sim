@@ -3,6 +3,7 @@ import {
   type AllocationClass,
   type AllocationReservation,
   type MemoryDomainSpec,
+  type NetworkResourceSpec,
   type ScenarioMemoryLedgerEntry,
   type ScenarioMemoryLedgerOptions,
   type ScenarioValidationIssue,
@@ -48,6 +49,12 @@ const LINK_KINDS = [
   "infiniband",
   "thunderbolt",
   "storage",
+] as const;
+const NETWORK_RESOURCE_KINDS = ["nic", "switch"] as const;
+const NETWORK_TRANSPORT_MODES = [
+  "tcp",
+  "rdma_host",
+  "gpudirect_rdma",
 ] as const;
 const ALLOCATION_PURPOSES = [
   "weights",
@@ -178,6 +185,11 @@ export function validateScenario(
     issues,
   );
   const devices = indexUnique(scenario.devices, "devices", issues);
+  const networkResources = indexUnique(
+    scenario.networkResources ?? [],
+    "networkResources",
+    issues,
+  );
   const links = indexUnique(scenario.links, "links", issues);
   indexUnique(scenario.placements, "placements", issues, "partitionId");
   indexUnique(scenario.transfers, "transfers", issues);
@@ -379,6 +391,121 @@ export function validateScenario(
       `${path}.concurrencyLanes`,
       add,
     );
+    if (link.transport !== undefined) {
+      validateEnum(
+        link.transport,
+        NETWORK_TRANSPORT_MODES,
+        `${path}.transport`,
+        add,
+      );
+      if (!["ethernet", "infiniband"].includes(link.kind)) {
+        add(
+          "invalid_transport_link",
+          `${path}.transport`,
+          `${link.transport} requires an ethernet or infiniband link`,
+        );
+      }
+    }
+    validateUniqueStrings(
+      link.networkResourceIds ?? [],
+      `${path}.networkResourceIds`,
+      add,
+    );
+    for (const resourceId of link.networkResourceIds ?? []) {
+      const resource = networkResources.get(resourceId);
+      if (!resource) {
+        add(
+          "unknown_network_resource",
+          `${path}.networkResourceIds`,
+          `unknown network resource ${resourceId}`,
+        );
+      } else if (
+        link.transport !== undefined
+        && !resource.supportedTransports.includes(link.transport)
+      ) {
+        add(
+          "unsupported_network_transport",
+          `${path}.networkResourceIds`,
+          `${resourceId} does not support ${link.transport}`,
+        );
+      }
+    }
+    validateNetworkLinkEndpoints(link, path, domains, networkResources, add);
+  }
+
+  const nodeIds = new Set([
+    ...scenario.memoryDomains.map((domain) => domain.nodeId),
+    ...scenario.devices.map((device) => device.nodeId),
+  ]);
+  for (const [index, resource] of
+    (scenario.networkResources ?? []).entries()) {
+    const path = `networkResources[${index}]`;
+    validateEnum(resource.kind, NETWORK_RESOURCE_KINDS, `${path}.kind`, add);
+    validateProvenance(resource.provenance, `${path}.provenance`, add);
+    validatePositiveInteger(
+      resource.bandwidthBytesPerSec,
+      `${path}.bandwidthBytesPerSec`,
+      add,
+    );
+    validateNonNegativeInteger(resource.latencyNs, `${path}.latencyNs`, add);
+    validatePositiveInteger(
+      resource.concurrencyLanes,
+      `${path}.concurrencyLanes`,
+      add,
+    );
+    validateUniqueStrings(
+      resource.supportedTransports,
+      `${path}.supportedTransports`,
+      add,
+    );
+    resource.supportedTransports.forEach((transport, transportIndex) => {
+      validateEnum(
+        transport,
+        NETWORK_TRANSPORT_MODES,
+        `${path}.supportedTransports[${transportIndex}]`,
+        add,
+      );
+    });
+    validateUniqueStrings(
+      resource.directMemoryDomainIds,
+      `${path}.directMemoryDomainIds`,
+      add,
+    );
+    if (resource.kind === "nic") {
+      if (resource.nodeId === undefined || !nodeIds.has(resource.nodeId)) {
+        add(
+          "invalid_network_node",
+          `${path}.nodeId`,
+          "NIC must belong to a known system",
+        );
+      }
+    } else if (resource.nodeId !== undefined) {
+      add(
+        "invalid_network_node",
+        `${path}.nodeId`,
+        "shared switch resources must not belong to one system",
+      );
+    }
+    for (const domainId of resource.directMemoryDomainIds) {
+      const domain = domains.get(domainId);
+      if (!domain) {
+        add(
+          "unknown_domain",
+          `${path}.directMemoryDomainIds`,
+          `unknown domain ${domainId}`,
+        );
+      } else if (
+        resource.kind !== "nic"
+        || domain.kind !== "device"
+        || domain.nodeId !== resource.nodeId
+      ) {
+        add(
+          "invalid_direct_memory",
+          `${path}.directMemoryDomainIds`,
+          `${domainId} is not device memory local to this NIC`,
+        );
+      }
+    }
   }
 
   const allocationOwners = new Map<string, string>();
@@ -689,14 +816,20 @@ export function validateScenario(
 }
 
 export function findTransferPath(
-  scenario: Pick<SimulationScenario, "memoryDomains" | "links">,
+  scenario: Pick<
+    SimulationScenario,
+    "memoryDomains" | "networkResources" | "links"
+  >,
   transfer: TransferRequirement,
 ): readonly string[] | undefined {
   return findTransferRoute(scenario, transfer)?.domainIds;
 }
 
 export function findTransferRoute(
-  scenario: Pick<SimulationScenario, "memoryDomains" | "links">,
+  scenario: Pick<
+    SimulationScenario,
+    "memoryDomains" | "networkResources" | "links"
+  >,
   transfer: TransferRequirement,
 ): TransferRoute | undefined {
   if (!Number.isSafeInteger(transfer.bytes) || transfer.bytes <= 0) {
@@ -715,6 +848,9 @@ export function findTransferRoute(
 
   const domains = new Map(
     scenario.memoryDomains.map((domain) => [domain.id, domain]),
+  );
+  const networkResources = new Map(
+    (scenario.networkResources ?? []).map((resource) => [resource.id, resource]),
   );
   if (!domains.has(transfer.sourceDomainId) || !domains.has(transfer.targetDomainId)) {
     return undefined;
@@ -790,7 +926,11 @@ export function findTransferRoute(
       ) {
         continue;
       }
-      const edgeDurationNs = declaredLinkDurationNs(link, transfer.bytes);
+      const edgeDurationNs = declaredLinkDurationNs(
+        link,
+        transfer.bytes,
+        networkResources,
+      );
       if (edgeDurationNs === undefined) {
         continue;
       }
@@ -903,6 +1043,7 @@ function compareRouteKeys(left: string, right: string): number {
 function declaredLinkDurationNs(
   link: SimLinkSpec,
   bytes: number,
+  networkResources: ReadonlyMap<string, NetworkResourceSpec> = new Map(),
 ): number | undefined {
   if (
     !Number.isSafeInteger(link.latencyNs)
@@ -912,11 +1053,110 @@ function declaredLinkDurationNs(
   ) {
     return undefined;
   }
-  const serviceNs = Math.ceil(
-    bytes / link.bandwidthBytesPerSec * 1_000_000_000,
+  const resources = (link.networkResourceIds ?? []).flatMap((resourceId) => {
+    const resource = networkResources.get(resourceId);
+    return resource === undefined ? [] : [resource];
+  });
+  const bandwidthBytesPerSec = resources.reduce(
+    (bandwidth, resource) => Math.min(
+      bandwidth,
+      resource.bandwidthBytesPerSec,
+    ),
+    link.bandwidthBytesPerSec,
   );
-  const durationNs = link.latencyNs + serviceNs;
+  const latencyNs = resources.reduce(
+    (latency, resource) => latency + resource.latencyNs,
+    link.latencyNs,
+  );
+  const serviceNs = Math.ceil(bytes / bandwidthBytesPerSec * 1_000_000_000);
+  const durationNs = latencyNs + serviceNs;
   return Number.isSafeInteger(durationNs) ? durationNs : undefined;
+}
+
+export function calculateLinkDurationNs(
+  link: SimLinkSpec,
+  bytes: number,
+  networkResources: readonly NetworkResourceSpec[] = [],
+): number | undefined {
+  return declaredLinkDurationNs(
+    link,
+    bytes,
+    new Map(networkResources.map((resource) => [resource.id, resource])),
+  );
+}
+
+function validateNetworkLinkEndpoints(
+  link: SimLinkSpec,
+  path: string,
+  domains: ReadonlyMap<string, MemoryDomainSpec>,
+  networkResources: ReadonlyMap<string, NetworkResourceSpec>,
+  add: (code: string, path: string, message: string) => void,
+): void {
+  if (link.transport === undefined) {
+    return;
+  }
+  const source = domains.get(link.sourceDomainId);
+  const target = domains.get(link.targetDomainId);
+  if (!source || !target) {
+    return;
+  }
+  if (source.nodeId === target.nodeId) {
+    add(
+      "invalid_network_path",
+      `${path}.transport`,
+      "network transports must cross system boundaries",
+    );
+  }
+  if (link.transport === "tcp" || link.transport === "rdma_host") {
+    if (source.kind !== "host" || target.kind !== "host") {
+      add(
+        "invalid_network_path",
+        `${path}.transport`,
+        `${link.transport} must connect host-memory domains`,
+      );
+    }
+    if (
+      link.transport === "rdma_host"
+      && (
+        !source.allocationClasses.includes("pinned")
+        || !target.allocationClasses.includes("pinned")
+      )
+    ) {
+      add(
+        "invalid_network_path",
+        `${path}.transport`,
+        "host-staged RDMA endpoints must support pinned memory",
+      );
+    }
+    return;
+  }
+
+  if (source.kind !== "device" || target.kind !== "device") {
+    add(
+      "invalid_network_path",
+      `${path}.transport`,
+      "GPUDirect RDMA must connect device-memory domains",
+    );
+    return;
+  }
+  const resources = (link.networkResourceIds ?? []).flatMap((resourceId) => {
+    const resource = networkResources.get(resourceId);
+    return resource === undefined ? [] : [resource];
+  });
+  const hasDirectNic = (domain: MemoryDomainSpec): boolean => (
+    resources.some((resource) => (
+      resource.kind === "nic"
+      && resource.nodeId === domain.nodeId
+      && resource.directMemoryDomainIds.includes(domain.id)
+    ))
+  );
+  if (!hasDirectNic(source) || !hasDirectNic(target)) {
+    add(
+      "invalid_network_path",
+      `${path}.networkResourceIds`,
+      "GPUDirect RDMA requires a local direct-capable NIC at each endpoint",
+    );
+  }
 }
 
 function validateTransfer(

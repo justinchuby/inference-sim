@@ -10,6 +10,7 @@ import {
   replayPlanTrace,
 } from "./frozen-plan.js";
 import {
+  calculateLinkDurationNs,
   findTransferRoute,
 } from "./scenario.js";
 import type {
@@ -2612,6 +2613,7 @@ class WorkloadPlanCompiler {
           this.scenario.links.find((link) => link.id === linkId)
             ?? fail(`unknown link ${linkId}`),
           bytes,
+          this.scenario.networkResources,
         ),
         "path duration",
       )
@@ -2636,10 +2638,11 @@ class WorkloadPlanCompiler {
     const curves = this.costModel.transportCurves;
     if (curves === undefined) {
       return operation === "transfer"
-        ? linkDuration(
+          ? linkDuration(
             this.scenario.links.find((link) => link.id === linkIds[0])
               ?? fail(`unknown link ${linkIds[0]}`),
             bytes,
+            this.scenario.networkResources,
           )
         : this.heuristicCollectiveDuration(
             collectivePhases
@@ -2744,6 +2747,7 @@ class WorkloadPlanCompiler {
             this.pathDuration(transfer.linkIds, transfer.bytes)
           )));
       const serviceByLink = new Map<string, number>();
+      const serviceByNetworkResource = new Map<string, number>();
       for (const transfer of paths) {
         for (const linkId of transfer.linkIds) {
           const link = this.scenario.links.find(
@@ -2753,15 +2757,42 @@ class WorkloadPlanCompiler {
             linkId,
             checkedAdd(
               serviceByLink.get(linkId) ?? 0,
-              linkDuration(link, transfer.bytes),
+              linkDuration(
+                link,
+                transfer.bytes,
+                this.scenario.networkResources,
+              ),
               `${algorithm} phase service on ${linkId}`,
             ),
           );
+          for (const resourceId of link.networkResourceIds ?? []) {
+            const resource = this.scenario.networkResources?.find(
+              (candidate) => candidate.id === resourceId,
+            ) ?? fail(`unknown network resource ${resourceId}`);
+            const serviceNs = checkedAdd(
+              resource.latencyNs,
+              scaledDuration(
+                transfer.bytes,
+                resource.bandwidthBytesPerSec,
+                `network resource ${resourceId}`,
+              ),
+              `network resource ${resourceId} service`,
+            );
+            serviceByNetworkResource.set(
+              resourceId,
+              checkedAdd(
+                serviceByNetworkResource.get(resourceId) ?? 0,
+                serviceNs,
+                `${algorithm} phase service on ${resourceId}`,
+              ),
+            );
+          }
         }
       }
       const phaseDurationNs = Math.max(
         longestPathNs,
         ...serviceByLink.values(),
+        ...serviceByNetworkResource.values(),
       );
       totalDurationNs = checkedAdd(
         totalDurationNs,
@@ -3557,16 +3588,16 @@ function expertHotCacheId(placement: PartitionPlacement): string {
   return allocations[0].physicalAllocationId;
 }
 
-function linkDuration(link: SimLinkSpec, bytes: number): number {
-  return checkedAdd(
-    link.latencyNs,
-    scaledDuration(
-      bytes,
-      link.bandwidthBytesPerSec,
-      "link transfer",
-    ),
-    "link duration",
-  );
+function linkDuration(
+  link: SimLinkSpec,
+  bytes: number,
+  networkResources: SimulationScenario["networkResources"] = [],
+): number {
+  return calculateLinkDurationNs(
+    link,
+    bytes,
+    networkResources,
+  ) ?? fail(`invalid duration for link ${link.id}`);
 }
 
 function transportCurveIdentity(curve: TransportCalibrationCurve): string {

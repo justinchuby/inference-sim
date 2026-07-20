@@ -363,6 +363,7 @@ export class StreamingConcurrentPlanRuntime {
         const resources = selectResourceReservations(
           step.operation,
           this.resourceLanes,
+          this.scenario,
         );
         const resourceReadyNs = Math.max(
           submittedAtNs,
@@ -787,6 +788,7 @@ export function replayConcurrentPlanTrace(
       const expectedResources = selectResourceReservations(
         step.operation,
         resourceLanes,
+        scenario,
       );
       if (!reservationsEqual(event.resources, expectedResources)) {
         replayFail(
@@ -1508,31 +1510,48 @@ function buildResourceLanes(
       Array.from({ length: link.concurrencyLanes }, () => 0),
     );
   }
+  for (const resource of scenario.networkResources ?? []) {
+    resources.set(
+      `network:${resource.id}`,
+      Array.from({ length: resource.concurrencyLanes }, () => 0),
+    );
+  }
   for (const group of scenario.groups) {
     resources.set(`collective:${group.id}`, [0]);
   }
   return resources;
 }
 
-function resourceIds(operation: PlanOperation): readonly string[] {
+function resourceIds(
+  operation: PlanOperation,
+  scenario: SimulationScenario,
+): readonly string[] {
+  const linkResourceIds = (linkId: string): readonly string[] => {
+    const link = scenario.links.find((candidate) => candidate.id === linkId);
+    return [
+      `link:${linkId}`,
+      ...(link?.networkResourceIds ?? []).map((id) => `network:${id}`),
+    ];
+  };
   switch (operation.kind) {
     case "compute":
       return [`compute:${operation.deviceId}`];
     case "transfer":
-      return [`link:${operation.linkId}`];
+      return linkResourceIds(operation.linkId);
     case "collective":
-      return [
+      return [...new Set([
         `collective:${operation.groupId}`,
-        ...operation.linkIds.map((linkId) => `link:${linkId}`),
-      ];
+        ...operation.linkIds.flatMap(linkResourceIds),
+      ])];
   }
 }
 
 function selectResourceReservations(
   operation: PlanOperation,
   resourceLanes: ReadonlyMap<string, readonly number[]>,
+  scenario: SimulationScenario,
 ): PlanResourceReservation[] {
-  return resourceIds(operation).map((resourceId) => {
+  return resourceIds(operation, scenario).map((resourceId) => {
     const lanes = resourceLanes.get(resourceId);
     if (!lanes || lanes.length === 0) {
       throw new FrozenPlanExecutionError(`missing resource ${resourceId}`);

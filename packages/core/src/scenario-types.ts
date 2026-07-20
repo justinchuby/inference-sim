@@ -57,6 +57,23 @@ export interface SimDeviceSpec {
   readonly provenance: EvidenceProvenance;
 }
 
+export type NetworkTransportMode =
+  | "tcp"
+  | "rdma_host"
+  | "gpudirect_rdma";
+
+export interface NetworkResourceSpec {
+  readonly id: string;
+  readonly kind: "nic" | "switch";
+  readonly nodeId?: string;
+  readonly bandwidthBytesPerSec: number;
+  readonly latencyNs: number;
+  readonly concurrencyLanes: number;
+  readonly supportedTransports: readonly NetworkTransportMode[];
+  readonly directMemoryDomainIds: readonly string[];
+  readonly provenance: EvidenceProvenance;
+}
+
 export interface SimLinkSpec {
   readonly id: string;
   readonly sourceDomainId: string;
@@ -72,6 +89,8 @@ export interface SimLinkSpec {
   readonly bandwidthBytesPerSec: number;
   readonly latencyNs: number;
   readonly concurrencyLanes: number;
+  readonly transport?: NetworkTransportMode;
+  readonly networkResourceIds?: readonly string[];
   readonly provenance: EvidenceProvenance;
 }
 
@@ -180,6 +199,7 @@ export interface SimulationScenario {
     | "custom";
   readonly memoryDomains: readonly MemoryDomainSpec[];
   readonly devices: readonly SimDeviceSpec[];
+  readonly networkResources?: readonly NetworkResourceSpec[];
   readonly links: readonly SimLinkSpec[];
   readonly placements: readonly PartitionPlacement[];
   readonly transfers: readonly TransferRequirement[];

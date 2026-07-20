@@ -306,6 +306,7 @@ export function executeFrozenPlan(
       const resources = selectResourceReservations(
         step.operation,
         resourceLanes,
+        scenario,
       );
       const resourceReady = Math.max(
         submittedAtNs,
@@ -529,7 +530,7 @@ export function replayPlanTrace(
       if (!step || eventByStep.has(event.stepId)) {
         replayFail(`unknown or duplicate step ${event.stepId}`);
       }
-      assertEventMatchesStep(step, event);
+      assertEventMatchesStep(scenario, step, event);
       if (
         !Number.isSafeInteger(event.submittedAtNs)
         || !Number.isSafeInteger(event.startNs)
@@ -560,6 +561,7 @@ export function replayPlanTrace(
       const expectedResources = selectResourceReservations(
         step.operation,
         expectedResourceLanes,
+        scenario,
       );
       if (!resourceReservationsEqual(event.resources, expectedResources)) {
         replayFail(`step ${step.id} resource reservations are not deterministic`);
@@ -1359,23 +1361,39 @@ function buildResourceLanes(
       Array.from({ length: link.concurrencyLanes }, () => 0),
     );
   }
+  for (const resource of scenario.networkResources ?? []) {
+    resources.set(
+      `network:${resource.id}`,
+      Array.from({ length: resource.concurrencyLanes }, () => 0),
+    );
+  }
   for (const group of scenario.groups) {
     resources.set(`collective:${group.id}`, [0]);
   }
   return resources;
 }
 
-function resourceIdsFor(operation: PlanOperation): readonly string[] {
+function resourceIdsFor(
+  scenario: SimulationScenario,
+  operation: PlanOperation,
+): readonly string[] {
+  const linkResourceIds = (linkId: string): readonly string[] => {
+    const link = scenario.links.find((candidate) => candidate.id === linkId);
+    return [
+      `link:${linkId}`,
+      ...(link?.networkResourceIds ?? []).map((id) => `network:${id}`),
+    ];
+  };
   switch (operation.kind) {
     case "compute":
       return [`compute:${operation.deviceId}`];
     case "transfer":
-      return [`link:${operation.linkId}`];
+      return linkResourceIds(operation.linkId);
     case "collective":
-      return [
+      return [...new Set([
         `collective:${operation.groupId}`,
-        ...operation.linkIds.map((linkId) => `link:${linkId}`),
-      ];
+        ...operation.linkIds.flatMap(linkResourceIds),
+      ])];
   }
 }
 
@@ -1531,8 +1549,9 @@ function operationUsesLink(
 function selectResourceReservations(
   operation: PlanOperation,
   resourceLanes: ReadonlyMap<string, readonly number[]>,
+  scenario: SimulationScenario,
 ): PlanResourceReservation[] {
-  return resourceIdsFor(operation).map((resourceId) => {
+  return resourceIdsFor(scenario, operation).map((resourceId) => {
     const lanes = resourceLanes.get(resourceId);
     if (!lanes) {
       throw new FrozenPlanExecutionError(`missing resource ${resourceId}`);
@@ -1556,6 +1575,11 @@ function resourceCapacity(
   if (resourceId.startsWith("link:")) {
     return scenario.links.find(
       (link) => resourceId === `link:${link.id}`,
+    )?.concurrencyLanes ?? 0;
+  }
+  if (resourceId.startsWith("network:")) {
+    return (scenario.networkResources ?? []).find(
+      (resource) => resourceId === `network:${resource.id}`,
     )?.concurrencyLanes ?? 0;
   }
   if (resourceId.startsWith("collective:")) {
@@ -1888,12 +1912,16 @@ function rankStatesEqual(
     ));
 }
 
-function assertEventMatchesStep(step: PlanStep, event: PlanTraceEvent): void {
+function assertEventMatchesStep(
+  scenario: SimulationScenario,
+  step: PlanStep,
+  event: PlanTraceEvent,
+): void {
   if (
     event.kind !== step.operation.kind
     || !arraysEqual(
       event.resources.map((resource) => resource.resourceId),
-      resourceIdsFor(step.operation),
+      resourceIdsFor(scenario, step.operation),
     )
     || !arraysEqual(event.participants, step.participants)
     || !arraysEqual(event.reads, step.reads)

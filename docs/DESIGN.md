@@ -295,8 +295,10 @@ their newly ready submissions are processed before the new admission batch.
 Ready work is then selected by admission order and source-plan step order.
 
 All executions share the scenario's actual compute lanes, directed link lanes,
-collective lanes, communicator sequencers, and physical-allocation lease
-registry. A repeated `PhysicalAllocationId` still names one physical
+optional NIC/switch lanes, collective lanes, communicator sequencers, and
+physical-allocation lease registry. Different logical links that reference the
+same network resource contend on that resource even when their own link lanes
+are idle. A repeated `PhysicalAllocationId` still names one physical
 reservation: it is never silently namespaced by execution. Consequently,
 read/read access may overlap while conflicting KV, workspace, checkpoint, or
 sidecar access is lease-serialized even if the operations use otherwise
@@ -900,12 +902,26 @@ a bounded option set and rejects any other Worker input; the fixed two-rank
 `multi-gpu` preset retains its original scenario and link identities for
 calibration compatibility.
 
+The public small-LAN builder materializes two, three, or four systems. Its
+default is intentionally simple: one GPU per system, host-staged TCP over
+directed Ethernet links, and no explicit NIC or switch objects. This is the
+normal UI path for a small workstation LAN. Advanced mode is opt-in and adds a
+NIC/HCA per system plus one shared switch fabric. It can select host-staged
+RDMA or GPUDirect RDMA without changing the model/pipeline placement.
+
+The bounded LAN is a switched local network, not a data-center fabric model.
+It does not model packets, PFC/ECN, retransmission, adaptive routing, or
+multi-rail striping. Two to four logical point-to-point paths may share the
+same declared fabric resource, which is sufficient to model endpoint
+injection limits and switch contention deterministically.
+
 ### 10.2 Scenario Schema
 
 ```typescript
 interface SimulationScenario {
   readonly memoryDomains: readonly MemoryDomainSpec[];
   readonly devices: readonly SimDeviceSpec[];
+  readonly networkResources?: readonly NetworkResourceSpec[];
   readonly links: readonly SimLinkSpec[];
   readonly placements: readonly PartitionPlacement[];
   readonly transfers: readonly TransferRequirement[];
@@ -913,6 +929,24 @@ interface SimulationScenario {
   readonly workload: WorkloadSpec;
   readonly execution: ExecutionPolicy;
   readonly calibration: CalibrationSet;
+}
+
+interface NetworkResourceSpec {
+  readonly id: string;
+  readonly kind: "nic" | "switch";
+  readonly nodeId?: string;
+  readonly bandwidthBytesPerSec: number;
+  readonly latencyNs: number;
+  readonly concurrencyLanes: number;
+  readonly supportedTransports:
+    readonly ("tcp" | "rdma_host" | "gpudirect_rdma")[];
+  readonly directMemoryDomainIds: readonly string[];
+}
+
+interface SimLinkSpec {
+  // Existing endpoint, kind, bandwidth, latency, and lane fields omitted.
+  readonly transport?: "tcp" | "rdma_host" | "gpudirect_rdma";
+  readonly networkResourceIds?: readonly string[];
 }
 ```
 
@@ -923,12 +957,27 @@ resource limit does not rewrite installed hardware. Execution policy declares
 `features.ssdStreaming`; disabling it removes storage from the allocatable
 ledger and makes every cold expert load or storage prefetch fail closed. Each
 directed link declares endpoints, bandwidth/latency curves, concurrency lanes,
-staging requirement, and evidence provenance.
+an optional network transport/resource path, and evidence provenance.
+
+Simple links retain the original end-to-end timing and reservation behavior.
+For an advanced link, effective bandwidth is the minimum of its logical-link,
+endpoint-NIC, and fabric bandwidths. Latency includes the logical-link latency
+and every referenced network-resource latency. Execution reserves the logical
+link and every referenced NIC/fabric resource; replay independently derives
+the same reservations from the scenario.
+
+`rdma_host` endpoints must be pinned-capable host domains. `gpudirect_rdma`
+endpoints must be device-memory domains on different systems and each endpoint
+must have a local NIC that explicitly grants direct access to that domain.
+This prevents a path label from claiming GPUDirect while silently routing
+through host memory.
 
 Validation proves:
 
 - every placement references a capable device;
 - every transfer has a direct or staged path;
+- every network resource reference exists and supports the selected transport;
+- every GPUDirect path has direct-capable NICs at both device endpoints;
 - every communicator group has immutable ordered world ranks;
 - Cartesian or capability-overlap parallelism semantics correspond to concrete
   participants;
@@ -965,10 +1014,11 @@ fallback distributes bytes deterministically across remote pairs, remains
 heuristic, and is not used by validated routed profiles.
 
 Every logical edge resolves to a directed physical path. Per-phase duration is
-the greater of the longest path duration and accumulated service on any shared
-directed link. The FrozenPlan collective reserves the union of all phase links
-for its full duration, which is conservative for contention with other
-operations. A missing directed path fails compilation. Imported end-to-end
+the greater of the longest path duration, accumulated service on any shared
+directed link, and accumulated service on any referenced NIC or switch fabric.
+The FrozenPlan collective reserves the union of all phase links and network
+resources for its full duration, which is conservative for contention with
+other operations. A missing directed path fails compilation. Imported end-to-end
 collective calibration replaces this duration fallback but not the declared
 resource reservation. Calibration revision 3 supports all-reduce directly and
 AllToAllV by binding each curve to a canonical traffic signature.

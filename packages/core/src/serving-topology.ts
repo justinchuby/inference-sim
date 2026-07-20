@@ -515,6 +515,7 @@ export function simulateTopologyServingWorkload(
       if (
         !reservation.resourceId.startsWith("compute:")
         && !reservation.resourceId.startsWith("link:")
+        && !reservation.resourceId.startsWith("network:")
       ) {
         continue;
       }
@@ -1076,7 +1077,11 @@ function servingResourceCapacity(
       ? scenario.links.find(
           (link) => resourceId === `link:${link.id}`,
         )?.concurrencyLanes
-      : undefined;
+      : resourceId.startsWith("network:")
+        ? (scenario.networkResources ?? []).find(
+            (resource) => resourceId === `network:${resource.id}`,
+          )?.concurrencyLanes
+        : undefined;
   if (capacity === undefined || capacity <= 0) {
     throw new Error(`serving trace reserved unknown resource ${resourceId}`);
   }

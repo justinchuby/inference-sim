@@ -5,7 +5,9 @@ import {
   ScenarioValidationError,
   assertValidScenario,
   buildMultiGpuRingScenario,
+  buildMultiNodeLanScenario,
   buildScenarioPreset,
+  calculateLinkDurationNs,
   calculateScenarioMemoryLedger,
   findTransferPath,
   findTransferRoute,
@@ -492,6 +494,90 @@ describe("scenario presets", () => {
         expert: gpuCount,
       });
     }
+  });
+
+  it("builds simple LANs for two through four systems", () => {
+    for (const nodeCount of [2, 3, 4] as const) {
+      const scenario = buildMultiNodeLanScenario(nodeCount);
+      const networkLinks = scenario.links.filter((link) => (
+        link.transport !== undefined
+      ));
+      const tp = scenario.groups.find((group) => group.id === "tp");
+
+      expect(validateScenario(scenario)).toEqual({ valid: true, issues: [] });
+      expect(new Set(scenario.devices.map((device) => device.nodeId)).size)
+        .toBe(nodeCount);
+      expect(networkLinks).toHaveLength(nodeCount * (nodeCount - 1));
+      expect(networkLinks.every((link) => (
+        link.kind === "ethernet"
+        && link.transport === "tcp"
+        && link.networkResourceIds === undefined
+      ))).toBe(true);
+      expect(tp?.orderedRanks).toHaveLength(nodeCount);
+      expect(scenario.execution.parallelism.tensor).toBe(nodeCount);
+    }
+    expect(() => buildMultiNodeLanScenario(
+      5 as unknown as 4,
+    )).toThrow("2, 3, or 4");
+  });
+
+  it("distinguishes host-staged and GPUDirect RDMA LAN paths", () => {
+    const staged = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      linkKind: "infiniband",
+      transport: "rdma_host",
+    });
+    const direct = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      linkKind: "infiniband",
+      transport: "gpudirect_rdma",
+    });
+
+    expect(findTransferRoute(staged, staged.transfers[0])?.domainIds).toEqual([
+      "node0:gpu0:vram",
+      "node0:host",
+      "node1:host",
+      "node1:gpu0:vram",
+    ]);
+    expect(findTransferRoute(direct, direct.transfers[0])?.domainIds).toEqual([
+      "node0:gpu0:vram",
+      "node1:gpu0:vram",
+    ]);
+    expect(direct.networkResources).toHaveLength(3);
+    const directLink = direct.links.find(
+      (link) => link.id === "lan:node0:node1",
+    )!;
+    expect(directLink.networkResourceIds).toEqual([
+      "node0:nic0",
+      "lan:fabric0",
+      "node1:nic0",
+    ]);
+    expect(calculateLinkDurationNs(
+      directLink,
+      1_000_000,
+      direct.networkResources,
+    )).toBeGreaterThan(directLink.latencyNs);
+  });
+
+  it("rejects GPUDirect paths without endpoint-local direct NIC access", () => {
+    const scenario = buildMultiNodeLanScenario(2, {
+      advanced: true,
+      transport: "gpudirect_rdma",
+    });
+    const result = validateScenario({
+      ...scenario,
+      networkResources: scenario.networkResources?.map((resource) => (
+        resource.id === "node0:nic0"
+          ? { ...resource, directMemoryDomainIds: [] }
+          : resource
+      )),
+    });
+    expect(result.issues).toContainEqual({
+      code: "invalid_network_path",
+      path: "links[4].networkResourceIds",
+      message:
+        "GPUDirect RDMA requires a local direct-capable NIC at each endpoint",
+    });
   });
 
   it("rejects unsafe multi-GPU ring sizes", () => {
