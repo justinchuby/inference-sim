@@ -831,6 +831,7 @@ function topologyProfileFromExpertServingBatch(
       strategy: placement.strategy,
       expertIds: [...placement.expertIds],
     },
+    expertTokenPlacement: "round_robin",
     units: base.units.map((unit) => ({
       ...unit,
       activeExperts: topK,

@@ -28,15 +28,15 @@ function expertPlacement(
 }
 
 describe("topology-aware workload execution", () => {
-  it("rejects cost models from the previous physical-routing revision", () => {
+  it("rejects cost models from the previous routed-traffic revision", () => {
     expect(() => simulateTopologyWorkload(
       buildScenarioPreset("single-gpu-cpu"),
       targetOnlyTopologyProfile(1),
       {
         ...DEFAULT_TOPOLOGY_COST_MODEL,
-        revision: 6 as typeof DEFAULT_TOPOLOGY_COST_MODEL.revision,
+        revision: 7 as typeof DEFAULT_TOPOLOGY_COST_MODEL.revision,
       },
-    )).toThrow("unsupported topology cost revision 6");
+    )).toThrow("unsupported topology cost revision 7");
   });
 
   it("rejects an empty target-only profile before plan execution", () => {
@@ -328,6 +328,7 @@ describe("topology-aware workload execution", () => {
         "round_robin",
         ["e0", "e1", "e2", "e3"],
       ),
+      expertTokenPlacement: "round_robin" as const,
       units: [{
         id: "route-0",
         targetTokenWidth: 1,
@@ -348,28 +349,30 @@ describe("topology-aware workload execution", () => {
       step.operation.kind === "collective"
       && step.operation.algorithm === "all_to_all_v"
     ));
-    const expectedLinks = [
+    const expectedDispatchLinks = [
       "node0:nvlink01:forward",
-      "node0:nvlink01:reverse",
       "node0:nvlink12:forward",
-      "node0:nvlink12:reverse",
-      "node0:nvlink23:forward",
-      "node0:nvlink23:reverse",
-      "node0:nvlink30:forward",
       "node0:nvlink30:reverse",
-    ].sort();
+    ];
+    const expectedGatherLinks = [
+      "node0:nvlink30:forward",
+      "node0:nvlink12:reverse",
+      "node0:nvlink01:reverse",
+    ];
 
     expect(result.execution.status).toBe("succeeded");
     expect(result.assumptions.some((assumption) => (
-      assumption.includes("AllToAllV uses N-1 balanced pairwise-exchange")
+      assumption.includes("exact round-robin token-source to expert-owner")
     ))).toBe(true);
     expect(allToAll).toHaveLength(2);
-    expect(allToAll.every((step) => (
-      step.operation.kind === "collective"
-      && step.participants.length === 4
-      && [...step.operation.linkIds].sort().join(",")
-        === expectedLinks.join(",")
-    ))).toBe(true);
+    expect(allToAll[0].operation).toMatchObject({
+      kind: "collective",
+      linkIds: expectedDispatchLinks,
+    });
+    expect(allToAll[1].operation).toMatchObject({
+      kind: "collective",
+      linkIds: expectedGatherLinks,
+    });
     expect(result.plan.steps.filter((step) => (
       step.operation.kind === "compute"
       && step.operation.capability === "ffn"
@@ -379,6 +382,58 @@ describe("topology-aware workload execution", () => {
       "rank-2",
       "rank-3",
     ]);
+  });
+
+  it("scales skew-aware routed traffic through eight and sixty-four ranks", () => {
+    for (const rankCount of [8, 64]) {
+      const scenario = buildMultiGpuRingScenario(rankCount);
+      const expertIds = Array.from(
+        { length: rankCount },
+        (_, index) => `e${index}`,
+      );
+      const profile = {
+        id: `skew-${rankCount}`,
+        batchSize: 1,
+        expertPlacement: expertPlacement("round_robin", expertIds),
+        expertTokenPlacement: "round_robin" as const,
+        units: [{
+          id: "skew-0",
+          targetTokenWidth: rankCount,
+          committedTokens: rankCount,
+          draftTokens: 0,
+          activeExperts: 1,
+          expertRouted: true,
+          routedExperts: Array.from({ length: rankCount }, () => ({
+            expertId: "e0",
+            sourceTier: "hot" as const,
+            loadBytes: 0,
+          })),
+          warmLoadBytes: 0,
+          coldLoadBytes: 0,
+        }],
+      };
+      const first = simulateTopologyWorkload(scenario, profile);
+      const second = simulateTopologyWorkload(scenario, profile);
+      const allToAll = first.plan.steps.filter((step) => (
+        step.operation.kind === "collective"
+        && step.operation.algorithm === "all_to_all_v"
+      ));
+
+      expect(allToAll, `${rankCount} ranks`).toHaveLength(2);
+      expect(allToAll.every((step) => (
+        step.operation.kind === "collective"
+        && step.operation.linkIds.length > 0
+        && step.operation.durationNs > 0
+      )), `${rankCount} ranks`).toBe(true);
+      expect(first.plan, `${rankCount} ranks`).toEqual(second.plan);
+      expect(first.execution.trace, `${rankCount} ranks`)
+        .toEqual(second.execution.trace);
+      expect(replayPlanTrace(
+        scenario,
+        first.plan,
+        first.execution.trace,
+      ).status, `${rankCount} ranks`).toBe("succeeded");
+    }
   });
 
   it("executes speculative verification and faults across four ranks", () => {
@@ -447,6 +502,7 @@ describe("topology-aware workload execution", () => {
       id: "routed-moe",
       batchSize: 1,
       expertPlacement: expertPlacement(),
+      expertTokenPlacement: "round_robin" as const,
       units: [{
         id: "moe-0",
         targetTokenWidth: 3,
@@ -521,6 +577,7 @@ describe("topology-aware workload execution", () => {
         id: "skewed-routed-moe",
         batchSize: 1,
         expertPlacement: expertPlacement(),
+        expertTokenPlacement: "round_robin" as const,
         units: [{
           id: "skewed-0",
           targetTokenWidth: 3,
@@ -553,6 +610,61 @@ describe("topology-aware workload execution", () => {
     expect(gather.reads).toEqual(["workspace-0"]);
   });
 
+  it("charges only remote source-to-owner bytes for routed AllToAllV", () => {
+    const scenario = buildMultiGpuRingScenario(4);
+    const expertIds = ["e0", "e1", "e2", "e3"];
+    const execute = (routedExpertIds: readonly string[]) => (
+      simulateTopologyWorkload(scenario, {
+        id: `traffic-${routedExpertIds.join("-")}`,
+        batchSize: 1,
+        expertPlacement: expertPlacement("round_robin", expertIds),
+        expertTokenPlacement: "round_robin",
+        units: [{
+          id: "traffic-0",
+          targetTokenWidth: 4,
+          committedTokens: 4,
+          draftTokens: 0,
+          activeExperts: 1,
+          expertRouted: true,
+          routedExperts: routedExpertIds.map((expertId) => ({
+            expertId,
+            sourceTier: "hot" as const,
+            loadBytes: 0,
+          })),
+          warmLoadBytes: 0,
+          coldLoadBytes: 0,
+        }],
+      })
+    );
+    const local = execute(expertIds);
+    const skewed = execute(["e0", "e0", "e0", "e0"]);
+    const allToAll = (result: typeof local) => result.plan.steps.filter(
+      (step) => (
+        step.operation.kind === "collective"
+        && step.operation.algorithm === "all_to_all_v"
+      ),
+    );
+
+    expect(allToAll(local).every((step) => (
+      step.operation.kind === "collective"
+      && step.operation.linkIds.length === 0
+      && step.operation.durationNs === 0
+    ))).toBe(true);
+    expect(allToAll(skewed).every((step) => (
+      step.operation.kind === "collective"
+      && step.operation.linkIds.length > 0
+      && step.operation.durationNs > 0
+    ))).toBe(true);
+    expect(skewed.metrics.collectiveServiceNs)
+      .toBeGreaterThan(local.metrics.collectiveServiceNs);
+    expect(skewed.execution.status).toBe("succeeded");
+    expect(replayPlanTrace(
+      scenario,
+      skewed.plan,
+      skewed.execution.trace,
+    ).status).toBe("succeeded");
+  });
+
   it("resolves contiguous and round-robin expert owners by communicator rank", () => {
     const scenario = buildScenarioPreset("multi-gpu");
     const compile = (strategy: "contiguous" | "round_robin") => (
@@ -583,6 +695,7 @@ describe("topology-aware workload execution", () => {
         id: "mixed-tier-routes",
         batchSize: 1,
         expertPlacement: expertPlacement(),
+        expertTokenPlacement: "round_robin" as const,
         units: [{
           id: "mixed-0",
           targetTokenWidth: 1,
@@ -638,6 +751,7 @@ describe("topology-aware workload execution", () => {
         id: "shared-staging-routes",
         batchSize: 1,
         expertPlacement: expertPlacement("round_robin"),
+        expertTokenPlacement: "round_robin" as const,
         units: [{
           id: "shared-staging-0",
           targetTokenWidth: 1,
@@ -681,6 +795,7 @@ describe("topology-aware workload execution", () => {
       id: "invalid-routes",
       batchSize: 1,
       expertPlacement: expertPlacement(),
+      expertTokenPlacement: "round_robin" as const,
     };
     const unit = {
       id: "route-0",

@@ -33,7 +33,7 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 7;
+export const TOPOLOGY_COST_MODEL_REVISION = 8;
 export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
 export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
 export const EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM = "all_to_all_v";
@@ -58,6 +58,7 @@ export interface TopologyWorkloadProfile {
   readonly batchSize: number;
   readonly units: readonly TopologyWorkUnit[];
   readonly expertPlacement?: TopologyExpertPlacement;
+  readonly expertTokenPlacement?: "round_robin";
   readonly backgroundPrefetches?: readonly TopologyBackgroundPrefetch[];
 }
 
@@ -194,6 +195,13 @@ export interface TopologyComparisonEntry {
   readonly relativeToFastest: number;
   readonly confidence: ConfidenceClass;
 }
+
+interface CollectivePhaseTransfer {
+  readonly linkIds: readonly string[];
+  readonly bytes: number;
+}
+
+type CollectivePhases = readonly (readonly CollectivePhaseTransfer[])[];
 
 export class TopologyWorkloadError extends Error {
   constructor(message: string) {
@@ -343,6 +351,7 @@ export function topologyProfileFromExpertCache(
     id: "expert-cache",
     batchSize: 1,
     expertPlacement,
+    expertTokenPlacement: "round_robin",
     units: result.routes.map((route, index) => ({
       id: `route-${index}`,
       targetTokenWidth: 1,
@@ -609,7 +618,9 @@ export function simulateTopologyWorkload(
               EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
             )
               ? [
-                  "uncalibrated AllToAllV uses N-1 balanced pairwise-exchange phases; aggregate bytes do not encode route skew",
+                  profile.expertTokenPlacement === "round_robin"
+                    ? "uncalibrated AllToAllV uses N-1 pairwise-exchange phases with exact round-robin token-source to expert-owner bytes; owner-local traffic does not reserve links"
+                    : "uncalibrated AllToAllV uses N-1 balanced pairwise-exchange phases; aggregate bytes do not encode route skew",
                 ]
               : []),
             "each uncalibrated collective phase charges its critical path and shared-link service; the plan conservatively reserves the union of phase links",
@@ -1236,12 +1247,18 @@ class WorkloadPlanCompiler {
       routedTokens,
       "expert dispatch bytes",
     );
+    const dispatchTraffic = this.routedExpertTraffic(
+      group,
+      unit,
+      ffnPlacements,
+    );
     const dispatched = this.addCollective(
       group,
       EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM,
       expertBytes,
       [attentionReduced],
       attentionPlacements.map((placement) => workspaceId(placement)),
+      dispatchTraffic,
     );
     const workItemsByPlacement = new Map<string, number>();
     for (const routed of unit.routedExperts ?? []) {
@@ -1300,6 +1317,7 @@ class WorkloadPlanCompiler {
       expertBytes,
       expertTerminals,
       activeFfnPlacements.map((placement) => workspaceId(placement)),
+      transposeTraffic(dispatchTraffic),
     );
   }
 
@@ -1309,14 +1327,22 @@ class WorkloadPlanCompiler {
     bytes: number,
     dependencies: readonly number[],
     reads: readonly string[],
+    allToAllTraffic?: readonly (readonly number[])[],
   ): number {
     if (group.orderedRanks.length < 2) {
       throw new TopologyWorkloadError(
         `collective path compilation requires at least two ranks; ${group.id} has ${group.orderedRanks.length}`,
       );
     }
-    const phases = this.collectivePhases(group, algorithm, bytes);
-    const linkIds = unique(phases.flat(2));
+    const phases = this.collectivePhases(
+      group,
+      algorithm,
+      bytes,
+      allToAllTraffic,
+    );
+    const linkIds = unique(phases.flatMap((phase) => (
+      phase.flatMap((transfer) => transfer.linkIds)
+    )));
     const durationNs = this.transportDuration(
       "collective",
       linkIds,
@@ -2009,7 +2035,8 @@ class WorkloadPlanCompiler {
     group: SimulationScenario["groups"][number],
     algorithm: CollectiveAlgorithm,
     bytes: number,
-  ): string[][][] {
+    allToAllTraffic?: readonly (readonly number[])[],
+  ): CollectivePhases {
     const domains = group.orderedRanks.map((rank) => (
       workspaceDomain(this.placementForDevice(rank.deviceId))
     ));
@@ -2019,13 +2046,14 @@ class WorkloadPlanCompiler {
       bytes,
     );
     if (algorithm === COLLECTIVE_CALIBRATION_ALGORITHM) {
-      const ring = domains.map((sourceDomainId, index) => (
-        this.collectivePath(
+      const ring = domains.map((sourceDomainId, index) => ({
+        linkIds: this.collectivePath(
           sourceDomainId,
           domains[(index + 1) % domains.length],
           phaseBytes,
-        )
-      ));
+        ),
+        bytes: phaseBytes,
+      }));
       return Array.from(
         {
           length: checkedMultiply(
@@ -2038,17 +2066,26 @@ class WorkloadPlanCompiler {
       );
     }
     if (algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM) {
+      const traffic = allToAllTraffic
+        ?? balancedAllToAllTraffic(domains.length, bytes);
+      validateAllToAllTraffic(traffic, domains.length, bytes);
       return Array.from(
         { length: domains.length - 1 },
-        (_, phaseIndex) => domains.map((sourceDomainId, rankIndex) => (
-          this.collectivePath(
-            sourceDomainId,
-            domains[
-              (rankIndex + phaseIndex + 1) % domains.length
-            ],
-            phaseBytes,
-          )
-        )),
+        (_, phaseIndex) => domains.flatMap((sourceDomainId, rankIndex) => {
+          const targetIndex =
+            (rankIndex + phaseIndex + 1) % domains.length;
+          const transferBytes = traffic[rankIndex][targetIndex];
+          return transferBytes === 0
+            ? []
+            : [{
+                linkIds: this.collectivePath(
+                  sourceDomainId,
+                  domains[targetIndex],
+                  transferBytes,
+                ),
+                bytes: transferBytes,
+              }];
+        }),
       );
     }
     return fail(`unsupported collective algorithm ${algorithm}`);
@@ -2110,9 +2147,7 @@ class WorkloadPlanCompiler {
     participantCount: number,
     algorithm: string,
     bytes: number,
-    collectivePhases?: readonly (
-      readonly (readonly string[])[]
-    )[],
+    collectivePhases?: CollectivePhases,
   ): number {
     const curves = this.costModel.transportCurves;
     if (curves === undefined) {
@@ -2123,11 +2158,16 @@ class WorkloadPlanCompiler {
             bytes,
           )
         : this.heuristicCollectiveDuration(
-            collectivePhases ?? [[linkIds]],
+            collectivePhases
+              ?? [[{ linkIds, bytes }]],
             participantCount,
             algorithm,
-            bytes,
           );
+    }
+    if (algorithm === EXPERT_COLLECTIVE_CALIBRATION_ALGORITHM) {
+      throw new TopologyWorkloadError(
+        "calibrated all_to_all_v requires a traffic-signature calibration contract",
+      );
     }
     const curve = curves.find((candidate) => (
       candidate.scenarioId === this.scenario.id
@@ -2174,10 +2214,9 @@ class WorkloadPlanCompiler {
   }
 
   private heuristicCollectiveDuration(
-    phases: readonly (readonly (readonly string[])[])[],
+    phases: CollectivePhases,
     participantCount: number,
     algorithm: string,
-    bytes: number,
   ): number {
     const expectedPhaseCount = algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
       ? checkedMultiply(
@@ -2192,27 +2231,32 @@ class WorkloadPlanCompiler {
       participantCount < 2
       || phases.length !== expectedPhaseCount
       || phases.some((paths) => (
-        paths.length !== participantCount
-        || paths.some((path) => path.length === 0)
+        (
+          algorithm === COLLECTIVE_CALIBRATION_ALGORITHM
+            ? paths.length !== participantCount
+            : paths.length > participantCount
+        )
+        || paths.some((transfer) => (
+          transfer.linkIds.length === 0
+          || !Number.isSafeInteger(transfer.bytes)
+          || transfer.bytes <= 0
+        ))
       ))
     ) {
       throw new TopologyWorkloadError(
         `invalid ${participantCount}-participant ${algorithm} phase set`,
       );
     }
-    const phaseBytes = this.collectivePhaseBytes(
-      participantCount,
-      algorithm,
-      bytes,
-    );
     let totalDurationNs = 0;
     for (const paths of phases) {
-      const longestPathNs = Math.max(...paths.map((path) => (
-        this.pathDuration(path, phaseBytes)
-      )));
+      const longestPathNs = paths.length === 0
+        ? 0
+        : Math.max(...paths.map((transfer) => (
+            this.pathDuration(transfer.linkIds, transfer.bytes)
+          )));
       const serviceByLink = new Map<string, number>();
-      for (const path of paths) {
-        for (const linkId of path) {
+      for (const transfer of paths) {
+        for (const linkId of transfer.linkIds) {
           const link = this.scenario.links.find(
             (candidate) => candidate.id === linkId,
           ) ?? fail(`unknown link ${linkId}`);
@@ -2220,7 +2264,7 @@ class WorkloadPlanCompiler {
             linkId,
             checkedAdd(
               serviceByLink.get(linkId) ?? 0,
-              linkDuration(link, phaseBytes),
+              linkDuration(link, transfer.bytes),
               `${algorithm} phase service on ${linkId}`,
             ),
           );
@@ -2237,6 +2281,47 @@ class WorkloadPlanCompiler {
       );
     }
     return totalDurationNs;
+  }
+
+  private routedExpertTraffic(
+    group: SimulationScenario["groups"][number],
+    unit: TopologyWorkUnit,
+    ffnPlacements: readonly PartitionPlacement[],
+  ): readonly (readonly number[])[] {
+    if (this.profile.expertTokenPlacement !== "round_robin") {
+      throw new TopologyWorkloadError(
+        `routed unit ${unit.id} requires round_robin token-source placement`,
+      );
+    }
+    const rankIndexByDevice = new Map(
+      group.orderedRanks.map((rank, index) => [rank.deviceId, index]),
+    );
+    const traffic = Array.from(
+      { length: group.orderedRanks.length },
+      () => Array.from({ length: group.orderedRanks.length }, () => 0),
+    );
+    for (const [assignmentIndex, routed] of (
+      unit.routedExperts ?? []
+    ).entries()) {
+      const tokenIndex = Math.floor(assignmentIndex / unit.activeExperts);
+      const sourceIndex = tokenIndex % group.orderedRanks.length;
+      const owner = this.expertOwnerPlacement(
+        routed.expertId,
+        ffnPlacements,
+      );
+      const targetIndex = rankIndexByDevice.get(owner.deviceId);
+      if (targetIndex === undefined) {
+        throw new TopologyWorkloadError(
+          `expert owner ${owner.deviceId} is absent from group ${group.id}`,
+        );
+      }
+      traffic[sourceIndex][targetIndex] = checkedAdd(
+        traffic[sourceIndex][targetIndex],
+        this.costModel.activationBytesPerToken,
+        `routed traffic ${sourceIndex}->${targetIndex}`,
+      );
+    }
+    return traffic;
   }
 
   private collectivePhaseBytes(
@@ -2322,6 +2407,72 @@ class WorkloadPlanCompiler {
   }
 }
 
+function balancedAllToAllTraffic(
+  participantCount: number,
+  bytes: number,
+): readonly (readonly number[])[] {
+  const pairCount = checkedMultiply(
+    participantCount,
+    participantCount - 1,
+    "all-to-all pair count",
+  );
+  const baseBytes = Math.floor(bytes / pairCount);
+  let remainder = bytes % pairCount;
+  return Array.from({ length: participantCount }, (_, sourceIndex) => (
+    Array.from({ length: participantCount }, (_, targetIndex) => {
+      if (sourceIndex === targetIndex) {
+        return 0;
+      }
+      const pairBytes = baseBytes + (remainder > 0 ? 1 : 0);
+      remainder = Math.max(0, remainder - 1);
+      return pairBytes;
+    })
+  ));
+}
+
+function transposeTraffic(
+  traffic: readonly (readonly number[])[],
+): readonly (readonly number[])[] {
+  return traffic.map((row, sourceIndex) => (
+    row.map((_, targetIndex) => traffic[targetIndex][sourceIndex])
+  ));
+}
+
+function validateAllToAllTraffic(
+  traffic: readonly (readonly number[])[],
+  participantCount: number,
+  expectedBytes: number,
+): void {
+  if (
+    traffic.length !== participantCount
+    || traffic.some((row) => row.length !== participantCount)
+  ) {
+    throw new TopologyWorkloadError(
+      `all-to-all traffic must be ${participantCount}x${participantCount}`,
+    );
+  }
+  let totalBytes = 0;
+  for (const [sourceIndex, row] of traffic.entries()) {
+    for (const [targetIndex, bytes] of row.entries()) {
+      if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        throw new TopologyWorkloadError(
+          `all-to-all traffic ${sourceIndex}->${targetIndex} has invalid bytes ${bytes}`,
+        );
+      }
+      totalBytes = checkedAdd(
+        totalBytes,
+        bytes,
+        "all-to-all traffic bytes",
+      );
+    }
+  }
+  if (totalBytes !== expectedBytes) {
+    throw new TopologyWorkloadError(
+      `all-to-all traffic accounts for ${totalBytes}/${expectedBytes} bytes`,
+    );
+  }
+}
+
 function validateInputs(
   scenario: SimulationScenario,
   profile: TopologyWorkloadProfile,
@@ -2338,6 +2489,14 @@ function validateInputs(
     validateExpertPlacement(
       profile.expertPlacement,
       `profile ${profile.id}`,
+    );
+  }
+  if (
+    profile.expertTokenPlacement !== undefined
+    && profile.expertTokenPlacement !== "round_robin"
+  ) {
+    throw new TopologyWorkloadError(
+      `profile ${profile.id} has unsupported expert token placement ${String(profile.expertTokenPlacement)}`,
     );
   }
   const prefetchIds = new Set<string>();
@@ -2589,10 +2748,11 @@ function validateInputs(
     if (unit.expertRouted === true) {
       if (
         profile.expertPlacement === undefined
+        || profile.expertTokenPlacement === undefined
         || unit.routedExperts === undefined
       ) {
         throw new TopologyWorkloadError(
-          `routed unit ${unit.id} requires explicit placement and routed experts`,
+          `routed unit ${unit.id} requires explicit expert/token placement and routed experts`,
         );
       }
       const expectedRoutes = checkedMultiply(

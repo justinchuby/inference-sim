@@ -110,7 +110,7 @@ describe("simulateDashboard", () => {
     expect(result.expertCache?.hotPartitions).toHaveLength(4);
     expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
     expect(result.topology.assumptions.some((assumption) => (
-      assumption.includes("balanced pairwise-exchange phases")
+      assumption.includes("exact round-robin token-source to expert-owner")
     ))).toBe(true);
   });
 
@@ -355,7 +355,7 @@ describe("simulateDashboard", () => {
     );
   });
 
-  it("runs adaptive expert prefetch with imported storage curves", async () => {
+  it("rejects routed calibration without an AllToAllV traffic signature", async () => {
     const text = await readFile(new URL(
       "../../../examples/calibration-synthetic.yaml",
       import.meta.url,
@@ -364,21 +364,12 @@ describe("simulateDashboard", () => {
       text,
       "calibration-synthetic.yaml",
     );
-    const result = simulateDashboard({
+    expect(() => simulateDashboard({
       ...base,
       mode: "expert-cache",
       calibration: calibration.dataset,
-    });
-
-    expect(result.expertCache?.metrics.adaptivePrefetchSelections)
-      .toBeGreaterThan(0);
-    expect(result.topology.topResources.some(
-      (resource) => resource.resourceId === "link:node0:storage-read",
-    )).toBe(true);
-    expect(result.topology.operationCounts.allReduce).toBeGreaterThan(0);
-    expect(result.topology.operationCounts.allToAll).toBeGreaterThan(0);
-    expect(result.topology.assumptions).toContain(
-      "transport timing uses exact-path calibration curves without extrapolation",
+    })).toThrow(
+      "calibrated all_to_all_v requires a traffic-signature calibration contract",
     );
   });
 
@@ -394,6 +385,7 @@ describe("simulateDashboard", () => {
 
     expect(() => simulateDashboard({
       ...base,
+      scenarioName: "single-gpu-cpu",
       mode: "expert-cache",
       calibration: {
         ...calibration.dataset,
@@ -428,7 +420,7 @@ describe("simulateDashboard", () => {
           ),
       },
     })).toThrow(
-      "no calibrated transport curve for multi-gpu/collective/all_to_all_v",
+      "calibrated all_to_all_v requires a traffic-signature calibration contract",
     );
   });
 

@@ -660,6 +660,12 @@ The current expert-cache and serving adapters select `contiguous`, matching the
 recommended initial onnx-genai static placement. Workload profiles, the CLI
 `placement_strategy`, and the React workbench's shadcn/Radix selector may
 explicitly request `round_robin`; all three feed the same core contract.
+Routed profiles separately declare `expertTokenPlacement=round_robin`.
+Assignment order is token-major, so token ordinal `t` originates on
+communicator rank `t mod EP`; each selected expert's destination is resolved
+through the expert-owner contract. This produces an explicit source-to-owner
+byte matrix for dispatch and its transpose for gather. Owner-local matrix
+entries remain dependency-visible but consume no physical link.
 Missing experts, duplicate expert IDs, incomplete per-token top-K assignments,
 duplicate assignments within one token, an FFN-placement count different from
 `EP`, or ambiguous communicator membership are fatal input errors.
@@ -938,12 +944,13 @@ heuristic fallback.
 
 For an uncalibrated `N`-rank communicator, immutable communicator order defines
 the logical ring. `all_reduce_ring` executes `2(N-1)` neighbor phases with
-`ceil(per_rank_extent/N)` bytes per rank and phase. `all_to_all_v` executes
-`N-1` pairwise-exchange phases; because the current workload profile carries
-only aggregate routed bytes rather than a source/destination byte matrix, the
-fallback assumes balanced traffic and charges
-`ceil(aggregate_extent/[N(N-1)])` bytes per rank and phase. This assumption is
-heuristic and must not be presented as route-skew-accurate AllToAllV timing.
+`ceil(per_rank_extent/N)` bytes per rank and phase. Routed `all_to_all_v`
+executes `N-1` pairwise-exchange phases using the exact round-robin
+token-source to expert-owner byte matrix. Each non-zero matrix cell resolves
+its own message-size-aware physical path; zero and owner-local cells reserve no
+link. Gather transposes the dispatch matrix. An aggregate-only internal
+fallback distributes bytes deterministically across remote pairs, remains
+heuristic, and is not used by validated routed profiles.
 
 Every logical edge resolves to a directed physical path. Per-phase duration is
 the greater of the longest path duration and accumulated service on any shared
@@ -951,7 +958,9 @@ directed link. The FrozenPlan collective reserves the union of all phase links
 for its full duration, which is conservative for contention with other
 operations. A missing directed path fails compilation. Imported end-to-end
 collective calibration replaces this duration fallback but not the declared
-resource reservation.
+resource reservation. Calibration revision 2 supports the all-reduce identity;
+it rejects AllToAllV until the observation contract includes a traffic
+signature.
 
 ### 11.2 Provenance
 
@@ -1046,15 +1055,20 @@ curves name exactly one directed link and two endpoints. The current topology
 compiler identifies dense tensor collectives as `all_reduce_ring`. Routed
 expert units on an overlap-capable topology emit one tensor all-reduce followed
 by `all_to_all_v` dispatch, owner-local FFN compute, and `all_to_all_v` gather.
+Calibration revision 2 cannot identify an AllToAllV source/destination traffic
+matrix. It may retain legacy `all_to_all_v` observations for dataset
+compatibility and diagnostics, but calibrated routed execution rejects them. A
+later dataset revision must add a canonical traffic signature before those
+measurements can become executable exact-path evidence.
 For every communicator size, all-reduce uses the ordered neighbor ring and
 AllToAllV enumerates every pairwise phase offset; the plan reserves the stable
-union of their directed physical paths. Every
+union of their directed physical paths. Every supported
 algorithm/path/participant-count combination requires its own observations.
 This arbitrary-rank phase model and EP-owner behavior is preserved in topology
-cost-model revision 7. Revision 7 additionally resolves every transfer and
-collective phase using the scenario revision 4 message-size-aware physical
-route, and carries the selected ordered link IDs into the FrozenPlan without
-re-selecting a parallel link. Revision 6 models are rejected.
+cost-model revision 8. Revision 8 charges AllToAllV from the explicit
+token-source to expert-owner matrix, including per-message route selection,
+shared-link service, zero-byte phases, and owner-local traffic. Revision 7
+models are rejected.
 
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
@@ -1347,7 +1361,11 @@ those same declarations; imported revision 2 calibration instead supplies the
 selected exact path's transfer or collective duration with fail-closed
 identity and message-range checks. Link provenance remains relevant because
 the declarations still select the path. Compute coefficients remain
-provenance-tagged. Routed expert profiles on multi-GPU and multi-node presets
+provenance-tagged. Routed expert dispatch and gather use an explicit
+round-robin token-source to owner traffic matrix, so network service reflects
+expert skew and omits owner-local bytes. Calibration revision 2 fails closed
+for AllToAllV until a traffic signature is versioned. Routed expert profiles
+on multi-GPU and multi-node presets
 execute TP attention, bidirectional all-reduce, AllToAllV dispatch, owner-local
 FFN, and AllToAllV gather; demand loads and prefetches target the same explicit
 owner, and dense profiles do not pay expert collectives. Arbitrary-rank custom

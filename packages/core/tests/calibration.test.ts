@@ -143,6 +143,38 @@ describe("topology cost calibration", () => {
     );
   });
 
+  it("rejects calibrated AllToAllV without a traffic signature", () => {
+    expect(() => simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        id: "calibrated-routed",
+        batchSize: 1,
+        expertPlacement: {
+          strategy: "contiguous",
+          expertIds: ["e0", "e1", "e2", "e3"],
+        },
+        expertTokenPlacement: "round_robin",
+        units: [{
+          id: "route-0",
+          targetTokenWidth: 1,
+          committedTokens: 1,
+          draftTokens: 0,
+          activeExperts: 2,
+          expertRouted: true,
+          routedExperts: [
+            { expertId: "e0", sourceTier: "hot", loadBytes: 0 },
+            { expertId: "e2", sourceTier: "hot", loadBytes: 0 },
+          ],
+          warmLoadBytes: 0,
+          coldLoadBytes: 0,
+        }],
+      },
+      fitTopologyCostModel(calibrationDataset("measured")).costModel,
+    )).toThrow(
+      "calibrated all_to_all_v requires a traffic-signature calibration contract",
+    );
+  });
+
   it("keeps synthetic imports heuristic", () => {
     const result = fitTopologyCostModel(calibrationDataset("synthetic"));
     expect(result.confidence).toBe("heuristic");
