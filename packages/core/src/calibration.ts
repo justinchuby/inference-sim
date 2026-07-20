@@ -6,9 +6,11 @@ import {
   TOPOLOGY_COST_MODEL_REVISION,
   type DeviceCapabilityCost,
   type TopologyCostModel,
+  type TransportCalibrationCurve,
+  type TransportOperationKind,
 } from "./topology-workload.js";
 
-export const CALIBRATION_DATASET_REVISION = 1;
+export const CALIBRATION_DATASET_REVISION = 2;
 
 export type CalibrationEvidenceKind = "measured" | "synthetic";
 export type CalibratedCapability =
@@ -53,6 +55,18 @@ export interface CalibrationObservation {
   readonly regime: string;
 }
 
+export interface TransportCalibrationObservation {
+  readonly id: string;
+  readonly scenarioId: string;
+  readonly operation: TransportOperationKind;
+  readonly linkIds: readonly string[];
+  readonly participantCount: number;
+  readonly algorithm: string;
+  readonly bytes: number;
+  readonly durationsNs: readonly number[];
+  readonly regime: string;
+}
+
 export interface CalibrationDataset {
   readonly revision: typeof CALIBRATION_DATASET_REVISION;
   readonly id: string;
@@ -61,6 +75,7 @@ export interface CalibrationDataset {
   readonly modelConstants: CalibrationModelConstants;
   readonly quality: CalibrationQualityPolicy;
   readonly observations: readonly CalibrationObservation[];
+  readonly transportObservations: readonly TransportCalibrationObservation[];
 }
 
 export interface CalibrationFitDiagnostic {
@@ -81,6 +96,21 @@ export interface CalibrationFitResult {
   readonly confidence: ConfidenceClass;
   readonly costModel: TopologyCostModel;
   readonly diagnostics: readonly CalibrationFitDiagnostic[];
+  readonly transportDiagnostics: readonly TransportCalibrationFitDiagnostic[];
+}
+
+export interface TransportCalibrationFitDiagnostic {
+  readonly scenarioId: string;
+  readonly operation: TransportOperationKind;
+  readonly linkIds: readonly string[];
+  readonly participantCount: number;
+  readonly algorithm: string;
+  readonly observationPoints: number;
+  readonly samples: number;
+  readonly minBytes: number;
+  readonly maxBytes: number;
+  readonly normalizedRmse: number;
+  readonly p95RelativeError: number;
 }
 
 export class CalibrationError extends Error {
@@ -242,6 +272,35 @@ export function parseCalibrationDataset(input: unknown): CalibrationDataset {
         regime: requireString(observation, "regime", context),
       };
     }),
+    transportObservations: requireRecordArray(
+      dataset,
+      "transport_observations",
+      "calibration",
+    ).map((observation, index) => {
+      const context = `calibration.transport_observations[${index}]`;
+      return {
+        id: requireString(observation, "id", context),
+        scenarioId: requireString(observation, "scenario_id", context),
+        operation: requireTransportOperation(
+          requireString(observation, "operation", context),
+          context,
+        ),
+        linkIds: requireStringArray(observation, "link_ids", context),
+        participantCount: requireNumber(
+          observation,
+          "participant_count",
+          context,
+        ),
+        algorithm: requireString(observation, "algorithm", context),
+        bytes: requireNumber(observation, "bytes", context),
+        durationsNs: requireNumberArray(
+          observation,
+          "durations_ns",
+          context,
+        ),
+        regime: requireString(observation, "regime", context),
+      };
+    }),
   };
 }
 
@@ -338,6 +397,10 @@ export function fitTopologyCostModel(
   const confidence: ConfidenceClass = dataset.provenance.kind === "measured"
     ? "calibrated"
     : "heuristic";
+  const {
+    curves: transportCurves,
+    diagnostics: transportDiagnostics,
+  } = fitTransportCurves(dataset);
   const datasetFingerprint = fingerprintDataset(dataset);
   return {
     datasetId: dataset.id,
@@ -363,8 +426,10 @@ export function fitTopologyCostModel(
         deviceKindLabels: { ...dataset.applicability.deviceKindLabels },
       },
       validWorkItemRanges,
+      transportCurves,
     },
     diagnostics,
+    transportDiagnostics,
   };
 }
 
@@ -447,6 +512,15 @@ export function validateCalibrationDataset(
     dataset.observations.map((observation) => observation.id),
     "calibration observation ids",
   );
+  if (dataset.transportObservations.length === 0) {
+    throw new CalibrationError(
+      "calibration dataset has no transport observations",
+    );
+  }
+  assertUnique(
+    dataset.transportObservations.map((observation) => observation.id),
+    "transport calibration observation ids",
+  );
 
   for (const observation of dataset.observations) {
     assertNonEmpty(observation.id, "observation id");
@@ -515,6 +589,114 @@ export function validateCalibrationDataset(
       }
     }
   }
+
+  const transportGroups = new Map<
+    string,
+    TransportCalibrationObservation[]
+  >();
+  for (const observation of dataset.transportObservations) {
+    assertNonEmpty(observation.id, "transport observation id");
+    assertNonEmpty(
+      observation.scenarioId,
+      `transport observation ${observation.id} scenario id`,
+    );
+    if (!dataset.applicability.scenarioIds.includes(observation.scenarioId)) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} scenario ${observation.scenarioId} is outside applicability`,
+      );
+    }
+    if (
+      observation.operation !== "transfer"
+      && observation.operation !== "collective"
+    ) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} has unsupported operation ${String(observation.operation)}`,
+      );
+    }
+    if (observation.linkIds.length === 0) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} must name at least one link`,
+      );
+    }
+    if (
+      new Set(observation.linkIds).size !== observation.linkIds.length
+    ) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} link ids must be unique`,
+      );
+    }
+    if (
+      observation.operation === "transfer"
+      && observation.linkIds.length !== 1
+    ) {
+      throw new CalibrationError(
+        `transfer observation ${observation.id} must name exactly one link`,
+      );
+    }
+    assertPositiveSafeInteger(
+      observation.participantCount,
+      `transport observation ${observation.id} participant count`,
+    );
+    if (
+      observation.operation === "transfer"
+      && observation.participantCount !== 2
+    ) {
+      throw new CalibrationError(
+        `transfer observation ${observation.id} must have two participants`,
+      );
+    }
+    if (
+      observation.operation === "collective"
+      && observation.participantCount < 2
+    ) {
+      throw new CalibrationError(
+        `collective observation ${observation.id} must have at least two participants`,
+      );
+    }
+    assertNonEmpty(
+      observation.algorithm,
+      `transport observation ${observation.id} algorithm`,
+    );
+    assertNonEmpty(
+      observation.regime,
+      `transport observation ${observation.id} regime`,
+    );
+    assertPositiveSafeInteger(
+      observation.bytes,
+      `transport observation ${observation.id} bytes`,
+    );
+    if (
+      observation.durationsNs.length
+      < dataset.quality.minSamplesPerPoint
+    ) {
+      throw new CalibrationError(
+        `transport observation ${observation.id} has ${observation.durationsNs.length} samples; expected at least ${dataset.quality.minSamplesPerPoint}`,
+      );
+    }
+    for (const durationNs of observation.durationsNs) {
+      assertPositiveSafeInteger(
+        durationNs,
+        `transport observation ${observation.id} duration`,
+      );
+    }
+    const identity = transportObservationIdentity(observation);
+    const group = transportGroups.get(identity) ?? [];
+    group.push(observation);
+    transportGroups.set(identity, group);
+  }
+  for (const [identity, observations] of transportGroups) {
+    const bytePoints = observations.map((observation) => observation.bytes);
+    if (new Set(bytePoints).size !== observations.length) {
+      throw new CalibrationError(
+        `transport curve ${identity} byte points must be unique`,
+      );
+    }
+    if (observations.length < 2) {
+      throw new CalibrationError(
+        `transport curve ${identity} requires at least 2 distinct byte points`,
+      );
+    }
+  }
 }
 
 function buildDiagnostic(
@@ -569,6 +751,94 @@ function buildDiagnostic(
     normalizedRmse,
     p95RelativeError,
   };
+}
+
+function fitTransportCurves(dataset: CalibrationDataset): {
+  readonly curves: readonly TransportCalibrationCurve[];
+  readonly diagnostics: readonly TransportCalibrationFitDiagnostic[];
+} {
+  const grouped = new Map<string, TransportCalibrationObservation[]>();
+  for (const observation of dataset.transportObservations) {
+    const identity = transportObservationIdentity(observation);
+    const group = grouped.get(identity) ?? [];
+    group.push(observation);
+    grouped.set(identity, group);
+  }
+  const curves: TransportCalibrationCurve[] = [];
+  const diagnostics: TransportCalibrationFitDiagnostic[] = [];
+  for (const [identity, unsorted] of [...grouped.entries()].sort(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    const observations = [...unsorted].sort(
+      (left, right) => left.bytes - right.bytes,
+    );
+    const first = observations[0];
+    const points = observations.map((observation) => ({
+      bytes: observation.bytes,
+      durationNs: roundedPositiveCoefficient(
+        median(observation.durationsNs),
+        `transport observation ${observation.id} median`,
+      ),
+    }));
+    for (let index = 1; index < points.length; index++) {
+      if (points[index].durationNs < points[index - 1].durationNs) {
+        throw new CalibrationError(
+          `transport curve ${identity} median duration must be non-decreasing with bytes`,
+        );
+      }
+    }
+    const residuals: number[] = [];
+    const relativeErrors: number[] = [];
+    let actualTotal = 0;
+    let sampleCount = 0;
+    for (let index = 0; index < observations.length; index++) {
+      const predicted = points[index].durationNs;
+      for (const actual of observations[index].durationsNs) {
+        const residual = predicted - actual;
+        residuals.push(residual);
+        relativeErrors.push(Math.abs(residual) / actual);
+        actualTotal += actual;
+        sampleCount++;
+      }
+    }
+    const normalizedRmse = Math.sqrt(
+      residuals.reduce((sum, residual) => sum + residual ** 2, 0)
+      / sampleCount,
+    ) / (actualTotal / sampleCount);
+    const p95RelativeError = percentile(relativeErrors, 0.95);
+    if (normalizedRmse > dataset.quality.maxNormalizedRmse) {
+      throw new CalibrationError(
+        `transport curve ${identity} normalized RMSE ${formatRatio(normalizedRmse)} exceeds limit ${formatRatio(dataset.quality.maxNormalizedRmse)}`,
+      );
+    }
+    if (p95RelativeError > dataset.quality.maxP95RelativeError) {
+      throw new CalibrationError(
+        `transport curve ${identity} p95 relative error ${formatRatio(p95RelativeError)} exceeds limit ${formatRatio(dataset.quality.maxP95RelativeError)}`,
+      );
+    }
+    curves.push({
+      scenarioId: first.scenarioId,
+      operation: first.operation,
+      linkIds: [...first.linkIds],
+      participantCount: first.participantCount,
+      algorithm: first.algorithm,
+      points,
+    });
+    diagnostics.push({
+      scenarioId: first.scenarioId,
+      operation: first.operation,
+      linkIds: [...first.linkIds],
+      participantCount: first.participantCount,
+      algorithm: first.algorithm,
+      observationPoints: observations.length,
+      samples: sampleCount,
+      minBytes: points[0].bytes,
+      maxBytes: points[points.length - 1].bytes,
+      normalizedRmse,
+      p95RelativeError,
+    });
+  }
+  return { curves, diagnostics };
 }
 
 function observationsFor(
@@ -627,6 +897,21 @@ function fingerprintDataset(dataset: CalibrationDataset): string {
         regime: observation.regime,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
+    transportObservations: [...dataset.transportObservations]
+      .map((observation) => ({
+        id: observation.id,
+        scenarioId: observation.scenarioId,
+        operation: observation.operation,
+        linkIds: [...observation.linkIds],
+        participantCount: observation.participantCount,
+        algorithm: observation.algorithm,
+        bytes: observation.bytes,
+        durationsNs: [...observation.durationsNs].sort((left, right) => (
+          left - right
+        )),
+        regime: observation.regime,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
   });
   let hash = 0x811c9dc5;
   for (let index = 0; index < canonical.length; index++) {
@@ -657,6 +942,18 @@ function median(values: readonly number[]): number {
 function percentile(values: readonly number[], quantile: number): number {
   const sorted = [...values].sort((left, right) => left - right);
   return sorted[Math.max(0, Math.ceil(quantile * sorted.length) - 1)];
+}
+
+function transportObservationIdentity(
+  observation: TransportCalibrationObservation,
+): string {
+  return JSON.stringify({
+    scenarioId: observation.scenarioId,
+    operation: observation.operation,
+    algorithm: observation.algorithm,
+    participantCount: observation.participantCount,
+    linkIds: observation.linkIds,
+  });
 }
 
 function assertPositiveSafeInteger(value: number, label: string): void {
@@ -814,4 +1111,16 @@ function requireCapability(
     );
   }
   return value as CalibratedCapability;
+}
+
+function requireTransportOperation(
+  value: string,
+  context: string,
+): TransportOperationKind {
+  if (value !== "transfer" && value !== "collective") {
+    throw new CalibrationError(
+      `${context}.operation must be transfer or collective`,
+    );
+  }
+  return value;
 }

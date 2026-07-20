@@ -721,6 +721,8 @@ coefficient overrides. A dataset records:
   is not silently generalized to every device of the same kind;
 - repeated duration observations for invocation, attention, FFN, draft, and
   lookup work;
+- repeated transfer and collective observations scoped to an exact scenario,
+  ordered link path, participant count, algorithm, and message size;
 - the work-item regime for every observation point;
 - activation, collective, and cold-load model constants; and
 - minimum sample count plus normalized-RMSE and P95-relative-error gates.
@@ -748,20 +750,45 @@ than extrapolated under a `calibrated` label. A stable dataset fingerprint is
 included for replay and result attribution. It identifies normalized dataset
 content but is not a cryptographic integrity signature.
 
+Calibration dataset revision 2 groups communication observations by:
+
+```text
+(scenario_id, operation, ordered_link_ids, participant_count, algorithm)
+```
+
+Every group requires at least two distinct positive message-size points and at
+least three repeated duration samples per point. Median duration must be
+non-decreasing with message size. Execution uses deterministic piecewise-linear
+interpolation between adjacent medians. It does not extrapolate and does not
+fall back to declared bandwidth while an imported calibration is active. A
+missing exact path, changed link order, participant-count change, algorithm
+change, or out-of-range byte extent is an execution error. Point-to-point
+curves name exactly one directed link and two endpoints. The current topology
+compiler identifies tensor collectives as two-or-more-participant
+`all_reduce_ring` operations; changing that algorithm requires new
+observations.
+
 Synthetic datasets exercise the import path but remain `heuristic`. Measured
 operator coefficients may make the cost model `calibrated`; an end-to-end
-latency result is `calibrated` only when its device, memory-domain, and link
-evidence is also calibrated. The weakest performance evidence determines the
-result label; the current conservative aggregation includes all performance
-evidence in the applicable scenario. Built-in topology presets remain
-heuristic, so importing measured kernel timings alone does not turn their
-latency rankings into hardware predictions.
+latency result is `calibrated` only when every performance input it uses is
+also calibrated. The weakest performance evidence determines the result label;
+the current conservative aggregation includes the applicable cost model plus
+scenario device and memory evidence. Declared link evidence is also included
+when no imported communication curves replace it. Built-in topology presets
+remain heuristic, so importing measured kernel timings alone does not turn
+their latency rankings into hardware predictions.
 
-The current fitted model is deliberately linear and device-kind scoped. It
-does not yet fit roofline knees, sequence-length effects, collective curves,
-cache-tier distributions, or per-product device overrides. Those require a
-later calibration revision rather than backward-incompatible interpretation
-of revision 1 data.
+When revision 2 exact-path communication curves are present, declared link
+bandwidth and latency are not used for duration and therefore do not lower the
+timing confidence. Link IDs and order remain structural routing inputs.
+Device and memory-domain evidence still participate in the conservative
+weakest-evidence aggregation.
+
+The current compute fit is deliberately linear and device-kind scoped.
+Transport and collective timing is measured-curve scoped, but the model does
+not yet fit compute roofline knees, sequence-length effects, cache-tier
+distributions, or per-product device overrides. Those require a later
+calibration revision rather than weakening revision 2 applicability.
 
 ## 12. Static Analysis Requirements
 
@@ -1009,9 +1036,11 @@ workloads now model seeded weighted routing without replacement, exact
 hot/warm byte capacities and reservations, deterministic LRU eviction,
 asynchronous initial prefetch, stalls, metrics, and independent replay.
 Speculative and expert-cache logical traces now compile into FrozenPlan
-resources across all six required topology families. Link duration uses each
-declared directed link's latency and bandwidth; compute coefficients are
-explicitly heuristic and provenance-tagged. All six proposer families use
+resources across all six required topology families. Default link duration
+uses each declared directed link's latency and bandwidth; imported revision 2
+calibration instead uses exact-path transfer and collective curves with
+fail-closed message-range checks. Compute coefficients remain
+provenance-tagged. All six proposer families use
 revisioned family-specific eligibility, state lifetime, execution placement,
 and cost contracts. A 6 proposer x 6 device-topology matrix executes and
 replays each profile with target-only final-state differential checks.
@@ -1021,14 +1050,15 @@ execution with independent replay. It composes all six proposer contracts with
 per-request deterministic acceptance, composite checkpoint transactions,
 candidate-state KV admission, multi-token burst emission, and a 6 proposer x 6
 topology execution matrix. Revisioned calibration import now preserves repeated
-operator observations, provenance, applicability, quality diagnostics, and
-valid interpolation ranges, with fail-closed execution outside those ranges.
+operator and communication observations, provenance, applicability, quality
+diagnostics, exact transport identity, and valid interpolation ranges, with
+fail-closed execution outside those ranges.
 Token-value traces now reconstruct correction, bonus, and accepted-tail values,
 compare them with a bound target-only run, replay the same decisions through
 composite state, and execute a 6 proposer x 6 topology matrix. The companion
 onnx-genai integration branch now provides explicit opt-in iteration capture
-and an atomic runtime-artifact writer; merging that producer, measured
-transport/collective calibration, and adaptive prefetch policy remain.
+and an atomic runtime-artifact writer; merging that producer, collecting real
+hardware calibration datasets, and adaptive prefetch policy remain.
 self-speculative remains design-only.
 The same serving workload can also execute across all six topology presets and
 produce a deterministic latency ranking with per-run replay evidence.
@@ -1112,7 +1142,8 @@ fastest-topology detail view, and comparison inspector. General configuration
 search, FrozenPlan file execution/export, ONNX import, trace export, and richer
 progress phases remain. Calibration YAML/JSON import shares the core parser and
 fit contract with the CLI, enforces a 1 MiB input limit, refits in the Worker,
-and reports the dataset fingerprint and fit diagnostics in the result view.
+and reports the dataset fingerprint, compute diagnostics, and transport-curve
+diagnostics in the result view.
 
 ## 16. Testing and Delivery Gates
 

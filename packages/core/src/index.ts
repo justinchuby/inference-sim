@@ -316,9 +316,13 @@ export {
   type CalibrationModelConstants,
   type CalibrationObservation,
   type CalibrationQualityPolicy,
+  type TransportCalibrationFitDiagnostic,
+  type TransportCalibrationObservation,
 } from "./calibration.js";
 export {
+  COLLECTIVE_CALIBRATION_ALGORITHM,
   DEFAULT_TOPOLOGY_COST_MODEL,
+  TRANSFER_CALIBRATION_ALGORITHM,
   TOPOLOGY_COST_MODEL_REVISION,
   TopologyWorkloadError,
   compareTopologyWorkloads,
@@ -333,6 +337,9 @@ export {
   type TopologyComputeCapability,
   type CalibratedWorkItemRange,
   type TopologyResourceUtilization,
+  type TransportCalibrationCurve,
+  type TransportCalibrationPoint,
+  type TransportOperationKind,
   type TopologyWorkUnit,
   type TopologyWorkloadMetrics,
   type TopologyWorkloadProfile,

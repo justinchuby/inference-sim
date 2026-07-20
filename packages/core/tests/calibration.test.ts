@@ -11,6 +11,7 @@ import {
   type CalibrationDataset,
   type CalibrationObservation,
   type SimDeviceKind,
+  type TransportCalibrationObservation,
 } from "../src/index.js";
 
 const DEVICES = ["cpu", "gpu", "npu"] as const;
@@ -63,12 +64,14 @@ describe("topology cost calibration", () => {
         measuredAt: dataset.provenance.measuredAt,
       },
       observations: [...dataset.observations].reverse(),
+      transportObservations: [...dataset.transportObservations].reverse(),
     });
 
     expect(first.datasetFingerprint).toBe(second.datasetFingerprint);
     expect(first.confidence).toBe("calibrated");
     expect(first.costModel.confidence).toBe("calibrated");
     expect(first.diagnostics).toHaveLength(15);
+    expect(first.transportDiagnostics).toHaveLength(1);
     expect(first.costModel.deviceCosts.gpu).toEqual({
       invocationOverheadNs: 120_000,
       attentionNsPerToken: 28_000,
@@ -90,7 +93,7 @@ describe("topology cost calibration", () => {
     expect(result.confidence).toBe("heuristic");
     expect(result.assumptions[0]).toContain(first.datasetFingerprint);
     expect(result.assumptions[1]).toContain(
-      "scenario device, memory, or link evidence is weaker",
+      "scenario performance evidence is weaker",
     );
   });
 
@@ -229,7 +232,82 @@ describe("topology cost calibration", () => {
       "gpu attention work items 9 are outside calibrated range 1..8",
     );
   });
+
+  it("uses exact-path transport curves and rejects silent fallback", () => {
+    const fit = fitTopologyCostModel(calibrationDataset("measured"));
+    const scenario = buildScenarioPreset("multi-gpu");
+    const result = simulateTopologyWorkload(
+      scenario,
+      twoTokenVerificationProfile(),
+      fit.costModel,
+    );
+    const collective = result.plan.steps.find(
+      (step) => step.operation.kind === "collective",
+    );
+    expect(collective?.operation.durationNs).toBe(2_279);
+
+    expect(() => simulateTopologyWorkload(
+      scenario,
+      twoTokenVerificationProfile(),
+      {
+        ...fit.costModel,
+        transportCurves: fit.costModel.transportCurves?.map((curve) => ({
+          ...curve,
+          algorithm: "tree",
+        })),
+      },
+    )).toThrow("no calibrated transport curve");
+  });
+
+  it("rejects transport extrapolation beyond observed message sizes", () => {
+    const fit = fitTopologyCostModel(calibrationDataset("measured"));
+    expect(() => simulateTopologyWorkload(
+      buildScenarioPreset("multi-gpu"),
+      twoTokenVerificationProfile(),
+      {
+        ...fit.costModel,
+        transportCurves: fit.costModel.transportCurves?.map((curve) => ({
+          ...curve,
+          points: [
+            { bytes: 128 * 1024, durationNs: 800 },
+            { bytes: 512 * 1024, durationNs: 1_400 },
+          ],
+        })),
+      },
+    )).toThrow("outside calibrated range");
+  });
+
+  it("rejects non-monotonic transport measurements", () => {
+    const dataset = calibrationDataset("measured");
+    expect(() => fitTopologyCostModel({
+      ...dataset,
+      transportObservations: dataset.transportObservations.map(
+        (observation) => observation.bytes > 512 * 1024
+          ? {
+              ...observation,
+              durationsNs: [900, 901, 902],
+            }
+          : observation,
+      ),
+    })).toThrow("median duration must be non-decreasing");
+  });
 });
+
+function twoTokenVerificationProfile() {
+  return {
+    id: "two-token-verification",
+    batchSize: 1,
+    units: [{
+      id: "verify-0",
+      targetTokenWidth: 2,
+      committedTokens: 2,
+      draftTokens: 0,
+      activeExperts: 1,
+      warmLoadBytes: 0,
+      coldLoadBytes: 0,
+    }],
+  };
+}
 
 function calibrationDataset(
   kind: "measured" | "synthetic",
@@ -265,6 +343,10 @@ function calibrationDataset(
     observations: DEVICES.flatMap((deviceKind) => (
       observationsForDevice(deviceKind)
     )),
+    transportObservations: [
+      transportObservation(512 * 1024, 1_400),
+      transportObservation(64 * 1024 ** 2, 113_000),
+    ],
   };
 }
 
@@ -312,6 +394,24 @@ function observation(
   };
 }
 
+function transportObservation(
+  bytes: number,
+  center: number,
+): TransportCalibrationObservation {
+  const noise = Math.max(1, Math.floor(center / 1000));
+  return {
+    id: `multi-gpu-collective-${bytes}`,
+    scenarioId: "multi-gpu",
+    operation: "collective",
+    linkIds: ["node0:nvlink:forward"],
+    participantCount: 2,
+    algorithm: "all_reduce_ring",
+    bytes,
+    durationsNs: [center - noise, center, center + noise],
+    regime: "two-rank all-reduce fixture",
+  };
+}
+
 function externalDataset(dataset: CalibrationDataset): unknown {
   return {
     calibration: {
@@ -350,6 +450,19 @@ function externalDataset(dataset: CalibrationDataset): unknown {
         durations_ns: observation.durationsNs,
         regime: observation.regime,
       })),
+      transport_observations: dataset.transportObservations.map(
+        (observation) => ({
+          id: observation.id,
+          scenario_id: observation.scenarioId,
+          operation: observation.operation,
+          link_ids: observation.linkIds,
+          participant_count: observation.participantCount,
+          algorithm: observation.algorithm,
+          bytes: observation.bytes,
+          durations_ns: observation.durationsNs,
+          regime: observation.regime,
+        }),
+      ),
     },
   };
 }

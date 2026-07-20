@@ -31,7 +31,9 @@ import type {
   SpeculativeProposerExecution,
 } from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 3;
+export const TOPOLOGY_COST_MODEL_REVISION = 4;
+export const TRANSFER_CALIBRATION_ALGORITHM = "point_to_point";
+export const COLLECTIVE_CALIBRATION_ALGORITHM = "all_reduce_ring";
 
 export interface TopologyWorkUnit {
   readonly id: string;
@@ -70,6 +72,22 @@ export interface CalibratedWorkItemRange {
   readonly maxWorkItems: number;
 }
 
+export type TransportOperationKind = "transfer" | "collective";
+
+export interface TransportCalibrationPoint {
+  readonly bytes: number;
+  readonly durationNs: number;
+}
+
+export interface TransportCalibrationCurve {
+  readonly scenarioId: string;
+  readonly operation: TransportOperationKind;
+  readonly linkIds: readonly string[];
+  readonly participantCount: number;
+  readonly algorithm: string;
+  readonly points: readonly TransportCalibrationPoint[];
+}
+
 export interface TopologyCostModel {
   readonly revision: typeof TOPOLOGY_COST_MODEL_REVISION;
   readonly confidence: ConfidenceClass;
@@ -88,6 +106,7 @@ export interface TopologyCostModel {
       Readonly<Record<TopologyComputeCapability, CalibratedWorkItemRange>>
     >
   >;
+  readonly transportCurves?: readonly TransportCalibrationCurve[];
 }
 
 export interface TopologyResourceUtilization {
@@ -265,11 +284,13 @@ export function simulateTopologyWorkload(
       costModel.source,
       confidence === costModel.confidence
         ? `overall timing confidence is ${confidence}`
-        : `overall timing confidence is ${confidence} because scenario device, memory, or link evidence is weaker than the cost model`,
+        : `overall timing confidence is ${confidence} because scenario performance evidence is weaker than the cost model`,
       "decode-only plan; prefill and request batching are outside this profile",
       "compute costs include one device-kind invocation overhead plus linear token work",
       "family-specific proposer multipliers are heuristic and provenance-labeled",
-      "transfer duration uses declared directed-link bandwidth and latency",
+      costModel.transportCurves === undefined
+        ? "transport timing uses declared directed-link bandwidth and latency"
+        : "transport timing uses exact-path calibration curves without extrapolation",
       "expert-load bytes are evenly sharded across FFN placements",
       "warm and cold expert loads originate in each FFN placement's local host domain",
     ],
@@ -308,7 +329,9 @@ function topologyPerformanceConfidence(
     costModel.confidence,
     ...scenario.devices.map((device) => device.provenance.confidence),
     ...scenario.memoryDomains.map((domain) => domain.provenance.confidence),
-    ...scenario.links.map((link) => link.provenance.confidence),
+    ...(costModel.transportCurves === undefined
+      ? scenario.links.map((link) => link.provenance.confidence)
+      : []),
   ];
   if (evidence.includes("heuristic")) {
     return "heuristic";
@@ -567,7 +590,13 @@ class WorkloadPlanCompiler {
       ),
       "collective bytes",
     );
-    const durationNs = this.pathDuration(linkIds, bytes);
+    const durationNs = this.transportDuration(
+      "collective",
+      linkIds,
+      group.orderedRanks.length,
+      COLLECTIVE_CALIBRATION_ALGORITHM,
+      bytes,
+    );
     const step = this.addStep({
       participants: group.orderedRanks.map((rank) => rank.rankId),
       dependencies: terminals,
@@ -745,7 +774,13 @@ class WorkloadPlanCompiler {
         operation: {
           kind: "transfer",
           linkId: link.id,
-          durationNs: linkDuration(link, bytes),
+          durationNs: this.transportDuration(
+            "transfer",
+            [link.id],
+            2,
+            TRANSFER_CALIBRATION_ALGORITHM,
+            bytes,
+          ),
         },
       });
       stepIds.push(stepId);
@@ -910,6 +945,67 @@ class WorkloadPlanCompiler {
     ), 0);
   }
 
+  private transportDuration(
+    operation: TransportOperationKind,
+    linkIds: readonly string[],
+    participantCount: number,
+    algorithm: string,
+    bytes: number,
+  ): number {
+    const curves = this.costModel.transportCurves;
+    if (curves === undefined) {
+      return operation === "transfer"
+        ? linkDuration(
+            this.scenario.links.find((link) => link.id === linkIds[0])
+              ?? fail(`unknown link ${linkIds[0]}`),
+            bytes,
+          )
+        : this.pathDuration(linkIds, bytes);
+    }
+    const curve = curves.find((candidate) => (
+      candidate.scenarioId === this.scenario.id
+      && candidate.operation === operation
+      && candidate.participantCount === participantCount
+      && candidate.algorithm === algorithm
+      && arraysEqual(candidate.linkIds, linkIds)
+    ));
+    const identity = [
+      this.scenario.id,
+      operation,
+      algorithm,
+      `${participantCount} participants`,
+      linkIds.join("->"),
+    ].join("/");
+    if (!curve) {
+      throw new TopologyWorkloadError(
+        `no calibrated transport curve for ${identity}`,
+      );
+    }
+    const first = curve.points[0];
+    const last = curve.points[curve.points.length - 1];
+    if (bytes < first.bytes || bytes > last.bytes) {
+      throw new TopologyWorkloadError(
+        `${identity} bytes ${bytes} are outside calibrated range ${first.bytes}..${last.bytes}`,
+      );
+    }
+    const upperIndex = curve.points.findIndex((point) => point.bytes >= bytes);
+    const upper = curve.points[upperIndex];
+    if (upper.bytes === bytes || upperIndex === 0) {
+      return upper.durationNs;
+    }
+    const lower = curve.points[upperIndex - 1];
+    const ratio = (bytes - lower.bytes) / (upper.bytes - lower.bytes);
+    const durationNs = Math.ceil(
+      lower.durationNs + ratio * (upper.durationNs - lower.durationNs),
+    );
+    if (!Number.isSafeInteger(durationNs) || durationNs <= 0) {
+      throw new TopologyWorkloadError(
+        `${identity} interpolation produced an unsafe duration`,
+      );
+    }
+    return durationNs;
+  }
+
   private domainDuration(domainId: string, bytes: number): number {
     const domain = this.scenario.memoryDomains.find(
       (candidate) => candidate.id === domainId,
@@ -1045,6 +1141,92 @@ function validateInputs(
       }
     }
   }
+  if (costModel.transportCurves !== undefined) {
+    const identities = new Set<string>();
+    for (const curve of costModel.transportCurves) {
+      const identity = transportCurveIdentity(curve);
+      if (identities.has(identity)) {
+        throw new TopologyWorkloadError(
+          `duplicate transport calibration curve ${identity}`,
+        );
+      }
+      identities.add(identity);
+      if (
+        curve.operation !== "transfer"
+        && curve.operation !== "collective"
+      ) {
+        throw new TopologyWorkloadError(
+          `transport curve ${identity} has an unsupported operation`,
+        );
+      }
+      if (
+        costModel.applicability !== undefined
+        && !costModel.applicability.scenarioIds.includes(curve.scenarioId)
+      ) {
+        throw new TopologyWorkloadError(
+          `transport curve scenario ${curve.scenarioId} is outside cost model applicability`,
+        );
+      }
+      if (curve.linkIds.length === 0) {
+        throw new TopologyWorkloadError(
+          `transport curve ${identity} must name at least one link`,
+        );
+      }
+      if (curve.operation === "transfer" && curve.linkIds.length !== 1) {
+        throw new TopologyWorkloadError(
+          `transfer curve ${identity} must name exactly one link`,
+        );
+      }
+      assertPositiveSafeInteger(
+        curve.participantCount,
+        `transport curve ${identity} participant count`,
+      );
+      if (curve.operation === "transfer" && curve.participantCount !== 2) {
+        throw new TopologyWorkloadError(
+          `transfer curve ${identity} must have two participants`,
+        );
+      }
+      if (curve.operation === "collective" && curve.participantCount < 2) {
+        throw new TopologyWorkloadError(
+          `collective curve ${identity} must have at least two participants`,
+        );
+      }
+      if (curve.algorithm.trim().length === 0) {
+        throw new TopologyWorkloadError(
+          `transport curve ${identity} algorithm must be non-empty`,
+        );
+      }
+      if (curve.points.length < 2) {
+        throw new TopologyWorkloadError(
+          `transport curve ${identity} requires at least two points`,
+        );
+      }
+      let previousBytes = 0;
+      let previousDuration = 0;
+      for (const point of curve.points) {
+        assertPositiveSafeInteger(
+          point.bytes,
+          `transport curve ${identity} bytes`,
+        );
+        assertPositiveSafeInteger(
+          point.durationNs,
+          `transport curve ${identity} duration`,
+        );
+        if (point.bytes <= previousBytes) {
+          throw new TopologyWorkloadError(
+            `transport curve ${identity} byte points must be strictly increasing`,
+          );
+        }
+        if (point.durationNs < previousDuration) {
+          throw new TopologyWorkloadError(
+            `transport curve ${identity} duration must be non-decreasing`,
+          );
+        }
+        previousBytes = point.bytes;
+        previousDuration = point.durationNs;
+      }
+    }
+  }
   for (const kind of ["cpu", "gpu", "npu"] as const) {
     const costs = costModel.deviceCosts[kind];
     assertPositiveSafeInteger(
@@ -1148,6 +1330,24 @@ function linkDuration(link: SimLinkSpec, bytes: number): number {
     ),
     "link duration",
   );
+}
+
+function transportCurveIdentity(curve: TransportCalibrationCurve): string {
+  return JSON.stringify({
+    scenarioId: curve.scenarioId,
+    operation: curve.operation,
+    algorithm: curve.algorithm,
+    participantCount: curve.participantCount,
+    linkIds: curve.linkIds,
+  });
+}
+
+function arraysEqual(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
 
 function serviceTime(

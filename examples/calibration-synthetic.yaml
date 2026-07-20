@@ -1,5 +1,5 @@
 calibration:
-  revision: 1
+  revision: 2
   id: synthetic-linear-example
   provenance:
     kind: synthetic
@@ -57,3 +57,27 @@ calibration:
     - { id: npu-draft-128, device_kind: npu, capability: draft, work_items: 128, durations_ns: [3140280, 3172000, 3203720], regime: "work_items=128 fp16" }
     - { id: npu-lookup-1, device_kind: npu, capability: lookup, work_items: 1, durations_ns: [106920, 108000, 109080], regime: "batch=1 token lookup" }
     - { id: npu-lookup-128, device_kind: npu, capability: lookup, work_items: 128, durations_ns: [1112760, 1124000, 1135240], regime: "work_items=128 token lookup" }
+  transport_observations:
+    # Each curve is scoped to an exact scenario, ordered path, participant count,
+    # and algorithm. These synthetic points cover 512 KiB through 128 MiB.
+    - { id: single-gpu-pcie-small, scenario_id: single-gpu-cpu, operation: transfer, link_ids: ["node0:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic PCIe transfer" }
+    - { id: single-gpu-pcie-large, scenario_id: single-gpu-cpu, operation: transfer, link_ids: ["node0:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic PCIe transfer" }
+
+    - { id: multi-gpu-pcie0-small, scenario_id: multi-gpu, operation: transfer, link_ids: ["node0:pcie0:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic PCIe transfer" }
+    - { id: multi-gpu-pcie0-large, scenario_id: multi-gpu, operation: transfer, link_ids: ["node0:pcie0:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic PCIe transfer" }
+    - { id: multi-gpu-pcie1-small, scenario_id: multi-gpu, operation: transfer, link_ids: ["node0:pcie1:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic PCIe transfer" }
+    - { id: multi-gpu-pcie1-large, scenario_id: multi-gpu, operation: transfer, link_ids: ["node0:pcie1:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic PCIe transfer" }
+    - { id: multi-gpu-nvlink-small, scenario_id: multi-gpu, operation: collective, link_ids: ["node0:nvlink:forward"], participant_count: 2, algorithm: all_reduce_ring, bytes: 524288, durations_ns: [1360, 1374, 1388], regime: "synthetic two-rank all-reduce" }
+    - { id: multi-gpu-nvlink-large, scenario_id: multi-gpu, operation: collective, link_ids: ["node0:nvlink:forward"], participant_count: 2, algorithm: all_reduce_ring, bytes: 134217728, durations_ns: [221954, 224196, 226438], regime: "synthetic two-rank all-reduce" }
+
+    - { id: gpu-npu-npu-pcie-small, scenario_id: gpu-npu, operation: transfer, link_ids: ["node0:npu-pcie:reverse"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [34420, 34768, 35116], regime: "synthetic NPU-to-host transfer" }
+    - { id: gpu-npu-npu-pcie-large, scenario_id: gpu-npu, operation: transfer, link_ids: ["node0:npu-pcie:reverse"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [8306702, 8390608, 8474514], regime: "synthetic NPU-to-host transfer" }
+    - { id: gpu-npu-gpu-pcie-small, scenario_id: gpu-npu, operation: transfer, link_ids: ["node0:gpu-pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic host-to-GPU transfer" }
+    - { id: gpu-npu-gpu-pcie-large, scenario_id: gpu-npu, operation: transfer, link_ids: ["node0:gpu-pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic host-to-GPU transfer" }
+
+    - { id: multi-node-pcie0-small, scenario_id: multi-node, operation: transfer, link_ids: ["node0:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic host-to-GPU transfer" }
+    - { id: multi-node-pcie0-large, scenario_id: multi-node, operation: transfer, link_ids: ["node0:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic host-to-GPU transfer" }
+    - { id: multi-node-pcie1-small, scenario_id: multi-node, operation: transfer, link_ids: ["node1:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 524288, durations_ns: [17705, 17884, 18063], regime: "synthetic host-to-GPU transfer" }
+    - { id: multi-node-pcie1-large, scenario_id: multi-node, operation: transfer, link_ids: ["node1:pcie:forward"], participant_count: 2, algorithm: point_to_point, bytes: 134217728, durations_ns: [4153846, 4195804, 4237762], regime: "synthetic host-to-GPU transfer" }
+    - { id: multi-node-collective-small, scenario_id: multi-node, operation: collective, link_ids: ["node0:pcie:reverse", "cluster:rdma:forward", "node1:pcie:forward"], participant_count: 2, algorithm: all_reduce_ring, bytes: 524288, durations_ns: [48761, 49254, 49747], regime: "synthetic two-rank cross-node all-reduce" }
+    - { id: multi-node-collective-large, scenario_id: multi-node, operation: collective, link_ids: ["node0:pcie:reverse", "cluster:rdma:forward", "node1:pcie:forward"], participant_count: 2, algorithm: all_reduce_ring, bytes: 134217728, durations_ns: [10968173, 11078963, 11189753], regime: "synthetic two-rank cross-node all-reduce" }

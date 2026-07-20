@@ -1235,6 +1235,7 @@ function summarizeCostModel(costModel: TopologyCostModel) {
     revision: costModel.revision,
     confidence: costModel.confidence,
     source: costModel.source,
+    transportCurveCount: costModel.transportCurves?.length ?? 0,
     ...(costModel.applicability === undefined
       ? {}
       : { applicability: costModel.applicability }),

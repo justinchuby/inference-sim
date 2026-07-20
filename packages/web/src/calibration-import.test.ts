@@ -19,6 +19,7 @@ describe("calibration file import", () => {
     expect(result.dataset.id).toBe("synthetic-linear-example");
     expect(result.fit.confidence).toBe("heuristic");
     expect(result.fit.diagnostics).toHaveLength(15);
+    expect(result.fit.transportDiagnostics).toHaveLength(9);
     expect(result.fit.costModel.validWorkItemRanges?.gpu.attention).toEqual({
       minWorkItems: 1,
       maxWorkItems: 128,

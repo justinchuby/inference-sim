@@ -1246,9 +1246,15 @@ function CalibrationSummary({
   const calibration = result.calibration!;
   const maxNormalizedRmse = Math.max(
     ...calibration.diagnostics.map((diagnostic) => diagnostic.normalizedRmse),
+    ...calibration.transportDiagnostics.map(
+      (diagnostic) => diagnostic.normalizedRmse,
+    ),
   );
   const maxP95RelativeError = Math.max(
     ...calibration.diagnostics.map((diagnostic) => diagnostic.p95RelativeError),
+    ...calibration.transportDiagnostics.map(
+      (diagnostic) => diagnostic.p95RelativeError,
+    ),
   );
   return (
     <section className="grid gap-3 border-y border-zinc-200 bg-white px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
@@ -1260,7 +1266,8 @@ function CalibrationSummary({
           </div>
           <div className="truncate text-[11px] text-zinc-500">
             {calibration.datasetFingerprint} · {calibration.evidenceKind} ·{" "}
-            {calibration.fitConfidence} fit
+            {calibration.fitConfidence} fit ·{" "}
+            {calibration.transportDiagnostics.length} transport curves
           </div>
         </div>
       </div>

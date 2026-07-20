@@ -222,8 +222,34 @@ describe("simulateDashboard", () => {
       fitConfidence: "heuristic",
     });
     expect(result.calibration?.diagnostics).toHaveLength(15);
+    expect(result.calibration?.transportDiagnostics).toHaveLength(9);
     expect(result.topology.assumptions[0]).toContain(
       calibration.fit.datasetFingerprint,
+    );
+  });
+
+  it("runs imported transport curves across all six serving topologies", async () => {
+    const text = await readFile(new URL(
+      "../../../examples/calibration-synthetic.yaml",
+      import.meta.url,
+    ), "utf8");
+    const calibration = await parseCalibrationFileText(
+      text,
+      "calibration-synthetic.yaml",
+    );
+    const result = simulateDashboard({
+      ...base,
+      mode: "serving",
+      calibration: calibration.dataset,
+      serving: {
+        ...base.serving,
+        compareTopologies: true,
+      },
+    });
+
+    expect(result.comparison).toHaveLength(6);
+    expect(result.topology.assumptions).toContain(
+      "transport timing uses exact-path calibration curves without extrapolation",
     );
   });
 

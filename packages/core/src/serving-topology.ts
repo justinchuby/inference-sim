@@ -166,6 +166,9 @@ export function simulateTopologyServingWorkload(
       costModel.source,
       orderedBatches[0]?.topology.assumptions[1]
         ?? `overall timing confidence is ${confidence}`,
+      orderedBatches[0]?.topology.assumptions.find((assumption) => (
+        assumption.startsWith("transport timing uses")
+      )) ?? "transport timing was not exercised by the first batch",
       "continuous batches are non-preemptive; arrivals during a batch wait for its completion",
       "prefill and target verification share fixed invocation plus linear token cost",
       config.speculative

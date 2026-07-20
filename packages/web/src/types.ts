@@ -2,6 +2,7 @@ import type {
   CalibrationDataset,
   CalibrationEvidenceKind,
   CalibrationFitDiagnostic,
+  TransportCalibrationFitDiagnostic,
   ConfidenceClass,
   ExpertCacheMetrics,
   ExpertRouteResult,
@@ -75,6 +76,8 @@ export interface DashboardResult {
     readonly evidenceKind: CalibrationEvidenceKind;
     readonly fitConfidence: ConfidenceClass;
     readonly diagnostics: readonly CalibrationFitDiagnostic[];
+    readonly transportDiagnostics:
+      readonly TransportCalibrationFitDiagnostic[];
   };
   readonly topology: {
     readonly confidence: ConfidenceClass;

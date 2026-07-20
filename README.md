@@ -77,7 +77,7 @@ Phase 3 has an initial speculative workload slice:
   ranked latency, throughput, TTFT/ITL, KV, and replay evidence; and
 - revisioned topology-cost calibration import with repeated observations,
   provenance, quality diagnostics, scoped applicability, stable fingerprints,
-  and fail-closed interpolation ranges.
+  exact-path transfer/collective curves, and fail-closed interpolation ranges.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
@@ -90,7 +90,7 @@ The speculative controls use the shared core family contract; design-only
 self-speculative results are labeled explicitly. The workbench can import the
 same revisioned calibration YAML/JSON used by the CLI, validates and fits it
 before execution, reruns the fit inside the Worker, and displays its stable
-fingerprint plus NRMSE/P95 diagnostics.
+fingerprint plus compute and transport NRMSE/P95 diagnostics.
 The Spec view primarily imports a pair of independently emitted target-only and
 speculative runtime captures. It binds their provenance, reconstructs and
 checks every speculative commit, then derives the revisioned token trace used
@@ -151,7 +151,12 @@ optional final calibration path; without one they use the bundled heuristic
 cost model. The included calibration file is explicitly synthetic and remains
 heuristic. A measured compute dataset does not by itself upgrade results from
 the heuristic built-in topology presets: end-to-end timing uses the weakest
-confidence among compute, device, memory, and link evidence.
+confidence among the performance inputs actually used. Exact-path
+communication curves replace declared link bandwidth as timing evidence.
+Calibration revision 2 scopes communication curves to an exact scenario,
+ordered directed-link path, participant count, algorithm, and observed byte
+range. Imported calibration never silently falls back to topology bandwidth or
+extrapolates beyond that range.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
 device semantics, speculative execution, and delivery gates.

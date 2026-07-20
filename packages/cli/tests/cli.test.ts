@@ -723,7 +723,7 @@ function calibrationConfig(scenarioIds: readonly string[]) {
   ]);
   return {
     calibration: {
-      revision: 1,
+      revision: 2,
       id: "cli-calibration-fixture",
       provenance: {
         kind: "synthetic",
@@ -750,6 +750,30 @@ function calibrationConfig(scenarioIds: readonly string[]) {
         max_p95_relative_error: 0.01,
       },
       observations,
+      transport_observations: [
+        {
+          id: "multi-gpu-collective-small",
+          scenario_id: "multi-gpu",
+          operation: "collective",
+          link_ids: ["node0:nvlink:forward"],
+          participant_count: 2,
+          algorithm: "all_reduce_ring",
+          bytes: 524_288,
+          durations_ns: [999, 1_000, 1_001],
+          regime: "two-rank fixture",
+        },
+        {
+          id: "multi-gpu-collective-large",
+          scenario_id: "multi-gpu",
+          operation: "collective",
+          link_ids: ["node0:nvlink:forward"],
+          participant_count: 2,
+          algorithm: "all_reduce_ring",
+          bytes: 67_108_864,
+          durations_ns: [99_900, 100_000, 100_100],
+          regime: "two-rank fixture",
+        },
+      ],
     },
   };
 }

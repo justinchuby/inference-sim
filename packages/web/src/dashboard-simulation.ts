@@ -42,6 +42,7 @@ export function simulateDashboard(
             evidenceKind: config.calibration!.provenance.kind,
             fitConfidence: calibration.confidence,
             diagnostics: calibration.diagnostics,
+            transportDiagnostics: calibration.transportDiagnostics,
           },
         }),
   });
