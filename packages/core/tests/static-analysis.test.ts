@@ -102,4 +102,70 @@ describe("static analysis", () => {
     expect(result.feasible).toBe(true);
     expect(result.estimatedThroughput.decodeToksPerSec).toBeGreaterThan(0);
   });
+
+  it("does not make offload feasible when host capacity is insufficient", () => {
+    const topology = buildTopology("rtx-4090-2x");
+    topology.nodes[0].hostMemory.capacityBytes = 1;
+    const model = buildModelProfile("llama-3-70b", "fp16", "fp16");
+    const pipeline: PipelineConfig = {
+      batchSize: 1,
+      inputSeqLen: 2048,
+      outputSeqLen: 512,
+      parallelism: {
+        tensorParallel: 2,
+        pipelineParallel: 1,
+        expertParallel: 1,
+        dataParallel: 1,
+      },
+      memory: {
+        kvCacheBudgetFraction: 0.3,
+        expertCacheBudgetFraction: 0,
+        pinnedPoolFraction: 0.05,
+        offloadStrategy: "full",
+        prefetchAhead: 0,
+        pressureThreshold: 0.9,
+        reclaimBatchSize: 4,
+      },
+    };
+
+    const result = analyzeStatic(topology, model, pipeline);
+    expect(result.feasible).toBe(false);
+    expect(result.bottleneck).toBe("capacity");
+    expect(result.hostMemoryBreakdown.free).toBeLessThan(0);
+  });
+
+  it("checks every device capacity instead of trusting the first device", () => {
+    const topology = buildTopology("rtx-4090-2x");
+    expect(topology.nodes[0].devices[0].memory).not.toBe(
+      topology.nodes[0].devices[1].memory,
+    );
+    topology.nodes[0].devices[0].memory.capacityBytes = 1024 ** 4;
+    topology.nodes[0].devices[1].memory.capacityBytes = 1;
+    const model = buildModelProfile("llama-3-8b", "fp16", "fp16");
+    const pipeline: PipelineConfig = {
+      batchSize: 1,
+      inputSeqLen: 1024,
+      outputSeqLen: 128,
+      parallelism: {
+        tensorParallel: 2,
+        pipelineParallel: 1,
+        expertParallel: 1,
+        dataParallel: 1,
+      },
+      memory: {
+        kvCacheBudgetFraction: 0.3,
+        expertCacheBudgetFraction: 0,
+        pinnedPoolFraction: 0.05,
+        offloadStrategy: "none",
+        prefetchAhead: 0,
+        pressureThreshold: 0.9,
+        reclaimBatchSize: 4,
+      },
+    };
+
+    const result = analyzeStatic(topology, model, pipeline);
+    expect(result.feasible).toBe(false);
+    expect(result.memoryBreakdown[0].free).toBeGreaterThan(0);
+    expect(result.memoryBreakdown[1].free).toBeLessThan(0);
+  });
 });

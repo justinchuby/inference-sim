@@ -93,10 +93,10 @@ function makeGpuNode(
   const gpuSpec = GPU_PRESETS[gpuPreset];
   if (!gpuSpec) throw new Error(`Unknown GPU preset: ${gpuPreset}`);
 
-  const devices: DeviceSpec[] = Array.from({ length: numGpus }, (_, i) => ({
-    id: `${nodeId}:gpu${i}`,
-    ...gpuSpec,
-  }));
+  const devices: DeviceSpec[] = Array.from(
+    { length: numGpus },
+    (_, i) => instantiateDevice(`${nodeId}:gpu${i}`, gpuSpec),
+  );
 
   // Full-mesh interconnect between devices
   const interDeviceLinks: InterconnectSpec[] = [];
@@ -153,7 +153,9 @@ export function buildTopology(preset: string): HardwareTopology {
       return {
         nodes: Array.from({ length: 4 }, (_, i) => ({
           id: `node${i}`,
-          devices: [{ id: `node${i}:soc`, ...GPU_PRESETS["m4-max"] }],
+          devices: [
+            instantiateDevice(`node${i}:soc`, GPU_PRESETS["m4-max"]),
+          ],
           hostMemory: { capacityBytes: 128 * GiB, bandwidthBytesPerSec: 546 * GB_s, latencyNs: 70 },
           interDeviceLinks: [], // single SoC, no inter-device
         })),
@@ -180,6 +182,18 @@ export function buildTopology(preset: string): HardwareTopology {
     default:
       throw new Error(`Unknown topology preset: ${preset}. Available: dgx-h100, dgx-h200, 2x-dgx-h100, 4x-mac-studio-m4, a100-4x, rtx-4090-2x`);
   }
+}
+
+function instantiateDevice(
+  id: string,
+  spec: Omit<DeviceSpec, "id">,
+): DeviceSpec {
+  return {
+    id,
+    kind: spec.kind,
+    memory: { ...spec.memory },
+    compute: { ...spec.compute },
+  };
 }
 
 export function listPresets(): { gpus: string[]; topologies: string[] } {

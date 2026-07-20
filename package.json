@@ -5,6 +5,6 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "sim": "pnpm --filter @inference-sim/cli exec sim"
+    "sim": "node packages/cli/dist/main.js"
   }
 }

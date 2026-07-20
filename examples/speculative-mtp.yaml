@@ -1,0 +1,14 @@
+speculative:
+  family: mtp
+  initial_token_length: 2048
+  output_token_count: 128
+  max_additional_tokens: 4
+  acceptance:
+    kind: conditional_empirical
+    match_probability_by_position: [0.82, 0.71, 0.60, 0.50]
+    seed: 42
+  paged_kv:
+    sequence_id: target
+    page_size_tokens: 16
+    bytes_per_token: 65536
+    capacity_bytes: 268435456

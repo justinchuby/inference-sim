@@ -27,3 +27,132 @@ export type {
 export { GPU_PRESETS, buildTopology, listPresets } from "./presets.js";
 export { MODEL_PRESETS, buildModelProfile, listModelPresets } from "./models.js";
 export { analyzeStatic } from "./static-analysis.js";
+export {
+  DiscreteEventSimulator,
+  SimulationError,
+  type ScheduledEvent,
+  type SimulationEventHandler,
+  type SimulationRunOptions,
+  type SimulationRunResult,
+} from "./event-loop.js";
+export {
+  HostGovernorSimulator,
+  PressureProtocolError,
+} from "./pressure.js";
+export {
+  PressureReplayError,
+  replayPressureTrace,
+} from "./pressure-replay.js";
+export {
+  PROTOCOL_CONTRACT_REVISION,
+  type HostAllocationSnapshot,
+  type HostAllocationState,
+  type HostGovernorConfig,
+  type HostGovernorSnapshot,
+  type PressureReplayResult,
+  type PressureTicketSnapshot,
+  type PressureTicketState,
+  type PressureTraceEvent,
+  type PressureTracePayload,
+} from "./pressure-types.js";
+export {
+  SpeculativeProtocolError,
+  SpeculativeTransactionSimulator,
+  type RollbackProtection,
+  type SpeculativeIterationInput,
+  type SpeculativeIterationResult,
+  type SpeculativeStateGroupConfig,
+  type SpeculativeStateGroupSnapshot,
+  type SpeculativeStateOwner,
+} from "./speculative.js";
+export {
+  SpeculativeWorkloadError,
+  simulateSpeculativeWorkload,
+  type SpeculativeAcceptanceModel,
+  type SpeculativeProposerFamily,
+  type SpeculativePagedKvResult,
+  type SpeculativeWorkloadConfig,
+  type SpeculativeWorkloadIteration,
+  type SpeculativeWorkloadMetrics,
+  type SpeculativeWorkloadResult,
+} from "./speculative-workload.js";
+export {
+  PAGED_KV_CONTRACT_REVISION,
+  PagedKvCacheSimulator,
+  PagedKvProtocolError,
+  PagedKvReplayError,
+  replayPagedKvTrace,
+  type PagedKvCheckpoint,
+  type PagedKvConfig,
+  type PagedKvPageSnapshot,
+  type PagedKvReplayResult,
+  type PagedKvSnapshot,
+  type PagedKvTraceEvent,
+} from "./paged-kv.js";
+export {
+  SCENARIO_SCHEMA_VERSION,
+  type AllocationClass,
+  type AllocationReservation,
+  type CalibrationCoefficient,
+  type CalibrationSet,
+  type CommunicatorGroupSpec,
+  type CommunicatorRankSpec,
+  type ComputeCapability,
+  type ConfidenceClass,
+  type EvidenceProvenance,
+  type GovernorOwner,
+  type MemoryDomainKind,
+  type MemoryDomainSpec,
+  type PartitionPlacement,
+  type ScenarioExecutionPolicy,
+  type ScenarioValidationIssue,
+  type ScenarioValidationResult,
+  type ScenarioMemoryLedgerEntry,
+  type ScenarioWorkloadSpec,
+  type SimDeviceKind,
+  type SimDeviceSpec,
+  type SimLinkSpec,
+  type SimulationScenario,
+  type TransferRequirement,
+} from "./scenario-types.js";
+export {
+  ScenarioValidationError,
+  assertValidScenario,
+  calculateScenarioMemoryLedger,
+  domainSupportsClass,
+  findTransferPath,
+  validateScenario,
+} from "./scenario.js";
+export {
+  SCENARIO_PRESET_NAMES,
+  buildScenarioPreset,
+  type ScenarioPresetName,
+} from "./scenario-presets.js";
+export {
+  PLAN_CONTRACT_REVISION,
+  type FrozenPlan,
+  type FrozenPlanExecutionResult,
+  type PlanExecutionOptions,
+  type PlanExecutionTrace,
+  type PlanOperation,
+  type PlanReplayResult,
+  type PlanResourceReservation,
+  type PlanStep,
+  type PlanTerminalEvent,
+  type PlanTerminalStatus,
+  type PlanTraceEvent,
+  type PlanValidationIssue,
+  type PlanValidationResult,
+  type RankCompletion,
+  type RankTerminalState,
+} from "./plan-types.js";
+export {
+  CollectiveSubmitSequencer,
+  FrozenPlanExecutionError,
+  FrozenPlanValidationError,
+  PlanReplayError,
+  assertValidFrozenPlan,
+  executeFrozenPlan,
+  replayPlanTrace,
+  validateFrozenPlan,
+} from "./frozen-plan.js";

@@ -120,8 +120,6 @@ export function analyzeStatic(
 
   const deviceCapacity = firstDevice.memory.capacityBytes;
   const totalUsedPerDevice = denseWeightsPerDevice + expertWeightsPerDevice + kvCachePerDevice + activationsPerDevice;
-  const freePerDevice = deviceCapacity - totalUsedPerDevice;
-  const feasible = freePerDevice >= 0;
 
   // Build breakdown for all devices
   const memoryBreakdown: DeviceMemoryBreakdown[] = [];
@@ -138,14 +136,25 @@ export function analyzeStatic(
       });
     }
   }
+  const deviceFeasible = memoryBreakdown.every((breakdown) => breakdown.free >= 0);
 
   // --- Host memory ---
-  const hostCapacity = topology.nodes.reduce((sum, n) => sum + n.hostMemory.capacityBytes, 0);
+  // A legacy unified-memory node exposes the same physical capacity through
+  // hostMemory and its unified device. It is not an extra offload tier.
+  const hostCapacity = topology.nodes.reduce((sum, node) => (
+    node.devices.some((device) => device.kind === "unified")
+      ? sum
+      : sum + node.hostMemory.capacityBytes
+  ), 0);
   let offloadedWeights = 0;
   let warmExperts = 0;
-  if (!feasible && memPolicy.offloadStrategy !== "none") {
-    // If device is over-budget, overflow goes to host
-    offloadedWeights = Math.max(0, -freePerDevice);
+  if (!deviceFeasible && memPolicy.offloadStrategy !== "none") {
+    // This legacy analyzer treats the overage as an offload requirement. The
+    // composable scenario validator performs the exact accessibility check.
+    offloadedWeights = memoryBreakdown.reduce(
+      (sum, breakdown) => sum + Math.max(0, -breakdown.free),
+      0,
+    );
   }
   if (model.moe && memPolicy.offloadStrategy === "partial") {
     // Warm experts that don't fit on device go to host
@@ -162,18 +171,34 @@ export function analyzeStatic(
     kvOverflow: 0,
     free: hostCapacity - offloadedWeights - warmExperts,
   };
+  const hasUnifiedOverflow = topology.nodes.some((node) => (
+    node.devices.some((device) => device.kind === "unified")
+    && node.devices.some((device) => {
+      const breakdown = memoryBreakdown.find((entry) => entry.deviceId === device.id);
+      return breakdown !== undefined && breakdown.free < 0;
+    })
+  ));
+  const offloadFeasible = memPolicy.offloadStrategy !== "none"
+    && !hasUnifiedOverflow
+    && hostMemoryBreakdown.free >= 0;
+  const feasible = deviceFeasible || offloadFeasible;
 
   // --- Throughput estimation (roofline model) ---
   const throughput = estimateThroughput(firstDevice, model, pipeline, denseWeightsPerDevice + expertWeightsPerDevice);
 
   // --- Bottleneck identification ---
-  const bottleneck = identifyBottleneck(firstDevice, model, pipeline, topology);
+  const bottleneck = feasible
+    ? identifyBottleneck(firstDevice, model, pipeline, topology)
+    : "capacity";
 
   // --- Recommendations ---
   const recommendations: string[] = [];
-  if (!feasible) {
-    const overflowGiB = (-freePerDevice / (1024 ** 3)).toFixed(1);
-    recommendations.push(`Over device capacity by ${overflowGiB} GiB per device`);
+  if (!deviceFeasible) {
+    const largestOverflow = Math.max(
+      ...memoryBreakdown.map((breakdown) => Math.max(0, -breakdown.free)),
+    );
+    const overflowGiB = (largestOverflow / (1024 ** 3)).toFixed(1);
+    recommendations.push(`Largest device capacity overage is ${overflowGiB} GiB`);
     if (model.quantization.weights === "fp16") {
       recommendations.push("Try FP8 quantization to halve weight memory");
     }
@@ -188,8 +213,15 @@ export function analyzeStatic(
   if (bottleneck === "memory_bandwidth" && model.quantization.kvCache === "fp16") {
     recommendations.push("FP8 KV cache could reduce memory bandwidth pressure during decode");
   }
+  if (!deviceFeasible && memPolicy.offloadStrategy !== "none" && !offloadFeasible) {
+    recommendations.push(
+      hasUnifiedOverflow
+        ? "Unified memory has no separate host tier to absorb the overage"
+        : "Host memory cannot hold the modeled offload requirement",
+    );
+  }
 
-  return { feasible: feasible || memPolicy.offloadStrategy !== "none", memoryBreakdown, hostMemoryBreakdown, bottleneck, estimatedThroughput: throughput, recommendations };
+  return { feasible, memoryBreakdown, hostMemoryBreakdown, bottleneck, estimatedThroughput: throughput, recommendations };
 }
 
 // ============================================================

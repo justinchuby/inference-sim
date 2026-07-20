@@ -1,40 +1,78 @@
 # inference-sim
 
-A discrete-event simulator for LLM inference resource allocation and scheduling.
+A deterministic simulator for LLM inference placement, memory protocols, and
+resource scheduling.
 
-Models hardware topologies, ONNX model profiles, and memory management policies to predict throughput, latency, memory flow, and bottlenecks — **without real hardware**.
+The project is intentionally split between exact protocol checks and calibrated
+performance estimates. It can prove ledger and state-transition properties; it
+does not claim hardware-accurate latency without calibration data.
 
-## What it does
+## Current Status
 
-- **Static analysis**: Memory breakdown, feasibility check, bottleneck identification
-- **Expert cache simulation**: Hit rates, prefetch effectiveness, eviction patterns
-- **Governor simulation**: Pressure protocol behavior, resource contention
-- **Visualization**: Memory timeline, expert heatmap, topology data flow
+Phase 1 is complete in `@inference-sim/core`:
 
-## Packages
+- heuristic static memory and roofline analysis;
+- deterministic discrete-event scheduling;
+- exact host-pressure ticket and allocation accounting;
+- contract-revisioned pressure traces;
+- independent trace replay with invariant checks;
+- composite speculative checkpoint/restore transaction semantics.
 
-| Package | Description |
-|---------|-------------|
-| `@inference-sim/core` | Pure computation engine, zero dependencies, runs in Node + Browser |
-| `@inference-sim/cli` | Command-line interface with YAML config input |
-| `@inference-sim/web` | React visualization dashboard |
+Phase 2 is in progress:
 
-## Quick Start
+- capability-based scenarios for all six required topology families;
+- exact physical memory-domain ledgers and shared-allocation aliases;
+- FrozenPlan DAG validation and deterministic resource scheduling;
+- collective ordering, transport-link contention, and allocation leases; and
+- independent plan-trace replay with rank-local success/failure/abort
+  quiescence.
+
+Phase 3 has an initial speculative workload slice:
+
+- token-trace replay or seeded conditional first-mismatch acceptance;
+- exact output-budget and target-only final-length parity;
+- accepted-prefix, correction/bonus, rejection, and efficiency metrics; and
+- composite target/proposer state rollback on every iteration;
+- exact-capacity paged KV allocation with checkpoint-relative rollback,
+  non-reused physical page identities, and independent trace replay; and
+- speculative KV high-water, allocation, release, and final-reservation
+  metrics.
+
+The initial CLI is implemented. The browser dashboard described in the design
+is not yet implemented.
+
+## Direction
+
+The simulation model is being built around the onnx-genai memory and
+distributed-runtime contracts. Planned scenarios cover:
+
+- CPU-only;
+- discrete GPU plus CPU;
+- multi-GPU;
+- GPU plus NPU;
+- unified memory; and
+- multi-node and heterogeneous execution.
+
+Speculative decoding is a first-class workload model. It will cover
+prompt-lookup, draft-model, MTP, EAGLE-3, shared-KV, and self-speculative
+proposers with target-authoritative verification and composite checkpoint
+restore.
+
+## Development
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
+pnpm test
 
-# Static memory analysis
-pnpm sim --hardware h100-8x --model mixtral-8x22b --quantization fp8
-
-# Full simulation
-pnpm sim run --config examples/mixtral-dgx.yaml
+pnpm sim presets
+pnpm sim scenario gpu-npu
+pnpm sim static examples/mixtral-dgx-h100.yaml
+pnpm sim speculative examples/speculative-mtp.yaml
 ```
 
-## Design
-
-See [docs/DESIGN.md](docs/DESIGN.md) for the full architecture and design decisions.
+See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
+device semantics, speculative execution, and delivery gates.
 
 ## License
 
