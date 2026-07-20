@@ -32,6 +32,7 @@ import {
   type TopologyExpertLoadPlan,
   type TopologyResourceUtilization,
   type TopologyWorkloadProfile,
+  type TopologyModelWork,
   type TopologyWorkloadResult,
 } from "./topology-workload.js";
 import {
@@ -137,6 +138,7 @@ interface PhysicalDemandBinding {
 export function topologyProfileFromServingBatch(
   batch: ServingBatchWork,
   config?: ServingSchedulerConfig["speculative"],
+  modelWork?: TopologyModelWork,
 ): TopologyWorkloadProfile {
   const draftTokens = batch.decode.reduce(
     (sum, entry) => sum + entry.proposedAdditionalTokens,
@@ -148,6 +150,7 @@ export function topologyProfileFromServingBatch(
   return {
     id: `serving-batch:${batch.batchId}`,
     batchSize: 1,
+    ...(modelWork === undefined ? {} : { modelWork }),
     units: [{
       id: `batch-${batch.batchId}`,
       targetTokenWidth: batch.tokenWork,
@@ -171,6 +174,7 @@ export function simulateTopologyServingWorkload(
   config: ServingSchedulerConfig,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
   expertCacheConfig?: TopologyServingExpertCacheConfig,
+  modelWork?: TopologyModelWork,
 ): TopologyServingResult {
   validateExpertCacheComposition(scenario, expertCacheConfig);
   const expertPlacement: TopologyExpertPlacement | undefined =
@@ -287,13 +291,14 @@ export function simulateTopologyServingWorkload(
     const topology = simulateTopologyWorkload(
       scenario,
       batchExpertRoutes.length === 0
-        ? topologyProfileFromServingBatch(work, config.speculative)
+        ? topologyProfileFromServingBatch(work, config.speculative, modelWork)
         : topologyProfileFromExpertServingBatch(
             work,
             config.speculative,
             batchExpertRoutes,
             batchPrefetchLoads,
             requireExpertPlacement(expertPlacement),
+            modelWork,
           ),
       costModel,
     );
@@ -508,6 +513,9 @@ export function simulateTopologyServingWorkload(
       costModel.source,
       orderedBatches[0]?.topology.assumptions[1]
         ?? `overall timing confidence is ${confidence}`,
+      modelWork === undefined
+        ? "no executable model profile is bound; batch compute timing is synthetic normalized work"
+        : `model ${modelWork.modelName} contributes an active-weight bandwidth floor for every target attention and FFN invocation`,
       orderedBatches[0]?.topology.assumptions.find((assumption) => (
         assumption.startsWith("transport timing uses")
       )) ?? "transport timing was not exercised by the first batch",
@@ -770,6 +778,7 @@ export function compareTopologyServingWorkloads(
   config: ServingSchedulerConfig,
   costModel: TopologyCostModel = DEFAULT_TOPOLOGY_COST_MODEL,
   expertCacheConfig?: TopologyServingExpertCacheConfig,
+  modelWork?: TopologyModelWork,
 ): TopologyServingComparisonResult {
   if (scenarios.length === 0) {
     throw new Error("serving comparison requires at least one scenario");
@@ -789,6 +798,7 @@ export function compareTopologyServingWorkloads(
       config,
       costModel,
       expertCacheConfig,
+      modelWork,
     ))
     .sort((left, right) => (
       left.metrics.totalDurationNs - right.metrics.totalDurationNs
@@ -811,13 +821,18 @@ function topologyProfileFromExpertServingBatch(
   routes: readonly ExpertRouteResult[],
   prefetchLoads: readonly ExpertPendingLoadSnapshot[],
   placement: TopologyExpertPlacement,
+  modelWork?: TopologyModelWork,
 ): TopologyWorkloadProfile {
   if (routes.length !== batch.tokenWork || routes.length === 0) {
     throw new Error(
       `serving batch ${batch.batchId} requires one expert route per target token`,
     );
   }
-  const base = topologyProfileFromServingBatch(batch, speculative);
+  const base = topologyProfileFromServingBatch(
+    batch,
+    speculative,
+    modelWork,
+  );
   const topK = routes[0].expertIds.length;
   if (routes.some((route) => route.expertIds.length !== topK)) {
     throw new Error(

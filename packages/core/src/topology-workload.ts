@@ -59,9 +59,18 @@ export interface TopologyWorkloadProfile {
   readonly id: string;
   readonly batchSize: number;
   readonly units: readonly TopologyWorkUnit[];
+  readonly modelWork?: TopologyModelWork;
   readonly expertPlacement?: TopologyExpertPlacement;
   readonly expertTokenPlacement?: "round_robin";
   readonly backgroundPrefetches?: readonly TopologyBackgroundPrefetch[];
+}
+
+export interface TopologyModelWork {
+  readonly modelId: string;
+  readonly modelName: string;
+  readonly attentionWeightBytesPerToken: number;
+  readonly ffnWeightBytesPerToken: number;
+  readonly forwardFlopsPerToken: number;
 }
 
 export interface TopologyExpertPlacement {
@@ -248,10 +257,12 @@ export const DEFAULT_TOPOLOGY_COST_MODEL: TopologyCostModel = {
 
 export function topologyProfileFromSpeculative(
   result: SpeculativeWorkloadResult,
+  modelWork?: TopologyModelWork,
 ): TopologyWorkloadProfile {
   return {
     id: `speculative:${result.family}`,
     batchSize: 1,
+    ...(modelWork === undefined ? {} : { modelWork }),
     units: result.iterations.map((iteration) => ({
       id: `iteration-${iteration.iteration}`,
       targetTokenWidth: checkedAdd(
@@ -587,7 +598,11 @@ export function simulateTopologyWorkload(
   const computeServiceNs = serviceTime(execution, "compute");
   const transferServiceNs = serviceTime(execution, "transfer");
   const collectiveServiceNs = serviceTime(execution, "collective");
-  const confidence = topologyPerformanceConfidence(scenario, costModel);
+  const topologyConfidence =
+    topologyPerformanceConfidence(scenario, costModel);
+  const confidence = profile.modelWork === undefined
+    ? topologyConfidence
+    : "heuristic";
   const collectiveAlgorithms = new Set(plan.steps.flatMap((step) => (
     step.operation.kind === "collective"
       ? [step.operation.algorithm]
@@ -601,9 +616,14 @@ export function simulateTopologyWorkload(
       costModel.source,
       confidence === costModel.confidence
         ? `overall timing confidence is ${confidence}`
-        : `overall timing confidence is ${confidence} because scenario performance evidence is weaker than the cost model`,
+        : profile.modelWork !== undefined
+          ? "overall timing confidence is heuristic because active model work is architecture-derived and the 70% memory-bandwidth efficiency is not calibrated"
+          : `overall timing confidence is ${confidence} because scenario performance evidence is weaker than the cost model`,
       "decode-only plan; prefill and request batching are outside this profile",
       "compute costs include one device-kind invocation overhead plus linear token work",
+      profile.modelWork === undefined
+        ? "no executable model profile is bound; compute timing is synthetic normalized work"
+        : `model ${profile.modelWork.modelName} contributes an active-weight bandwidth floor for every target attention and FFN invocation`,
       "family-specific proposer multipliers are heuristic and provenance-labeled",
       costModel.transportCurves === undefined
         ? "transport timing uses declared directed-link bandwidth and latency"
@@ -1913,11 +1933,63 @@ class WorkloadPlanCompiler {
       workItems,
       "compute duration",
     );
-    return checkedAdd(
+    const normalizedDuration = checkedAdd(
       costs.invocationOverheadNs,
       Math.ceil(unshardedDuration / shardDegree),
       "compute invocation duration",
     );
+    return Math.max(
+      normalizedDuration,
+      this.modelWeightBandwidthFloor(deviceId, capability, shardDegree),
+    );
+  }
+
+  private modelWeightBandwidthFloor(
+    deviceId: string,
+    capability: TopologyComputeCapability,
+    shardDegree: number,
+  ): number {
+    const modelWork = this.profile.modelWork;
+    if (
+      modelWork === undefined
+      || (capability !== "attention" && capability !== "ffn")
+    ) {
+      return 0;
+    }
+    const bytes = capability === "attention"
+      ? modelWork.attentionWeightBytesPerToken
+      : modelWork.ffnWeightBytesPerToken;
+    const placement = this.placements.find((candidate) => (
+      candidate.deviceId === deviceId
+      && candidate.requiredCapabilities.includes(capability)
+    )) ?? this.placementForDevice(deviceId);
+    const weightAllocation = placement.allocations.find(
+      (allocation) => allocation.purpose === "weights",
+    );
+    if (weightAllocation === undefined) {
+      throw new TopologyWorkloadError(
+        `model-bound ${capability} placement ${placement.partitionId} has no weight allocation`,
+      );
+    }
+    const domain = this.scenario.memoryDomains.find(
+      (candidate) => candidate.id === weightAllocation.domainId,
+    );
+    if (domain === undefined) {
+      throw new TopologyWorkloadError(
+        `model-bound placement ${placement.partitionId} references unknown weight domain ${weightAllocation.domainId}`,
+      );
+    }
+    const shardedBytes = Math.ceil(bytes / shardDegree);
+    const idealDuration = checkedAdd(
+      domain.latencyNs,
+      scaledDuration(
+        shardedBytes,
+        domain.bandwidthBytesPerSec,
+        "model weight stream",
+      ),
+      "model weight stream duration",
+    );
+    return Math.ceil(idealDuration / 0.7);
   }
 
   private groupForPlacements(
@@ -2583,6 +2655,28 @@ function validateInputs(
     throw new TopologyWorkloadError("profile id must be non-empty");
   }
   assertPositiveSafeInteger(profile.batchSize, "profile batch size");
+  if (profile.modelWork !== undefined) {
+    if (
+      profile.modelWork.modelId.length === 0
+      || profile.modelWork.modelName.length === 0
+    ) {
+      throw new TopologyWorkloadError(
+        "model work id and name must be non-empty",
+      );
+    }
+    assertPositiveSafeInteger(
+      profile.modelWork.attentionWeightBytesPerToken,
+      "model attention weight bytes",
+    );
+    assertPositiveSafeInteger(
+      profile.modelWork.ffnWeightBytesPerToken,
+      "model FFN weight bytes",
+    );
+    assertPositiveSafeInteger(
+      profile.modelWork.forwardFlopsPerToken,
+      "model forward FLOPs per token",
+    );
+  }
   if (profile.units.length === 0) {
     throw new TopologyWorkloadError("profile must contain at least one work unit");
   }

@@ -52,6 +52,7 @@ export function simulateDashboardExecution(
     : fitTopologyCostModel(config.calibration);
   const costModel = calibration?.costModel ?? DEFAULT_TOPOLOGY_COST_MODEL;
   const configuredScenario = buildSelectedScenario(config);
+  validateModelCapacity(config, configuredScenario);
   const attachCalibration = (
     result: Omit<DashboardResult, "durationMs" | "calibration">,
   ): Omit<DashboardResult, "durationMs"> => ({
@@ -72,10 +73,15 @@ export function simulateDashboardExecution(
   if (config.mode === "serving" && config.serving.compareTopologies) {
     reportProgress({ progress: 30, phase: "Building comparison workloads" });
     const comparison = compareTopologyServingWorkloads(
-      SCENARIO_PRESET_NAMES.map(buildScenarioPreset),
+      SCENARIO_PRESET_NAMES.map((name) => {
+        const scenario = buildScenarioPreset(name);
+        validateModelCapacity(config, scenario);
+        return scenario;
+      }),
       buildServingConfig(config),
       costModel,
       buildServingExpertCacheConfig(config),
+      config.modelBinding?.executionProfile,
     );
     reportProgress({ progress: 74, phase: "Ranking topology replays" });
     const fastest = comparison.runs[0];
@@ -113,13 +119,19 @@ export function simulateDashboardExecution(
     reportProgress({ progress: 62, phase: "Replaying topology workload" });
     const topology = simulateTopologyWorkload(
       scenario,
-      topologyProfileFromSpeculative(workload.result),
+      topologyProfileFromSpeculative(
+        workload.result,
+        config.modelBinding?.executionProfile,
+      ),
       costModel,
     );
     reportProgress({ progress: 78, phase: "Summarizing speculative evidence" });
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
+        ...(modelSummary(config) === undefined
+          ? {}
+          : { model: modelSummary(config)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
         speculative: workload.dashboard,
@@ -172,6 +184,47 @@ export function simulateDashboardExecution(
       topology,
     },
   };
+}
+
+function validateModelCapacity(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): void {
+  const binding = config.modelBinding;
+  if (binding === undefined || config.mode === "expert-cache") {
+    return;
+  }
+  const targetDomains = new Set(scenario.placements
+    .filter((placement) => (
+      placement.requiredCapabilities.includes("attention")
+      || placement.requiredCapabilities.includes("ffn")
+    ))
+    .flatMap((placement) => placement.allocations
+      .filter((allocation) => allocation.purpose === "weights")
+      .map((allocation) => allocation.domainId)));
+  const capacityBytes = scenario.memoryDomains
+    .filter((domain) => targetDomains.has(domain.id))
+    .reduce((sum, domain) => sum + domain.capacityBytes, 0);
+  const seenAllocations = new Set<string>();
+  const reservedNonWeightBytes = scenario.placements
+    .flatMap((placement) => placement.allocations)
+    .filter((allocation) => (
+      targetDomains.has(allocation.domainId)
+      && allocation.purpose !== "weights"
+      && !seenAllocations.has(allocation.physicalAllocationId)
+      && seenAllocations.add(allocation.physicalAllocationId)
+    ))
+    .reduce((sum, allocation) => sum + allocation.bytes, 0);
+  const availableBytes = capacityBytes - reservedNonWeightBytes;
+  if (binding.weightBytes > availableBytes) {
+    throw new Error(
+      `model ${binding.displayName} requires ${formatGiB(binding.weightBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains`,
+    );
+  }
+}
+
+function formatGiB(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1);
 }
 
 function validateModelCapabilityBinding(config: DashboardRunConfig): void {
@@ -233,6 +286,7 @@ function runServing(
     buildServingConfig(config),
     costModel,
     buildServingExpertCacheConfig(config),
+    config.modelBinding?.executionProfile,
   );
 }
 
@@ -302,6 +356,9 @@ function servingDashboardResult(
 ): Omit<DashboardResult, "durationMs"> {
   return {
     scenario: summarizeScenario(scenario),
+    ...(modelSummary(config) === undefined
+      ? {}
+      : { model: modelSummary(config)! }),
     mode: "serving",
     topology: summarizeServingTopology(serving),
     serving: {
@@ -370,6 +427,21 @@ function servingDashboardResult(
         }
       : {}),
   };
+}
+
+function modelSummary(
+  config: DashboardRunConfig,
+): DashboardResult["model"] | undefined {
+  const binding = config.modelBinding;
+  return binding === undefined
+    ? undefined
+    : {
+        name: binding.displayName,
+        source: binding.source,
+        fingerprint: binding.targetModelFingerprint,
+        totalParameters: binding.totalParameters,
+        weightBytes: binding.weightBytes,
+      };
 }
 
 function summarizeScenario(

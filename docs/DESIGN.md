@@ -1541,14 +1541,30 @@ pipeline stages, device preferences, hardware requirements, and exact
 speculative evidence. Known fields fail closed while unknown schema-extension
 fields remain forward compatible.
 
-The model package generates a compact dashboard binding containing sorted ONNX
-manifest fingerprints, component count, pipeline strategy, and only the
-speculative families supported by explicit metadata. UI filtering is not the
-security or correctness boundary: dashboard artifact parsing preserves the
-binding and Worker execution independently rejects a speculative family absent
-from it. `eagle` is not silently treated as `eagle3`, and generic draft heads
-do not imply MTP or EAGLE without a family declaration. With no imported
-package, speculative controls remain an explicitly unbound design exploration.
+The model package generates a dashboard execution binding containing sorted
+ONNX manifest fingerprints, the uniquely identified target/decoder,
+component count, pipeline strategy, exact parameter and weight inventory,
+architecture-derived active attention/FFN weight streams, approximate forward
+FLOPs, and only the speculative families supported by explicit metadata.
+Multi-model packages without exactly one decoder/target fail closed instead of
+silently timing an arbitrary component. UI filtering is not the security or
+correctness boundary: dashboard artifact parsing preserves the binding and
+Worker execution independently rejects a speculative family absent from it.
+`eagle` is not silently treated as `eagle3`, and generic draft heads do not
+imply MTP or EAGLE without a family declaration.
+
+The dashboard defaults to an explicit built-in Llama 3 8B target-only model;
+model selection and local folder/file import are first-class controls. Every
+serving/speculative result names the bound model, parameters, weight bytes, and
+topology. A model-bound attention or FFN invocation takes the maximum of the
+existing normalized/calibrated compute duration and one sharded active-weight
+stream through the placement's declared memory domain at 70% bandwidth
+efficiency. This is a heuristic lower bound on duration, not kernel
+calibration. Model-bound timing is therefore heuristic even when the topology
+cost dataset is calibrated. Weight capacity is checked against target memory
+domains before execution. Inputs without an execution binding remain supported
+for synthetic artifacts, but results and assumptions explicitly label them
+synthetic rather than presenting them as model throughput.
 ONNX static-analysis sessions have their own hardware, runtime dtype, sequence,
 parallelism, and offload controls and do not masquerade as replayable
 serving/speculative dashboard artifacts. Static results expose per-device

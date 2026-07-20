@@ -11,6 +11,7 @@ import {
   dashboardArtifactContracts,
   parseDashboardArtifactFileText,
 } from "./dashboard-artifact.js";
+import { createBuiltinModelBinding } from "./model-binding.js";
 import { parseCalibrationFileText } from "./calibration-import.js";
 import { simulateDashboardExecution } from "./dashboard-simulation.js";
 import { executeDashboardWorkerRun } from "./dashboard-worker-run.js";
@@ -159,11 +160,13 @@ describe("dashboard result artifact import", () => {
     const boundConfig: DashboardRunConfig = {
       ...config,
       modelBinding: {
+        ...createBuiltinModelBinding("llama-3-8b"),
         source: "local_model_package",
         modelFingerprints: [
           "fnv1a32:12345678",
           "fnv1a32:90abcdef",
         ],
+        targetModelFingerprint: "fnv1a32:12345678",
         componentCount: 2,
         pipelineStrategy: "composite",
         speculativeFamilies: ["draft_model", "mtp"],

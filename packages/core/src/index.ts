@@ -433,5 +433,6 @@ export {
   type TopologyWorkUnit,
   type TopologyWorkloadMetrics,
   type TopologyWorkloadProfile,
+  type TopologyModelWork,
   type TopologyWorkloadResult,
 } from "./topology-workload.js";

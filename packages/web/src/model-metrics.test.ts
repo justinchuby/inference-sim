@@ -10,6 +10,7 @@ import {
   calculateIdealRoofline,
   summarizeModelPackage,
 } from "./model-metrics.js";
+import { createImportedModelBinding } from "./model-binding.js";
 
 describe("model UI metrics", () => {
   it("keeps exact inventory separate from heuristic work and bandwidth bounds", () => {
@@ -66,6 +67,25 @@ describe("model UI metrics", () => {
     )).toBe(true);
     expect(metrics.forwardFlopsPerToken).toBeUndefined();
     expect(metrics.bandwidthCeilingTokensPerSec).toBeUndefined();
+  });
+
+  it("turns a complete local target into executable dashboard work", () => {
+    const binding = createImportedModelBinding(packageWithDenseModel());
+
+    expect(binding).toMatchObject({
+      source: "local_model_package",
+      displayName: "test-dense",
+      totalParameters: 2_000,
+      weightBytes: 4_000,
+      executionProfile: {
+        modelName: "test-dense",
+        forwardFlopsPerToken: 4_000,
+      },
+    });
+    expect(
+      binding.executionProfile.attentionWeightBytesPerToken
+        + binding.executionProfile.ffnWeightBytesPerToken,
+    ).toBe(4_000);
   });
 });
 

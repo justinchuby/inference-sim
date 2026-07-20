@@ -39,11 +39,24 @@ import type {
 export type WorkloadMode = "serving" | "speculative" | "expert-cache";
 
 export interface DashboardModelBinding {
-  readonly source: "local_model_package";
+  readonly source: "builtin_model" | "local_model_package";
+  readonly displayName: string;
   readonly modelFingerprints: readonly string[];
+  readonly targetModelFingerprint: string;
   readonly componentCount: number;
+  readonly totalParameters: number;
+  readonly weightBytes: number;
+  readonly executionProfile: DashboardModelExecutionProfile;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
+}
+
+export interface DashboardModelExecutionProfile {
+  readonly modelId: string;
+  readonly modelName: string;
+  readonly attentionWeightBytesPerToken: number;
+  readonly ffnWeightBytesPerToken: number;
+  readonly forwardFlopsPerToken: number;
 }
 
 export interface DashboardRunConfig {
@@ -94,6 +107,13 @@ export interface DashboardRunConfig {
 }
 
 export interface DashboardResult {
+  readonly model?: {
+    readonly name: string;
+    readonly source: DashboardModelBinding["source"];
+    readonly fingerprint: string;
+    readonly totalParameters: number;
+    readonly weightBytes: number;
+  };
   readonly scenario: {
     readonly id: string;
     readonly family: string;

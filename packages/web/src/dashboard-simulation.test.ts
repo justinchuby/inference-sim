@@ -16,6 +16,7 @@ import {
   simulateDashboard,
   simulateDashboardExecution,
 } from "./dashboard-simulation.js";
+import { createBuiltinModelBinding } from "./model-binding.js";
 import type { DashboardRunConfig } from "./types.js";
 
 const base: DashboardRunConfig = {
@@ -59,9 +60,10 @@ describe("simulateDashboard", () => {
     const config: DashboardRunConfig = {
       ...base,
       modelBinding: {
+        ...createBuiltinModelBinding("llama-3-8b"),
         source: "local_model_package",
         modelFingerprints: ["fnv1a32:12345678"],
-        componentCount: 1,
+        targetModelFingerprint: "fnv1a32:12345678",
         speculativeFamilies: ["mtp"],
       },
       speculative: {
@@ -71,6 +73,55 @@ describe("simulateDashboard", () => {
     };
     expect(() => simulateDashboard(config)).toThrow(
       "does not declare speculative family draft_model",
+    );
+  });
+
+  it("binds model weight traffic into CPU serving throughput", () => {
+    const modelBinding = createBuiltinModelBinding("llama-3-8b");
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "cpu-only",
+      modelBinding,
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        compareTopologies: false,
+        useExpertCache: false,
+        decodeMode: "target_only",
+        requestCount: 1,
+        promptTokens: 16,
+        outputTokens: 8,
+        maxBatchSize: 1,
+        maxBatchTokens: 16,
+        prefillChunkTokens: 16,
+      },
+    });
+
+    expect(result.model).toMatchObject({
+      name: modelBinding.displayName,
+      totalParameters: modelBinding.totalParameters,
+      weightBytes: modelBinding.weightBytes,
+    });
+    expect(result.serving!.metrics.throughputTokensPerSecond).toBeLessThan(10);
+    expect(result.topology.assumptions).toContain(
+      `model ${modelBinding.displayName} contributes an active-weight bandwidth floor for every target attention and FFN invocation`,
+    );
+  });
+
+  it("rejects a model that cannot fit target memory", () => {
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "cpu-only",
+      modelBinding: createBuiltinModelBinding("llama-3-70b"),
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        compareTopologies: false,
+        useExpertCache: false,
+        decodeMode: "target_only",
+      },
+    })).toThrow(
+      "model Llama-3-70B requires",
     );
   });
 

@@ -76,6 +76,12 @@ import {
 import { importModelPackage } from "./model-import-client.js";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import {
+  createBuiltinModelBinding,
+  createImportedModelBinding,
+  DASHBOARD_MODEL_PRESETS,
+  type DashboardModelPreset,
+} from "./model-binding.js";
+import {
   calculateIdealRoofline,
   summarizeModelPackage,
 } from "./model-metrics.js";
@@ -159,7 +165,8 @@ const SPECULATIVE_FAMILIES: ReadonlyArray<{
 const DEFAULT_CONFIG: DashboardRunConfig = {
   scenarioName: "multi-gpu",
   multiGpuRanks: 2,
-  mode: "speculative",
+  modelBinding: createBuiltinModelBinding("llama-3-8b"),
+  mode: "serving",
   seed: 42,
   speculative: {
     family: "mtp",
@@ -169,8 +176,8 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
   },
   serving: {
     compareTopologies: false,
-    useExpertCache: true,
-    decodeMode: "mtp",
+    useExpertCache: false,
+    decodeMode: "target_only",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
     requestCount: 12,
@@ -547,17 +554,7 @@ export function App(): React.JSX.Element {
             (item) => item.family === selectedFamily,
           )?.maximumDraftTokens;
       const { trace: _trace, ...speculative } = config.speculative;
-      const modelBinding: DashboardModelBinding = {
-        source: "local_model_package",
-        modelFingerprints: result.models
-          .map((model) => model.manifest.manifestFingerprint)
-          .sort(),
-        componentCount: result.metadata.components.length,
-        ...(result.metadata.pipelineStrategy === undefined
-          ? {}
-          : { pipelineStrategy: result.metadata.pipelineStrategy }),
-        speculativeFamilies: families,
-      };
+      const modelBinding = createImportedModelBinding(result);
       changeConfig({
         ...config,
         modelBinding,
@@ -590,10 +587,21 @@ export function App(): React.JSX.Element {
     }
   }, [changeConfig, config]);
 
-  const clearModelPackage = useCallback(() => {
-    const { modelBinding: _binding, ...withoutBinding } = config;
-    changeConfig(withoutBinding);
+  const selectBuiltinModel = useCallback((
+    preset: DashboardModelPreset,
+  ) => {
+    changeConfig({
+      ...config,
+      modelBinding: createBuiltinModelBinding(preset),
+      mode: "serving",
+      serving: {
+        ...config.serving,
+        decodeMode: "target_only",
+        useExpertCache: false,
+      },
+    });
     setModelPackage({});
+    setTokenTrace({});
   }, [changeConfig, config]);
 
   const reset = useCallback(() => {
@@ -1303,7 +1311,7 @@ export function App(): React.JSX.Element {
                     config={config}
                     modelPackage={modelPackage}
                     onModelPackageFiles={importLocalModelPackage}
-                    onClearModelPackage={clearModelPackage}
+                    onBuiltinModel={selectBuiltinModel}
                     customScenario={customScenario}
                     disabled={runState.status === "running"}
                     onChange={changeConfig}
@@ -1967,7 +1975,7 @@ function ConfigurationPanel({
   config,
   modelPackage,
   onModelPackageFiles,
-  onClearModelPackage,
+  onBuiltinModel,
   customScenario,
   disabled,
   onChange,
@@ -1991,7 +1999,7 @@ function ConfigurationPanel({
     files: readonly File[],
     label: string,
   ) => void;
-  readonly onClearModelPackage: () => void;
+  readonly onBuiltinModel: (preset: DashboardModelPreset) => void;
   readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
   readonly onChange: (config: DashboardRunConfig) => void;
@@ -2032,6 +2040,9 @@ function ConfigurationPanel({
     config.scenarioName,
   ]);
   const setMode = (mode: WorkloadMode) => onChange({ ...config, mode });
+  const selectedModelValue = config.modelBinding?.source === "builtin_model"
+    ? config.modelBinding.targetModelFingerprint.replace(/^builtin:/, "")
+    : "local";
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
       <div className="configuration-scroll">
@@ -2042,15 +2053,17 @@ function ConfigurationPanel({
 
         <div className="mb-4 border-y border-zinc-200 py-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-zinc-600">
-              Model package
+            <span className="text-xs font-semibold text-zinc-700">
+              Model
             </span>
-            <Badge variant={config.modelBinding ? "success" : "neutral"}>
+            <Badge variant={config.modelBinding ? "success" : "danger"}>
               {modelPackage.importing
                 ? "analyzing"
-                : config.modelBinding
-                  ? "bound"
-                  : "unbound"}
+                : config.modelBinding?.source === "local_model_package"
+                  ? "local ONNX"
+                  : config.modelBinding
+                    ? "built-in"
+                    : "synthetic"}
             </Badge>
           </div>
           <input
@@ -2084,81 +2097,76 @@ function ConfigurationPanel({
               }
             }}
           />
+          <Select
+            value={selectedModelValue}
+            disabled={disabled || modelPackage.importing}
+            onValueChange={(value) => {
+              if (value !== "local") {
+                onBuiltinModel(value as DashboardModelPreset);
+              }
+            }}
+          >
+            <SelectTrigger aria-label="Model">
+              <SelectValue placeholder="Select a model" />
+            </SelectTrigger>
+            <SelectContent>
+              {DASHBOARD_MODEL_PRESETS.map((preset) => (
+                <SelectItem key={preset} value={preset}>
+                  {createBuiltinModelBinding(preset).displayName}
+                </SelectItem>
+              ))}
+              {config.modelBinding?.source === "local_model_package"
+                ? (
+                    <SelectItem value="local">
+                      {config.modelBinding.displayName} (local)
+                    </SelectItem>
+                  )
+                : null}
+            </SelectContent>
+          </Select>
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="gap-1 whitespace-nowrap px-2 text-xs"
+              disabled={disabled || modelPackage.importing}
+              onClick={() => modelDirectoryInput.current?.click()}
+            >
+              <FolderOpen className="size-4" />
+              Import folder
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="gap-1 whitespace-nowrap px-2 text-xs"
+              disabled={disabled || modelPackage.importing}
+              onClick={() => modelFilesInput.current?.click()}
+            >
+              <Upload className="size-4" />
+              Import files
+            </Button>
+          </div>
           {config.modelBinding
             ? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <Workflow className="size-4 shrink-0 text-emerald-700" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-semibold text-zinc-800">
-                      {modelPackage.label ?? "Embedded model package"}
+                <div className="mt-2 flex min-w-0 items-start gap-2 text-[11px] text-zinc-500">
+                  <Workflow className="mt-0.5 size-3.5 shrink-0 text-emerald-700" />
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-zinc-800">
+                      {config.modelBinding.displayName} ·{" "}
+                      {formatLargeCount(config.modelBinding.totalParameters)} params
                     </div>
-                    <div className="truncate text-[11px] text-zinc-500">
-                      {modelPackage.result
-                        ? `${modelPackage.result.models.length} ONNX · ${modelPackage.result.metadata.components.length} components`
-                        : `${config.modelBinding.modelFingerprints.length} ONNX · ${config.modelBinding.componentCount} components`}
-                    </div>
-                    <div className="truncate text-[11px] text-zinc-500">
-                      {availableSpeculativeFamilies.length > 0
-                        ? `Spec: ${availableSpeculativeFamilies.join(", ")}`
-                        : "Target-only pipeline"}
+                    <div className="truncate">
+                      {formatBytes(config.modelBinding.weightBytes)} weights ·{" "}
+                      {formatFlops(
+                        config.modelBinding.executionProfile.forwardFlopsPerToken,
+                      )} / token
                     </div>
                   </div>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Replace model folder"
-                        disabled={disabled || modelPackage.importing}
-                        onClick={() => modelDirectoryInput.current?.click()}
-                      >
-                        <FolderOpen className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Replace model folder</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Remove model binding"
-                        disabled={disabled || modelPackage.importing}
-                        onClick={onClearModelPackage}
-                      >
-                        <X className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Remove model binding</TooltipContent>
-                  </Tooltip>
                 </div>
               )
-            : (
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={disabled || modelPackage.importing}
-                    onClick={() => modelDirectoryInput.current?.click()}
-                  >
-                    <FolderOpen className="size-4" />
-                    Folder
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={disabled || modelPackage.importing}
-                    onClick={() => modelFilesInput.current?.click()}
-                  >
-                    <Upload className="size-4" />
-                    Files
-                  </Button>
-                </div>
-              )}
+            : null}
           {modelPackage.result
             && (
               modelPackage.result.metadata.edges.length > 0
@@ -2226,7 +2234,10 @@ function ConfigurationPanel({
                         }
                       }}
                     >
-                      <SelectTrigger className="min-w-0 flex-1">
+                      <SelectTrigger
+                        className="min-w-0 flex-1"
+                        aria-label="Device topology"
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -3473,19 +3484,27 @@ function Results({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
-        <div className="text-xs text-zinc-500">
-          {result.topology.planSteps.toLocaleString()} frozen-plan steps ·{" "}
-          {result.topology.operationCounts.compute.toLocaleString()} compute ·{" "}
-          {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
-          {result.topology.operationCounts.collective.toLocaleString()} collective
-          {result.topology.operationCounts.collective > 0
-            ? (
-                <>
-                  {" "}({result.topology.operationCounts.allReduce.toLocaleString()} all-reduce ·{" "}
-                  {result.topology.operationCounts.allToAll.toLocaleString()} all-to-all)
-                </>
-              )
-            : null}
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-bold">
+            {result.model?.name ?? "Synthetic expert-cache workload"}
+          </h1>
+          <div className="mt-1 text-xs text-zinc-500">
+            {result.model
+              ? (
+                  <>
+                    {formatLargeCount(result.model.totalParameters)} params ·{" "}
+                    {formatBytes(result.model.weightBytes)} weights ·{" "}
+                    {result.scenario.id}
+                  </>
+                )
+              : `${result.scenario.id} · no model timing bound`}
+          </div>
+          <div className="mt-0.5 text-[11px] text-zinc-400">
+            {result.topology.planSteps.toLocaleString()} plan steps ·{" "}
+            {result.topology.operationCounts.compute.toLocaleString()} compute ·{" "}
+            {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
+            {result.topology.operationCounts.collective.toLocaleString()} collective
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {artifact
@@ -4338,8 +4357,9 @@ function ModelPackageOverview({
           This is a batch-1 algebraic ceiling from declared hot-memory
           bandwidth divided by active model weights. It assumes perfect
           sharding and ignores compute, KV, activations, communication,
-          scheduling, and kernel overhead. The selected runtime simulation does
-          not yet bind imported ONNX operator work into its timing model.
+          scheduling, and kernel overhead. Runtime timing binds the
+          architecture-derived active attention and FFN weight streams, but
+          does not claim per-operator kernel calibration.
           Multi-model packages report ceilings per component until an execution
           schedule defines component invocation rates.
         </p>
@@ -4674,11 +4694,11 @@ function servingMetrics(result: DashboardResult) {
       icon: <Gauge className="size-4 text-sky-700" />,
     },
     {
-      label: "Throughput",
+      label: "Aggregate throughput",
       value: formatRate(metrics.throughputTokensPerSecond),
       detail: speculative
         ? `${metrics.committedTokensPerTargetForward.toFixed(2)} tokens / target`
-        : `${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
+        : `${metrics.requests} requests · ${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
     {

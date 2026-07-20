@@ -305,8 +305,13 @@ function parseModelBinding(
   const binding = requireRecord(input, "modelBinding");
   assertOnlyKeys(binding, [
     "source",
+    "displayName",
     "modelFingerprints",
+    "targetModelFingerprint",
     "componentCount",
+    "totalParameters",
+    "weightBytes",
+    "executionProfile",
     "pipelineStrategy",
     "speculativeFamilies",
   ], "modelBinding");
@@ -335,18 +340,82 @@ function parseModelBinding(
   return {
     source: requireEnum(
       binding.source,
-      ["local_model_package"] as const,
+      ["builtin_model", "local_model_package"] as const,
       "modelBinding source",
     ),
+    displayName: requireString(
+      binding.displayName,
+      "modelBinding displayName",
+    ),
     modelFingerprints,
+    targetModelFingerprint: requireString(
+      binding.targetModelFingerprint,
+      "modelBinding targetModelFingerprint",
+    ),
     componentCount: requireInteger(
       binding.componentCount,
       0,
       512,
       "modelBinding componentCount",
     ),
+    totalParameters: requireInteger(
+      binding.totalParameters,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "modelBinding totalParameters",
+    ),
+    weightBytes: requireInteger(
+      binding.weightBytes,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "modelBinding weightBytes",
+    ),
+    executionProfile: parseModelExecutionProfile(binding.executionProfile),
     ...(pipelineStrategy === undefined ? {} : { pipelineStrategy }),
     speculativeFamilies,
+  };
+}
+
+function parseModelExecutionProfile(
+  input: unknown,
+): NonNullable<
+  DashboardRunConfig["modelBinding"]
+>["executionProfile"] {
+  const profile = requireRecord(input, "modelBinding executionProfile");
+  assertOnlyKeys(profile, [
+    "modelId",
+    "modelName",
+    "attentionWeightBytesPerToken",
+    "ffnWeightBytesPerToken",
+    "forwardFlopsPerToken",
+  ], "modelBinding executionProfile");
+  return {
+    modelId: requireString(
+      profile.modelId,
+      "modelBinding executionProfile modelId",
+    ),
+    modelName: requireString(
+      profile.modelName,
+      "modelBinding executionProfile modelName",
+    ),
+    attentionWeightBytesPerToken: requireInteger(
+      profile.attentionWeightBytesPerToken,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "modelBinding executionProfile attentionWeightBytesPerToken",
+    ),
+    ffnWeightBytesPerToken: requireInteger(
+      profile.ffnWeightBytesPerToken,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "modelBinding executionProfile ffnWeightBytesPerToken",
+    ),
+    forwardFlopsPerToken: requireInteger(
+      profile.forwardFlopsPerToken,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "modelBinding executionProfile forwardFlopsPerToken",
+    ),
   };
 }
 
