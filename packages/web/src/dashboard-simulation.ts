@@ -1,6 +1,8 @@
 import {
   buildScenarioPreset,
+  buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
+  defaultSpeculativeEligibility,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyWorkload,
@@ -61,7 +63,8 @@ function runSpeculative(
   const capacityTokens = initialTokenLength + outputTokens + draftWidth;
   const first = clamp(config.speculative.firstPositionAcceptance, 0.05, 0.99);
   const result = simulateSpeculativeWorkload({
-    family: "mtp",
+    family: config.speculative.family,
+    eligibility: defaultSpeculativeEligibility(config.speculative.family),
     initialTokenLength,
     outputTokenCount: outputTokens,
     maxAdditionalTokens: draftWidth,
@@ -73,23 +76,11 @@ function runSpeculative(
       ),
       seed: clampInteger(config.seed, 0, 0xffff_ffff),
     },
-    stateGroups: [
-      {
-        id: "target-kv",
-        owner: "target",
-        capacityTokens,
-        rollbackProtection: { kind: "non_destructive_tail" },
-      },
-      {
-        id: "mtp-state",
-        owner: "proposer",
-        capacityTokens,
-        rollbackProtection: {
-          kind: "bounded_snapshot",
-          maxRollbackTokens: draftWidth,
-        },
-      },
-    ],
+    stateGroups: buildSpeculativeStateGroups(
+      config.speculative.family,
+      capacityTokens,
+      draftWidth,
+    ),
     pagedKv: {
       pageSizeTokens: 16,
       bytesPerToken: 64 * 1024,
@@ -99,6 +90,8 @@ function runSpeculative(
   return {
     result,
     dashboard: {
+      family: result.family,
+      support: result.familyContract.support,
       metrics: result.metrics,
       iterations: result.iterations,
       finalTokenLength: result.finalTokenLength,

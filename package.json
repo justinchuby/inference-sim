@@ -5,7 +5,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev:web": "pnpm --filter @inference-sim/web dev",
-    "test": "pnpm -r test",
+    "test": "pnpm --filter @inference-sim/core build && pnpm -r test",
     "sim": "node packages/cli/dist/main.js"
   }
 }

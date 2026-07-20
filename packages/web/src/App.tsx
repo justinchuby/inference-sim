@@ -62,11 +62,24 @@ const SCENARIOS: ReadonlyArray<{
   { value: "multi-node", label: "Multi-node" },
 ];
 
+const SPECULATIVE_FAMILIES: ReadonlyArray<{
+  readonly value: DashboardRunConfig["speculative"]["family"];
+  readonly label: string;
+}> = [
+  { value: "prompt_lookup", label: "Prompt lookup" },
+  { value: "draft_model", label: "Draft model" },
+  { value: "mtp", label: "MTP" },
+  { value: "eagle3", label: "EAGLE-3" },
+  { value: "shared_kv", label: "Shared KV" },
+  { value: "self_speculative", label: "Self speculative (design)" },
+];
+
 const DEFAULT_CONFIG: DashboardRunConfig = {
   scenarioName: "multi-gpu",
   mode: "speculative",
   seed: 42,
   speculative: {
+    family: "mtp",
     outputTokens: 128,
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -307,6 +320,30 @@ function ConfigurationPanel({
           <TabsTrigger value="expert-cache">Expert cache</TabsTrigger>
         </TabsList>
         <TabsContent value="speculative" className="space-y-5">
+          <Field label="Proposer family">
+            <Select
+              value={config.speculative.family}
+              disabled={disabled}
+              onValueChange={(family) => onChange({
+                ...config,
+                speculative: {
+                  ...config.speculative,
+                  family: family as DashboardRunConfig["speculative"]["family"],
+                },
+              })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SPECULATIVE_FAMILIES.map((family) => (
+                  <SelectItem key={family.value} value={family.value}>
+                    {family.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
           <SliderField
             label="Output tokens"
             value={config.speculative.outputTokens}
@@ -438,16 +475,31 @@ function Results({ result }: { readonly result: DashboardResult }): React.JSX.El
           {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
           {result.topology.operationCounts.collective.toLocaleString()} collective
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge variant="warning">
-              {result.topology.confidence} cost model
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-72">
-            {result.topology.assumptions[0]}
-          </TooltipContent>
-        </Tooltip>
+        <div className="flex items-center gap-2">
+          {result.speculative
+            ? (
+                <Badge variant={result.speculative.support === "design_only"
+                  ? "warning"
+                  : "neutral"}
+                >
+                  {result.speculative.family.replaceAll("_", " ")}
+                  {result.speculative.support === "design_only"
+                    ? " · design only"
+                    : ""}
+                </Badge>
+              )
+            : null}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="warning">
+                {result.topology.confidence} cost model
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-72">
+              {result.topology.assumptions[0]}
+            </TooltipContent>
+          </Tooltip>
+        </div>
       </div>
       <section className="metric-grid" aria-label="Run metrics">
         {metrics.map((metric) => (

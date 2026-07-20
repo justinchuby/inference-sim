@@ -7,6 +7,7 @@ const base: DashboardRunConfig = {
   mode: "speculative",
   seed: 42,
   speculative: {
+    family: "mtp",
     outputTokens: 64,
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
@@ -26,10 +27,30 @@ describe("simulateDashboard", () => {
 
     expect(result.scenario.deviceCount).toBe(3);
     expect(result.speculative?.finalTokenLength).toBe(2112);
+    expect(result.speculative?.family).toBe("mtp");
     expect(result.speculative?.metrics.kvPagesAllocated).toBeGreaterThan(0);
     expect(result.topology.confidence).toBe("heuristic");
     expect(result.topology.metrics.totalDurationNs).toBeGreaterThan(0);
     expect(result.topology.operationCounts.collective).toBeGreaterThan(0);
+  });
+
+  it("runs every selectable proposer family through the shared core contract", () => {
+    const families = [
+      "prompt_lookup",
+      "draft_model",
+      "mtp",
+      "eagle3",
+      "shared_kv",
+      "self_speculative",
+    ] as const;
+    for (const family of families) {
+      const result = simulateDashboard({
+        ...base,
+        speculative: { ...base.speculative, family },
+      });
+      expect(result.speculative?.family).toBe(family);
+      expect(result.speculative?.finalTokenLength).toBe(2112);
+    }
   });
 
   it("runs deterministic expert cache simulation", () => {

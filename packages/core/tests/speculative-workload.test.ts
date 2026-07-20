@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SpeculativeWorkloadError,
+  defaultSpeculativeEligibility,
   simulateSpeculativeWorkload,
   type SpeculativeStateGroupConfig,
   type SpeculativeWorkloadConfig,
@@ -10,6 +11,7 @@ const stateGroups: readonly SpeculativeStateGroupConfig[] = [
   {
     id: "target-csa",
     owner: "target",
+    role: "target_aux",
     capacityTokens: 256,
     rollbackProtection: {
       kind: "bounded_snapshot",
@@ -25,14 +27,31 @@ const stateGroups: readonly SpeculativeStateGroupConfig[] = [
   {
     id: "mtp-kv",
     owner: "proposer",
-    capacityTokens: 256,
-    rollbackProtection: { kind: "non_destructive_tail" },
+    role: "sidecar_kv",
+    lifetime: "proposal_local",
+    capacityTokens: 4,
+    rollbackProtection: {
+      kind: "bounded_snapshot",
+      maxRollbackTokens: 4,
+    },
+  },
+  {
+    id: "mtp-recurrent",
+    owner: "proposer",
+    role: "recurrent_state",
+    lifetime: "proposal_local",
+    capacityTokens: 4,
+    rollbackProtection: {
+      kind: "bounded_snapshot",
+      maxRollbackTokens: 4,
+    },
   },
 ];
 
 function replayConfig(): SpeculativeWorkloadConfig {
   return {
     family: "mtp",
+    eligibility: defaultSpeculativeEligibility("mtp"),
     initialTokenLength: 20,
     outputTokenCount: 10,
     maxAdditionalTokens: 4,
@@ -81,7 +100,11 @@ describe("simulateSpeculativeWorkload", () => {
       1 / 3,
     ]);
     expect(
-      result.stateGroups.every((group) => group.logicalLength === 30),
+      result.stateGroups.every((group) => (
+        group.logicalLength === (
+          group.lifetime === "committed_prefix" ? 30 : 0
+        )
+      )),
     ).toBe(true);
   });
 
@@ -120,7 +143,11 @@ describe("simulateSpeculativeWorkload", () => {
     expect(result.metrics.kvFinalReservedBytes).toBe(8 * 4 * 8);
     expect(
       result.stateGroups.every(
-        (group) => group.logicalLength === result.pagedKv?.snapshot.logicalTokenLength,
+        (group) => group.logicalLength === (
+          group.lifetime === "committed_prefix"
+            ? result.pagedKv?.snapshot.logicalTokenLength
+            : 0
+        ),
       ),
     ).toBe(true);
   });

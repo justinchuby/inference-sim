@@ -675,6 +675,22 @@ interface ScenarioParts {
 }
 
 function scenario(parts: ScenarioParts): SimulationScenario {
+  const rankedDevices = new Set(
+    parts.groups.flatMap((entry) => (
+      entry.orderedRanks.map((rank) => rank.deviceId)
+    )),
+  );
+  const hostGroups = parts.devices
+    .filter((candidate) => (
+      candidate.kind === "cpu" && !rankedDevices.has(candidate.id)
+    ))
+    .map((candidate): CommunicatorGroupSpec => ({
+      id: `host-control:${candidate.id}`,
+      orderedRanks: [{
+        rankId: `host-rank:${candidate.id}`,
+        deviceId: candidate.id,
+      }],
+    }));
   return {
     schemaVersion: SCENARIO_SCHEMA_VERSION,
     id: parts.id,
@@ -684,7 +700,7 @@ function scenario(parts: ScenarioParts): SimulationScenario {
     links: parts.links ?? [],
     placements: parts.placements,
     transfers: parts.transfers ?? [],
-    groups: parts.groups,
+    groups: [...parts.groups, ...hostGroups],
     workload: {
       batchSize: 1,
       inputSequenceLength: 2048,
@@ -740,7 +756,9 @@ function device(
     kind,
     executionProvider,
     memoryDomainIds,
-    capabilities,
+    capabilities: kind === "cpu" && !capabilities.includes("lookup")
+      ? [...capabilities, "lookup"]
+      : capabilities,
     supportedDtypes: ["fp16", "fp8", "int8"],
     maxConcurrentCompute: 1,
     provenance: HEURISTIC,

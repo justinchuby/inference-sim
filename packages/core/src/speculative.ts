@@ -1,5 +1,19 @@
 export type SpeculativeStateOwner = "target" | "proposer";
 
+export type SpeculativeStateRole =
+  | "target_kv"
+  | "target_aux"
+  | "draft_kv"
+  | "sidecar_kv"
+  | "recurrent_state"
+  | "shared_kv_lease"
+  | "early_exit_state";
+
+export type SpeculativeStateLifetime =
+  | "committed_prefix"
+  | "proposal_local"
+  | "borrowed";
+
 export type RollbackProtection =
   | { readonly kind: "non_destructive_tail" }
   | {
@@ -10,6 +24,8 @@ export type RollbackProtection =
 export interface SpeculativeStateGroupConfig {
   readonly id: string;
   readonly owner: SpeculativeStateOwner;
+  readonly role?: SpeculativeStateRole;
+  readonly lifetime?: SpeculativeStateLifetime;
   readonly capacityTokens: number;
   readonly rollbackProtection: RollbackProtection;
 }
@@ -17,6 +33,8 @@ export interface SpeculativeStateGroupConfig {
 export interface SpeculativeStateGroupSnapshot {
   readonly id: string;
   readonly owner: SpeculativeStateOwner;
+  readonly role: SpeculativeStateRole;
+  readonly lifetime: SpeculativeStateLifetime;
   readonly logicalLength: number;
   readonly highWaterLength: number;
   readonly capacityTokens: number;
@@ -43,6 +61,8 @@ export interface SpeculativeIterationResult {
 interface MutableStateGroup {
   id: string;
   owner: SpeculativeStateOwner;
+  role: SpeculativeStateRole;
+  lifetime: SpeculativeStateLifetime;
   logicalLength: number;
   highWaterLength: number;
   capacityTokens: number;
@@ -98,7 +118,11 @@ export class SpeculativeTransactionSimulator {
         );
       }
       assertNonNegativeSafeInteger(config.capacityTokens, `${config.id} capacity`);
-      if (config.capacityTokens < initialTokenLength) {
+      const lifetime = config.lifetime ?? "committed_prefix";
+      if (
+        lifetime === "committed_prefix"
+        && config.capacityTokens < initialTokenLength
+      ) {
         throw new SpeculativeProtocolError(
           `${config.id} capacity ${config.capacityTokens} is below initial length ${initialTokenLength}`,
         );
@@ -107,8 +131,16 @@ export class SpeculativeTransactionSimulator {
       this.groups.set(config.id, {
         id: config.id,
         owner: config.owner,
-        logicalLength: initialTokenLength,
-        highWaterLength: initialTokenLength,
+        role: config.role ?? (
+          config.owner === "target" ? "target_kv" : "draft_kv"
+        ),
+        lifetime,
+        logicalLength: lifetime === "committed_prefix"
+          ? initialTokenLength
+          : 0,
+        highWaterLength: lifetime === "committed_prefix"
+          ? initialTokenLength
+          : 0,
         capacityTokens: config.capacityTokens,
         rollbackProtection: config.rollbackProtection,
       });
@@ -158,8 +190,16 @@ export class SpeculativeTransactionSimulator {
     );
 
     for (const group of this.groups.values()) {
-      group.logicalLength = candidateLength;
-      group.highWaterLength = Math.max(group.highWaterLength, candidateLength);
+      const candidateGroupLength = group.lifetime === "proposal_local"
+        ? input.draftTokenCount
+        : group.lifetime === "borrowed"
+          ? checkpoint.baseTokenLength
+          : candidateLength;
+      group.logicalLength = candidateGroupLength;
+      group.highWaterLength = Math.max(
+        group.highWaterLength,
+        candidateGroupLength,
+      );
     }
 
     // Restore is anchored to this checkpoint, never to a naked token length.
@@ -174,8 +214,13 @@ export class SpeculativeTransactionSimulator {
     // target-authoritative. It is a new state write after restore, not a cursor
     // increase that resurrects a stale speculative slot.
     for (const group of this.groups.values()) {
-      group.logicalLength = finalTokenLength;
-      group.highWaterLength = Math.max(group.highWaterLength, finalTokenLength);
+      group.logicalLength = group.lifetime === "committed_prefix"
+        ? finalTokenLength
+        : 0;
+      group.highWaterLength = Math.max(
+        group.highWaterLength,
+        group.logicalLength,
+      );
     }
     this.currentTokenLength = finalTokenLength;
     this.generation++;
@@ -213,15 +258,17 @@ export class SpeculativeTransactionSimulator {
     finalTokenLength: number,
   ): void {
     for (const group of this.groups.values()) {
-      if (
-        candidateLength > group.capacityTokens
-        || finalTokenLength > group.capacityTokens
-      ) {
+      const requiredCapacity = group.lifetime === "proposal_local"
+        ? rollbackHorizon
+        : Math.max(candidateLength, finalTokenLength);
+      if (requiredCapacity > group.capacityTokens) {
         throw new SpeculativeProtocolError(
           `${group.id} capacity ${group.capacityTokens} cannot hold candidate/final length`,
         );
       }
       if (
+        group.lifetime !== "borrowed"
+        &&
         group.rollbackProtection.kind === "bounded_snapshot"
         && rollbackHorizon > group.rollbackProtection.maxRollbackTokens
       ) {
@@ -251,20 +298,30 @@ export class SpeculativeTransactionSimulator {
     }
     for (const group of this.groups.values()) {
       const checkpointLength = checkpoint.lengths.get(group.id);
+      const expectedCheckpointLength = group.lifetime === "committed_prefix"
+        ? checkpoint.baseTokenLength
+        : 0;
       if (
         checkpointLength === undefined
-        || checkpointLength !== checkpoint.baseTokenLength
+        || checkpointLength !== expectedCheckpointLength
       ) {
         throw new SpeculativeProtocolError(
           `checkpoint ${checkpoint.id} has inconsistent state for ${group.id}`,
         );
       }
-      if (acceptedPrefixLength > group.logicalLength) {
+      if (
+        group.lifetime === "committed_prefix"
+        && acceptedPrefixLength > group.logicalLength
+      ) {
         throw new SpeculativeProtocolError(
           `restore prefix ${acceptedPrefixLength} exceeds ${group.id} candidate length ${group.logicalLength}`,
         );
       }
-      group.logicalLength = acceptedPrefixLength;
+      group.logicalLength = group.lifetime === "proposal_local"
+        ? 0
+        : group.lifetime === "borrowed"
+          ? 0
+          : acceptedPrefixLength;
     }
   }
 
@@ -274,7 +331,10 @@ export class SpeculativeTransactionSimulator {
 
   private assertInvariants(): void {
     for (const group of this.groups.values()) {
-      if (group.logicalLength !== this.currentTokenLength) {
+      const expectedLength = group.lifetime === "committed_prefix"
+        ? this.currentTokenLength
+        : 0;
+      if (group.logicalLength !== expectedLength) {
         throw new SpeculativeProtocolError(
           `${group.id} length ${group.logicalLength} diverges from committed length ${this.currentTokenLength}`,
         );

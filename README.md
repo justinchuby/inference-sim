@@ -33,6 +33,12 @@ Phase 2 is in progress:
 
 Phase 3 has an initial speculative workload slice:
 
+- revisioned family contracts for prompt lookup, draft model, MTP, EAGLE-3,
+  shared-KV, and design-only self-speculative execution;
+- fail-closed eligibility for proposer availability, target KV, grammar,
+  decoding mode, hidden outputs, shared-KV groups, and early-exit layers;
+- committed-prefix, proposal-local, and borrowed state lifetimes instead of
+  generic proposer KV;
 - token-trace replay or seeded conditional first-mismatch acceptance;
 - exact output-budget and target-only final-length parity;
 - accepted-prefix, correction/bonus, rejection, and efficiency metrics; and
@@ -45,12 +51,16 @@ Phase 3 has an initial speculative workload slice:
   replacement, deterministic LRU eviction, asynchronous prefetch, and
   independent trace replay; and
 - speculative and expert-cache traces compiled onto all six topology families
-  with replay-verified resource utilization and relative comparisons.
+  with replay-verified resource utilization and relative comparisons; and
+- a six-proposer by six-device-topology execution/replay matrix with
+  target-only final-state differential checks.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
 speculative and expert-cache controls, modeled latency/throughput, memory,
 resource-utilization and caching charts, and a recent event inspector.
+The speculative controls use the shared core family contract; design-only
+self-speculative results are labeled explicitly.
 
 ## Direction
 
@@ -64,10 +74,11 @@ distributed-runtime contracts. Planned scenarios cover:
 - unified memory; and
 - multi-node and heterogeneous execution.
 
-Speculative decoding is a first-class workload model. It will cover
+Speculative decoding is a first-class workload model. It covers
 prompt-lookup, draft-model, MTP, EAGLE-3, shared-KV, and self-speculative
 proposers with target-authoritative verification and composite checkpoint
-restore.
+restore. Self-speculative is modeled as a design projection because the current
+onnx-genai runtime does not expose it as a released proposer mode.
 
 ## Development
 

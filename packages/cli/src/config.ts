@@ -76,6 +76,22 @@ export function optionalNumber(
   return value;
 }
 
+export function optionalBoolean(
+  record: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+  path: string,
+): boolean {
+  const value = record[key];
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${path}.${key} must be a boolean`);
+  }
+  return value;
+}
+
 export function requireNumberArray(
   record: Record<string, unknown>,
   key: string,

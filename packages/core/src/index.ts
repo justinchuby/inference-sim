@@ -63,8 +63,23 @@ export {
   type SpeculativeIterationResult,
   type SpeculativeStateGroupConfig,
   type SpeculativeStateGroupSnapshot,
+  type SpeculativeStateLifetime,
   type SpeculativeStateOwner,
+  type SpeculativeStateRole,
 } from "./speculative.js";
+export {
+  SPECULATIVE_FAMILY_CONTRACT_REVISION,
+  SpeculativeEligibilityError,
+  buildSpeculativeStateGroups,
+  defaultSpeculativeEligibility,
+  speculativeFamilyContract,
+  validateSpeculativeEligibility,
+  validateSpeculativeStateGroups,
+  type SpeculativeEligibility,
+  type SpeculativeFamilyContract,
+  type SpeculativeFamilySupport,
+  type SpeculativeProposerExecution,
+} from "./speculative-family.js";
 export {
   SpeculativeWorkloadError,
   simulateSpeculativeWorkload,

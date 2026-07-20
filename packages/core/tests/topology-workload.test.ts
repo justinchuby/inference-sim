@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   SCENARIO_PRESET_NAMES,
   buildScenarioPreset,
+  buildSpeculativeStateGroups,
   compareTopologyWorkloads,
+  defaultSpeculativeEligibility,
   simulateExpertCacheWorkload,
   simulateSpeculativeWorkload,
   simulateTopologyWorkload,
@@ -95,6 +97,7 @@ describe("topology-aware workload execution", () => {
   it("turns speculative iterations into draft and multi-token target work", () => {
     const speculative = simulateSpeculativeWorkload({
       family: "mtp",
+      eligibility: defaultSpeculativeEligibility("mtp"),
       initialTokenLength: 16,
       outputTokenCount: 8,
       maxAdditionalTokens: 2,
@@ -102,14 +105,7 @@ describe("topology-aware workload execution", () => {
         kind: "replay",
         acceptedDraftTokens: [2, 2, 1],
       },
-      stateGroups: [
-        {
-          id: "target",
-          owner: "target",
-          capacityTokens: 32,
-          rollbackProtection: { kind: "non_destructive_tail" },
-        },
-      ],
+      stateGroups: buildSpeculativeStateGroups("mtp", 32, 2),
     });
     const result = simulateTopologyWorkload(
       buildScenarioPreset("single-gpu-cpu"),

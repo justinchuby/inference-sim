@@ -279,19 +279,34 @@ transaction, and committed output separately.
 
 The scenario declares one of the onnx-genai proposer families:
 
-| Family | State/cost that must be modeled |
-|---|---|
-| `prompt_lookup` | CPU lookup/search cost; no draft-model KV |
-| `draft_model` | Separate model placement, compute, KV, and rewind |
-| `mtp` | Target hidden seed, iterative sidecar compute, proposal-local or accepted-prefix KV, recurrent state |
-| `eagle3` | Three target hidden taps, fused draft state, sidecar KV |
-| `shared_kv` | Assistant compute plus read leases on declared target KV groups |
-| `self_speculative` | Early-exit target layers and completion by remaining layers |
+| Family | onnx-genai status | State/cost modeled |
+|---|---|---|
+| `prompt_lookup` | Current | Host CPU lookup/search; no proposer KV |
+| `draft_model` | Current | Separate model compute plus committed-prefix draft KV and rewind |
+| `mtp` | Current | One target hidden seed, iterative sidecar compute, proposal-local KV and recurrent state |
+| `eagle3` | Current | Three target hidden taps, fused recurrent state, proposal-local sidecar KV |
+| `shared_kv` | Current | One target hidden seed, assistant compute, borrowed target-KV read leases, no proposer KV |
+| `self_speculative` | Design-only | Early-exit target layers and completion by remaining layers |
 
 The simulator validates runtime eligibility such as proposal availability,
 greedy/temperature-zero restrictions, grammar incompatibility, required target
 hidden outputs, and declared KV lifetime. Unsupported combinations fail the
 scenario; they do not silently fall back to target-only timing.
+
+`self_speculative` is not a current `onnx_genai_engine::SpeculativeMode`.
+Scenarios must opt into its design-only contract and declare a valid
+`1 <= early_exit_layer < target_layer_count` split. Results retain that support
+classification so projected behavior cannot be confused with released runtime
+support.
+
+The revisioned core family contract is the only source used by the CLI,
+browser, transaction simulator, and topology compiler. State groups have one
+of three lifetimes:
+
+- `committed_prefix`: target or draft KV restored to checkpoint plus accepted
+  offset;
+- `proposal_local`: sidecar/recurrent state cleared after each verification;
+- `borrowed`: a target-owned shared-KV lease with no proposer allocation.
 
 ### 9.2 Verification Transaction
 
@@ -353,8 +368,13 @@ is a first-mismatch process. The stochastic fallback provides conditional
 ### 9.5 Timing and Resource Interaction
 
 The simulator schedules proposer and target work on their actual assigned
-devices and resources. Draft and target batches may differ. Shared-KV proposers
-hold read leases on target allocations; separate drafts own their own KV.
+resources. Prompt lookup uses a host CPU rank and `lookup` capability. A
+separate draft model uses a declared draft-capable placement. MTP, EAGLE-3,
+shared-KV, and self-speculative work is target-coupled and prefers a
+draft-capable target placement. Family cost scales are explicit heuristic
+coefficients and remain provenance-labeled; they are not throughput claims.
+Draft and target batches may differ. Shared-KV proposers hold read leases on
+target allocations; separate drafts own their own KV.
 
 Verification can use a multi-token target forward only when the selected
 backend capability declares it. Rollback cost distinguishes:
@@ -732,7 +752,7 @@ Remaining Phase 2 work:
 - calibrated roofline and collective models; and
 - request batching and prefill/decode overlap.
 
-Status: in progress. The first executable slice supports deterministic
+Status: in progress. The executable slice supports deterministic
 token-trace replay and seeded conditional first-mismatch acceptance, drives the
 composite checkpoint/restore transaction until an exact output budget is
 committed, checks final logical-length parity against target-only execution,
@@ -748,9 +768,12 @@ asynchronous initial prefetch, stalls, metrics, and independent replay.
 Speculative and expert-cache logical traces now compile into FrozenPlan
 resources across all six required topology families. Link duration uses each
 declared directed link's latency and bandwidth; compute coefficients are
-explicitly heuristic and provenance-tagged. Family-specific eligibility/state,
-measured calibration, adaptive prefetch policy, request batching, and
-differential token-value traces remain.
+explicitly heuristic and provenance-tagged. All six proposer families use
+revisioned family-specific eligibility, state lifetime, execution placement,
+and cost contracts. A 6 proposer x 6 device-topology matrix executes and
+replays each profile with target-only final-state differential checks.
+Measured calibration, adaptive prefetch policy, request batching, and
+differential token-value traces remain; self-speculative remains design-only.
 
 ### Phase 4: Product Surfaces
 
@@ -773,7 +796,7 @@ used device/link and the next topology epoch.
 The initial React browser workbench uses shadcn/Radix controls and Recharts,
 runs bounded core simulations in a dedicated Worker, terminates that Worker on
 cancel, lazy-loads visualization code, and presents topology selection,
-speculative/expert-cache controls, heuristic modeled latency and throughput,
+speculative-family/expert-cache controls, heuristic modeled latency and throughput,
 memory/acceptance/cache/resource-utilization charts, and recent iteration/route
 inspection. Browser compare/search, FrozenPlan file execution/export, ONNX
 import, trace export, and richer progress phases remain.

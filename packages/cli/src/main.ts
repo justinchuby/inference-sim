@@ -2,12 +2,14 @@
 import {
   SCENARIO_PRESET_NAMES,
   analyzeStatic,
+  buildSpeculativeStateGroups,
   buildModelProfile,
   buildScenarioPreset,
   buildTopology,
   calculateScenarioMemoryLedger,
   compareTopologyWorkloads,
   compileTopologyWorkloadPlan,
+  defaultSpeculativeEligibility,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
@@ -31,6 +33,7 @@ import {
   type TopologyWorkloadProfile,
 } from "@inference-sim/core";
 import {
+  optionalBoolean,
   optionalNumber,
   optionalString,
   optionalStringArray,
@@ -300,10 +303,81 @@ function parseSpeculativeConfig(
   const pagedKvConfig = speculative.paged_kv === undefined
     ? undefined
     : requireRecord(speculative.paged_kv, "speculative.paged_kv");
-  return {
-    family: requireFamily(
+  const family = requireFamily(
       requireString(speculative, "family", "speculative"),
-    ),
+  );
+  const eligibilityDefaults = defaultSpeculativeEligibility(family);
+  const eligibilityConfig = speculative.eligibility === undefined
+    ? {}
+    : requireRecord(speculative.eligibility, "speculative.eligibility");
+  const decoding = optionalString(
+    eligibilityConfig,
+    "decoding",
+    eligibilityDefaults.decoding,
+    "speculative.eligibility",
+  );
+  if (decoding !== "greedy" && decoding !== "sampling") {
+    throw new Error(
+      "speculative.eligibility.decoding must be greedy or sampling",
+    );
+  }
+  return {
+    family,
+    eligibility: {
+      proposerAvailable: optionalBoolean(
+        eligibilityConfig,
+        "proposer_available",
+        eligibilityDefaults.proposerAvailable,
+        "speculative.eligibility",
+      ),
+      decoding,
+      grammarActive: optionalBoolean(
+        eligibilityConfig,
+        "grammar_active",
+        eligibilityDefaults.grammarActive,
+        "speculative.eligibility",
+      ),
+      targetKvAvailable: optionalBoolean(
+        eligibilityConfig,
+        "target_kv_available",
+        eligibilityDefaults.targetKvAvailable,
+        "speculative.eligibility",
+      ),
+      targetHiddenOutputCount: optionalNumber(
+        eligibilityConfig,
+        "target_hidden_output_count",
+        eligibilityDefaults.targetHiddenOutputCount,
+        "speculative.eligibility",
+      ),
+      sharedKvGroupCount: optionalNumber(
+        eligibilityConfig,
+        "shared_kv_group_count",
+        eligibilityDefaults.sharedKvGroupCount,
+        "speculative.eligibility",
+      ),
+      ...(family === "self_speculative"
+        ? {
+            targetLayerCount: optionalNumber(
+              eligibilityConfig,
+              "target_layer_count",
+              eligibilityDefaults.targetLayerCount ?? 32,
+              "speculative.eligibility",
+            ),
+            earlyExitLayer: optionalNumber(
+              eligibilityConfig,
+              "early_exit_layer",
+              eligibilityDefaults.earlyExitLayer ?? 16,
+              "speculative.eligibility",
+            ),
+            allowDesignOnly: optionalBoolean(
+              eligibilityConfig,
+              "allow_design_only",
+              eligibilityDefaults.allowDesignOnly ?? false,
+              "speculative.eligibility",
+            ),
+          }
+        : {}),
+    },
     initialTokenLength,
     outputTokenCount,
     maxAdditionalTokens,
@@ -341,23 +415,11 @@ function parseSpeculativeConfig(
           },
         }
       : {}),
-    stateGroups: [
-      {
-        id: "target-kv",
-        owner: "target",
-        capacityTokens,
-        rollbackProtection: { kind: "non_destructive_tail" },
-      },
-      {
-        id: "proposer-state",
-        owner: "proposer",
-        capacityTokens,
-        rollbackProtection: {
-          kind: "bounded_snapshot",
-          maxRollbackTokens: maxAdditionalTokens,
-        },
-      },
-    ],
+    stateGroups: buildSpeculativeStateGroups(
+      family,
+      capacityTokens,
+      maxAdditionalTokens,
+    ),
   };
 }
 

@@ -10,14 +10,14 @@ import {
   type PagedKvSnapshot,
   type PagedKvTraceEvent,
 } from "./paged-kv.js";
-
-export type SpeculativeProposerFamily =
-  | "prompt_lookup"
-  | "draft_model"
-  | "mtp"
-  | "eagle3"
-  | "shared_kv"
-  | "self_speculative";
+import {
+  validateSpeculativeEligibility,
+  validateSpeculativeStateGroups,
+  type SpeculativeEligibility,
+  type SpeculativeFamilyContract,
+  type SpeculativeProposerFamily,
+} from "./speculative-family.js";
+export type { SpeculativeProposerFamily } from "./speculative-family.js";
 
 export type SpeculativeAcceptanceModel =
   | {
@@ -37,6 +37,7 @@ export type SpeculativeAcceptanceModel =
 
 export interface SpeculativeWorkloadConfig {
   readonly family: SpeculativeProposerFamily;
+  readonly eligibility: SpeculativeEligibility;
   readonly initialTokenLength: number;
   readonly outputTokenCount: number;
   readonly maxAdditionalTokens: number;
@@ -88,6 +89,7 @@ export interface SpeculativePagedKvResult {
 
 export interface SpeculativeWorkloadResult {
   readonly family: SpeculativeProposerFamily;
+  readonly familyContract: SpeculativeFamilyContract;
   readonly initialTokenLength: number;
   readonly finalTokenLength: number;
   readonly targetOnlyFinalTokenLength: number;
@@ -108,6 +110,11 @@ export function simulateSpeculativeWorkload(
   config: SpeculativeWorkloadConfig,
 ): SpeculativeWorkloadResult {
   validateConfig(config);
+  const familyContract = validateSpeculativeEligibility(
+    config.family,
+    config.eligibility,
+  );
+  validateSpeculativeStateGroups(config.family, config.stateGroups);
   const transaction = new SpeculativeTransactionSimulator(
     config.initialTokenLength,
     config.stateGroups,
@@ -278,6 +285,7 @@ export function simulateSpeculativeWorkload(
   };
   return {
     family: config.family,
+    familyContract,
     initialTokenLength: config.initialTokenLength,
     finalTokenLength,
     targetOnlyFinalTokenLength,

@@ -5,6 +5,7 @@ import type {
   ScenarioMemoryLedgerEntry,
   SpeculativeWorkloadIteration,
   SpeculativeWorkloadMetrics,
+  SpeculativeProposerFamily,
   TopologyResourceUtilization,
   TopologyWorkloadMetrics,
 } from "@inference-sim/core";
@@ -22,6 +23,7 @@ export interface DashboardRunConfig {
   readonly mode: WorkloadMode;
   readonly seed: number;
   readonly speculative: {
+    readonly family: SpeculativeProposerFamily;
     readonly outputTokens: number;
     readonly draftWidth: number;
     readonly firstPositionAcceptance: number;
@@ -58,6 +60,8 @@ export interface DashboardResult {
     readonly topResources: readonly TopologyResourceUtilization[];
   };
   readonly speculative?: {
+    readonly family: SpeculativeProposerFamily;
+    readonly support: "onnx_genai_current" | "design_only";
     readonly metrics: SpeculativeWorkloadMetrics;
     readonly iterations: readonly SpeculativeWorkloadIteration[];
     readonly finalTokenLength: number;

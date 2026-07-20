@@ -27,14 +27,19 @@ import type {
 import type {
   SpeculativeWorkloadResult,
 } from "./speculative-workload.js";
+import type {
+  SpeculativeProposerExecution,
+} from "./speculative-family.js";
 
-export const TOPOLOGY_COST_MODEL_REVISION = 1;
+export const TOPOLOGY_COST_MODEL_REVISION = 2;
 
 export interface TopologyWorkUnit {
   readonly id: string;
   readonly targetTokenWidth: number;
   readonly committedTokens: number;
   readonly draftTokens: number;
+  readonly proposerExecution?: SpeculativeProposerExecution;
+  readonly proposerCostScale?: number;
   readonly activeExperts: number;
   readonly warmLoadBytes: number;
   readonly coldLoadBytes: number;
@@ -50,6 +55,7 @@ export interface DeviceCapabilityCost {
   readonly attentionNsPerToken: number;
   readonly ffnNsPerToken: number;
   readonly draftNsPerToken: number;
+  readonly lookupNsPerToken: number;
 }
 
 export interface TopologyCostModel {
@@ -116,16 +122,19 @@ export const DEFAULT_TOPOLOGY_COST_MODEL: TopologyCostModel = {
       attentionNsPerToken: 220_000,
       ffnNsPerToken: 300_000,
       draftNsPerToken: 110_000,
+      lookupNsPerToken: 8_000,
     },
     gpu: {
       attentionNsPerToken: 28_000,
       ffnNsPerToken: 38_000,
       draftNsPerToken: 17_000,
+      lookupNsPerToken: 8_000,
     },
     npu: {
       attentionNsPerToken: 22_000,
       ffnNsPerToken: 52_000,
       draftNsPerToken: 24_000,
+      lookupNsPerToken: 8_000,
     },
   },
   activationBytesPerToken: 1024 ** 2,
@@ -148,6 +157,8 @@ export function topologyProfileFromSpeculative(
       ),
       committedTokens: iteration.committedTokens,
       draftTokens: iteration.proposedDraftTokens,
+      proposerExecution: result.familyContract.execution,
+      proposerCostScale: result.familyContract.proposerCostScale,
       activeExperts: 1,
       warmLoadBytes: 0,
       coldLoadBytes: 0,
@@ -228,6 +239,7 @@ export function simulateTopologyWorkload(
       costModel.source,
       "decode-only plan; prefill and request batching are outside this profile",
       "compute costs scale linearly with batch and verified token width",
+      "family-specific proposer multipliers are heuristic and provenance-labeled",
       "transfer duration uses declared directed-link bandwidth and latency",
       "expert-load bytes are evenly sharded across FFN placements",
       "warm and cold expert loads originate in each FFN placement's local host domain",
@@ -288,6 +300,7 @@ export function compareTopologyWorkloads(
 
 class WorkloadPlanCompiler {
   private readonly placements: readonly PartitionPlacement[];
+  private readonly draftPlacements: readonly PartitionPlacement[];
   private readonly rankByDevice = new Map<string, string>();
   private readonly steps: PlanStep[] = [];
   private nextStepId = 0;
@@ -302,6 +315,9 @@ class WorkloadPlanCompiler {
     this.placements = scenario.placements.filter((placement) => (
       placement.requiredCapabilities.includes("attention")
       || placement.requiredCapabilities.includes("ffn")
+    ));
+    this.draftPlacements = scenario.placements.filter((placement) => (
+      placement.requiredCapabilities.includes("draft")
     ));
     for (const group of scenario.groups) {
       for (const rank of group.orderedRanks) {
@@ -340,22 +356,40 @@ class WorkloadPlanCompiler {
       : [this.previousTerminalStepId];
 
     if (unit.draftTokens > 0) {
-      const draftPlacement = this.placements.find((placement) => (
-        this.device(placement.deviceId).capabilities.includes("draft")
-      ));
+      const execution = unit.proposerExecution ?? "separate_model";
+      const capability = execution === "cpu_lookup" ? "lookup" : "draft";
+      const draftPlacement = execution === "cpu_lookup"
+        ? this.hostLookupPlacement()
+        : execution === "separate_model"
+          ? this.draftPlacements[0] ?? this.placements.find((placement) => (
+              this.device(placement.deviceId).capabilities.includes("draft")
+            ))
+          : this.placements.find((placement) => (
+              this.device(placement.deviceId).capabilities.includes("draft")
+              && (
+                placement.requiredCapabilities.includes("attention")
+                || execution === "target_early_exit"
+              )
+            )) ?? this.placements.find((placement) => (
+              this.device(placement.deviceId).capabilities.includes("draft")
+            ));
       if (!draftPlacement) {
         throw new TopologyWorkloadError(
-          `scenario ${this.scenario.id} has no device capable of draft execution`,
+          `scenario ${this.scenario.id} has no device capable of ${execution} execution`,
         );
       }
+      const baseDuration = this.computeDuration(
+        draftPlacement.deviceId,
+        capability,
+        unit.draftTokens,
+        1,
+      );
       const draftStep = this.addCompute(
         draftPlacement,
-        "draft",
-        this.computeDuration(
-          draftPlacement.deviceId,
-          "draft",
-          unit.draftTokens,
+        capability,
+        Math.max(
           1,
+          Math.ceil(baseDuration * (unit.proposerCostScale ?? 1)),
         ),
         entryDependencies,
       );
@@ -600,7 +634,7 @@ class WorkloadPlanCompiler {
 
   private addCompute(
     placement: PartitionPlacement,
-    capability: "attention" | "ffn" | "draft",
+    capability: "attention" | "ffn" | "draft" | "lookup",
     durationNs: number,
     dependencies: readonly number[],
   ): number {
@@ -689,7 +723,7 @@ class WorkloadPlanCompiler {
 
   private computeDuration(
     deviceId: string,
-    capability: "attention" | "ffn" | "draft",
+    capability: "attention" | "ffn" | "draft" | "lookup",
     tokenWidth: number,
     activeExperts: number,
   ): number {
@@ -698,7 +732,9 @@ class WorkloadPlanCompiler {
       ? costs.attentionNsPerToken
       : capability === "ffn"
         ? costs.ffnNsPerToken
-        : costs.draftNsPerToken;
+        : capability === "draft"
+          ? costs.draftNsPerToken
+          : costs.lookupNsPerToken;
     const unshardedDuration = checkedMultiply(
       perToken,
       checkedMultiply(
@@ -712,7 +748,7 @@ class WorkloadPlanCompiler {
       ),
       "compute duration",
     );
-    const tensorDegree = capability === "draft"
+    const tensorDegree = capability === "draft" || capability === "lookup"
       ? 1
       : this.scenario.execution.parallelism.tensor;
     const expertDegree = capability === "ffn"
@@ -722,6 +758,36 @@ class WorkloadPlanCompiler {
       unshardedDuration
       / checkedMultiply(tensorDegree, expertDegree, "compute shard degree"),
     );
+  }
+
+  private hostLookupPlacement(): PartitionPlacement | undefined {
+    const cpu = this.scenario.devices.find((candidate) => (
+      candidate.kind === "cpu" && candidate.capabilities.includes("lookup")
+    ));
+    if (!cpu) {
+      return undefined;
+    }
+    const allocation = this.scenario.placements
+      .flatMap((placement) => placement.allocations)
+      .find((candidate) => (
+        cpu.memoryDomainIds.includes(candidate.domainId)
+        && (
+          candidate.purpose === "staging"
+          || candidate.purpose === "workspace"
+        )
+      ));
+    if (!allocation) {
+      return undefined;
+    }
+    return {
+      partitionId: `host-lookup:${cpu.id}`,
+      deviceId: cpu.id,
+      requiredCapabilities: ["lookup"],
+      allocations: [{
+        ...allocation,
+        purpose: "workspace",
+      }],
+    };
   }
 
   private cacheSourceDomain(targetDomainId: string): string {
@@ -899,6 +965,7 @@ function validateInputs(
     );
     assertPositiveSafeInteger(costs.ffnNsPerToken, `${kind} ffn cost`);
     assertPositiveSafeInteger(costs.draftNsPerToken, `${kind} draft cost`);
+    assertPositiveSafeInteger(costs.lookupNsPerToken, `${kind} lookup cost`);
   }
   for (const unit of profile.units) {
     if (unit.id.length === 0) {
@@ -907,6 +974,17 @@ function validateInputs(
     assertPositiveSafeInteger(unit.targetTokenWidth, `${unit.id} token width`);
     assertPositiveSafeInteger(unit.committedTokens, `${unit.id} committed tokens`);
     assertNonNegativeSafeInteger(unit.draftTokens, `${unit.id} draft tokens`);
+    if (
+      unit.proposerCostScale !== undefined
+      && (
+        !Number.isFinite(unit.proposerCostScale)
+        || unit.proposerCostScale <= 0
+      )
+    ) {
+      throw new TopologyWorkloadError(
+        `${unit.id} proposer cost scale must be positive`,
+      );
+    }
     assertPositiveSafeInteger(unit.activeExperts, `${unit.id} active experts`);
     assertNonNegativeSafeInteger(unit.warmLoadBytes, `${unit.id} warm bytes`);
     assertNonNegativeSafeInteger(unit.coldLoadBytes, `${unit.id} cold bytes`);

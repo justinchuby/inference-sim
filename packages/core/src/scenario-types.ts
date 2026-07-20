@@ -10,7 +10,8 @@ export type ComputeCapability =
   | "collective"
   | "copy"
   | "sampling"
-  | "draft";
+  | "draft"
+  | "lookup";
 
 export interface EvidenceProvenance {
   readonly confidence: ConfidenceClass;
