@@ -1168,14 +1168,17 @@ CLI/browser inputs use versioned YAML or JSON and may reference:
 
 ONNX parsing extracts graph structure, shapes, dtypes, external-data extents,
 operator profiles, and runtime metadata. It does not infer measured throughput.
-Revision-1 `inference-sim/onnx-model` manifests bind the ONNX protobuf and each
+Revision-2 `inference-sim/onnx-model` manifests bind the ONNX protobuf and each
 referenced external-data file by SHA-256, retain canonical initializer names,
 dtypes, dimensions, logical/storage extents, and sorted operator counts, and
 normalize only explicitly published architecture fields. External paths must
 remain inside the model package and every referenced range must fit the actual
 sidecar. Sidecars are streamed for hashing rather than loaded into memory.
 Profile readiness lists every missing architecture field; tensor-name pattern
-matching is not accepted as architecture evidence.
+matching is not accepted as architecture evidence. For MoE, readiness also
+requires active expert count plus routed and shared expert bytes per layer;
+revision 1's dense-only readiness rule is intentionally not accepted as
+equivalent evidence.
 
 Example:
 
@@ -1457,12 +1460,20 @@ It also executes exact-capacity expert-cache workload configs, compiles
 target-only/speculative/expert-cache workloads onto a selected topology, and
 compares one workload deterministically across all six presets.
 The `onnx-inspect` command decodes standard ONNX protobufs through the current
-ONNX 1.20 schema and emits the shared revision-1 model manifest. Optional
+ONNX 1.20 schema and emits the shared revision-2 model manifest. Optional
 onnx-genai fixture manifests, legacy `genai_config.json`, and portable
 inference metadata are normalized without changing their evidence strength.
 Malformed protobufs, sparse/segmented initializers, unsafe external paths,
 truncated sidecars, duplicate identities, inconsistent totals, stale
 revisions, and fingerprint mismatches fail closed.
+The `onnx-static` command resolves a ready manifest into a `ModelProfile` and
+runs the shared static analyzer. Initializer byte and element totals remain
+exact inventory; dominant weight dtype selection, non-expert per-layer
+distribution, dense attention/FFN splitting, and runtime KV/activation dtypes
+are provenance-labeled assumptions. Built-in model presets carry heuristic
+provenance too. MoE expert residency uses explicit per-layer units: PP assigns
+layers, EP shards routed experts, and shared experts remain replicated across
+EP ranks.
 All CLI commands that consume one scenario resolve a shared scenario-target
 grammar: a fixed preset name or `multi-gpu-ring-N` for `N=2..64`. Scenario
 materialization, workload execution, serving, runtime-capture verification,

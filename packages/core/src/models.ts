@@ -36,6 +36,23 @@ function kvPerToken(numKVHeads: number, headDim: number, kvQuant: string): numbe
   return 2 * numKVHeads * headDim * bytesPerParam(kvQuant);
 }
 
+function expertBytesFromParameterBudget(
+  totalParams: number,
+  bytesPerParameter: number,
+  denseBytes: number,
+  numLayers: number,
+  numExperts: number,
+  hasSharedExpert: boolean,
+): number {
+  const expertSlotsPerLayer = numExperts + (hasSharedExpert ? 1 : 0);
+  return Math.max(
+    0,
+    (totalParams * bytesPerParameter - denseBytes)
+      / numLayers
+      / expertSlotsPerLayer,
+  );
+}
+
 export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string) => ModelProfile> = {
   "llama-3-8b": (wq = "fp16", kvq = "fp16") => {
     const headDim = 128;
@@ -53,6 +70,7 @@ export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string
       totalParams: 8e9,
       quantization: { weights: wq as any, kvCache: kvq as any, activations: "fp16" },
       layers: buildLayers(numLayers, attnBytes, ffnBytes, kvPerToken(numKVHeads, headDim, kvq)),
+      provenance: presetProvenance("llama-3-8b"),
     };
   },
 
@@ -72,6 +90,7 @@ export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string
       totalParams: 70e9,
       quantization: { weights: wq as any, kvCache: kvq as any, activations: "fp16" },
       layers: buildLayers(numLayers, attnBytes, ffnBytes, kvPerToken(numKVHeads, headDim, kvq)),
+      provenance: presetProvenance("llama-3-70b"),
     };
   },
 
@@ -82,22 +101,32 @@ export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string
     const numHeads = 48;
     const numKVHeads = 8;
     const intermediate = 16384;
+    const totalParams = 141e9;
     const bpp = bytesPerParam(wq);
     const attnBytes = (hiddenDim * headDim * (numHeads + 2 * numKVHeads) + hiddenDim * hiddenDim) * bpp;
-    const expertBytes = (hiddenDim * intermediate * 3) * bpp;
+    const denseBytes = attnBytes * numLayers;
+    const expertBytes = expertBytesFromParameterBudget(
+      totalParams,
+      bpp,
+      denseBytes,
+      numLayers,
+      8,
+      false,
+    );
     return {
       name: "Mixtral-8x22B",
       architecture: { kind: "moe", numLayers, hiddenDim, numHeads, numKVHeads, vocabSize: 32000, intermediateSize: intermediate },
-      totalParams: 141e9,
+      totalParams,
       quantization: { weights: wq as any, kvCache: kvq as any, activations: "fp16" },
       layers: buildLayers(numLayers, attnBytes, 0, kvPerToken(numKVHeads, headDim, kvq)),
       moe: {
         numExperts: 8,
         activeExpertsPerToken: 2,
-        expertSize: expertBytes,
-        sharedExpertSize: 0,
+        expertBytesPerLayer: expertBytes,
+        sharedExpertBytesPerLayer: 0,
         activationDistribution: { kind: "uniform" },
       },
+      provenance: presetProvenance("mixtral-8x22b"),
     };
   },
 
@@ -108,22 +137,32 @@ export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string
     const numHeads = 128;
     const numKVHeads = 128; // MLA compressed
     const intermediate = 12288;
+    const totalParams = 236e9;
     const bpp = bytesPerParam(wq);
     const attnBytes = (hiddenDim * hiddenDim * 2 + hiddenDim * 512 * 2) * bpp; // MLA
-    const expertBytes = (hiddenDim * intermediate * 3) * bpp;
+    const denseBytes = attnBytes * numLayers;
+    const expertBytes = expertBytesFromParameterBudget(
+      totalParams,
+      bpp,
+      denseBytes,
+      numLayers,
+      160,
+      true,
+    );
     return {
       name: "DeepSeek-V2",
       architecture: { kind: "moe", numLayers, hiddenDim, numHeads, numKVHeads, vocabSize: 102400, intermediateSize: intermediate },
-      totalParams: 236e9,
+      totalParams,
       quantization: { weights: wq as any, kvCache: kvq as any, activations: "fp16" },
       layers: buildLayers(numLayers, attnBytes, 0, kvPerToken(2, 512, kvq)), // MLA compressed KV
       moe: {
         numExperts: 160,
         activeExpertsPerToken: 6,
-        expertSize: expertBytes,
-        sharedExpertSize: (hiddenDim * intermediate * 3) * bpp,
+        expertBytesPerLayer: expertBytes,
+        sharedExpertBytesPerLayer: expertBytes,
         activationDistribution: { kind: "zipf", s: 1.1 },
       },
+      provenance: presetProvenance("deepseek-v2"),
     };
   },
 
@@ -134,25 +173,46 @@ export const MODEL_PRESETS: Record<string, (weightQuant: string, kvQuant: string
     const numHeads = 64;
     const numKVHeads = 4;
     const intermediate = 12288;
+    const totalParams = 235e9;
     const bpp = bytesPerParam(wq);
     const attnBytes = (hiddenDim * headDim * (numHeads + 2 * numKVHeads) + hiddenDim * hiddenDim) * bpp;
-    const expertBytes = (hiddenDim * intermediate * 3) * bpp;
+    const denseBytes = attnBytes * numLayers;
+    const expertBytes = expertBytesFromParameterBudget(
+      totalParams,
+      bpp,
+      denseBytes,
+      numLayers,
+      128,
+      true,
+    );
     return {
       name: "Qwen3-235B-A22B",
       architecture: { kind: "moe", numLayers, hiddenDim, numHeads, numKVHeads, vocabSize: 151936, intermediateSize: intermediate },
-      totalParams: 235e9,
+      totalParams,
       quantization: { weights: wq as any, kvCache: kvq as any, activations: "fp16" },
       layers: buildLayers(numLayers, attnBytes, 0, kvPerToken(numKVHeads, headDim, kvq)),
       moe: {
         numExperts: 128,
         activeExpertsPerToken: 8,
-        expertSize: expertBytes,
-        sharedExpertSize: expertBytes,
+        expertBytesPerLayer: expertBytes,
+        sharedExpertBytesPerLayer: expertBytes,
         activationDistribution: { kind: "zipf", s: 1.05 },
       },
+      provenance: presetProvenance("qwen-3-235b"),
     };
   },
 };
+
+function presetProvenance(preset: string): ModelProfile["provenance"] {
+  return {
+    evidence: "heuristic",
+    source: `built-in preset:${preset}`,
+    assumptions: [
+      "Architecture constants are uncalibrated built-in estimates.",
+      "MoE expert bytes are normalized to the declared total parameter count.",
+    ],
+  };
+}
 
 export function buildModelProfile(preset: string, weightQuant = "fp16", kvQuant = "fp16"): ModelProfile {
   const builder = MODEL_PRESETS[preset];

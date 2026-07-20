@@ -22,6 +22,7 @@ import {
   parseCalibrationDataset,
   parseFrozenPlanArtifact,
   parseSpeculativeTokenTrace,
+  resolveOnnxModelProfile,
   listModelPresets,
   listPresets,
   simulateExpertCacheWorkload,
@@ -45,6 +46,7 @@ import {
   type MemoryPolicyConfig,
   type ParallelismConfig,
   type PipelineConfig,
+  type QuantType,
   type ScenarioPresetName,
   type SimulationScenario,
   type SpeculativeAcceptanceModel,
@@ -231,6 +233,34 @@ export async function runCli(
             true,
           )),
         );
+        return 0;
+      }
+      case "onnx-static": {
+        const config = await loadRequiredConfig(argument, "onnx-static");
+        if (secondArgument === undefined) {
+          throw new Error("onnx-static requires an ONNX model path");
+        }
+        const metadata = thirdArgument === undefined
+          ? undefined
+          : await readConfigFile(thirdArgument);
+        const manifest = await inspectOnnxModel(secondArgument, metadata);
+        const { topology, pipeline, kvCacheQuantization, activationQuantization } =
+          parseOnnxStaticConfig(config);
+        const model = resolveOnnxModelProfile(manifest, {
+          kvCacheQuantization,
+          activationQuantization,
+        });
+        printJson(io, {
+          manifest: {
+            fingerprint: manifest.manifestFingerprint,
+            modelFileName: manifest.source.modelFileName,
+            initializerLogicalBytes:
+              manifest.totals.initializerLogicalBytes,
+            profileReadiness: manifest.profileReadiness,
+          },
+          model,
+          analysis: analyzeStatic(topology, model, pipeline),
+        });
         return 0;
       }
       case "serving": {
@@ -618,6 +648,87 @@ function parseStaticConfig(config: Record<string, unknown>) {
     memory,
   };
   return { topology, model, pipeline };
+}
+
+function parseOnnxStaticConfig(config: Record<string, unknown>) {
+  const hardware = requireRecord(config.hardware, "hardware");
+  const quantization = requireRecord(config.quantization, "quantization");
+  const pipelineConfig = requireRecord(config.pipeline, "pipeline");
+  const parallelismConfig = requireRecord(
+    pipelineConfig.parallelism,
+    "pipeline.parallelism",
+  );
+  const memoryConfig = requireRecord(config.memory, "memory");
+  const topology = buildTopology(
+    requireString(hardware, "preset", "hardware"),
+  );
+  const parallelism: ParallelismConfig = {
+    tensorParallel: requireNumber(
+      parallelismConfig,
+      "tensor_parallel",
+      "pipeline.parallelism",
+    ),
+    pipelineParallel: requireNumber(
+      parallelismConfig,
+      "pipeline_parallel",
+      "pipeline.parallelism",
+    ),
+    expertParallel: requireNumber(
+      parallelismConfig,
+      "expert_parallel",
+      "pipeline.parallelism",
+    ),
+    dataParallel: requireNumber(
+      parallelismConfig,
+      "data_parallel",
+      "pipeline.parallelism",
+    ),
+  };
+  const memory: MemoryPolicyConfig = {
+    kvCacheBudgetFraction: requireNumber(
+      memoryConfig,
+      "kv_cache_budget",
+      "memory",
+    ),
+    expertCacheBudgetFraction: requireNumber(
+      memoryConfig,
+      "expert_cache_budget",
+      "memory",
+    ),
+    pinnedPoolFraction: requireNumber(memoryConfig, "pinned_pool", "memory"),
+    offloadStrategy: requireOffloadStrategy(
+      requireString(memoryConfig, "offload", "memory"),
+    ),
+    prefetchAhead: requireNumber(memoryConfig, "prefetch_ahead", "memory"),
+    pressureThreshold: requireNumber(
+      memoryConfig,
+      "pressure_threshold",
+      "memory",
+    ),
+    reclaimBatchSize: optionalNumber(
+      memoryConfig,
+      "reclaim_batch_size",
+      4,
+      "memory",
+    ),
+  };
+  const pipeline: PipelineConfig = {
+    batchSize: requireNumber(pipelineConfig, "batch_size", "pipeline"),
+    inputSeqLen: requireNumber(pipelineConfig, "input_seq_len", "pipeline"),
+    outputSeqLen: requireNumber(pipelineConfig, "output_seq_len", "pipeline"),
+    parallelism,
+    memory,
+  };
+  return {
+    topology,
+    pipeline,
+    kvCacheQuantization: requireQuantType(
+      optionalString(quantization, "kv_cache", "fp16", "quantization"),
+    ),
+    activationQuantization: requireQuantType(
+      optionalString(quantization, "activations", "fp16", "quantization"),
+    ),
+  };
 }
 
 function parseSpeculativeConfig(
@@ -1488,6 +1599,22 @@ function requireOffloadStrategy(
   return value;
 }
 
+function requireQuantType(value: string): QuantType {
+  const types: readonly QuantType[] = [
+    "fp32",
+    "fp16",
+    "bf16",
+    "fp8",
+    "int8",
+    "int4",
+    "nf4",
+  ];
+  if (!types.includes(value as QuantType)) {
+    throw new Error(`unsupported quantization type ${value}`);
+  }
+  return value as QuantType;
+}
+
 function requireLoadTarget(value: string): ExpertLoadTarget {
   if (value !== "hot" && value !== "warm") {
     throw new Error(`unsupported expert load target ${value}`);
@@ -1517,6 +1644,7 @@ Usage:
   inference-sim expert-cache <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
   inference-sim onnx-inspect <model.onnx> [metadata.yaml|json]
+  inference-sim onnx-static <config.yaml|json> <model.onnx> [metadata.yaml|json]
   inference-sim serving <scenario-target> <config.yaml|json> [calibration.yaml|json]
   inference-sim serving-compare <config.yaml|json> [calibration.yaml|json]
   inference-sim run <scenario-target> <workload.yaml|json> [calibration.yaml|json]

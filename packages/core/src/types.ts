@@ -51,6 +51,13 @@ export interface ModelProfile {
   quantization: Quantization;
   layers: LayerProfile[];
   moe?: MoEProfile;
+  provenance: ModelProfileProvenance;
+}
+
+export interface ModelProfileProvenance {
+  evidence: "exact" | "calibrated" | "heuristic";
+  source: string;
+  assumptions: readonly string[];
 }
 
 export interface ModelArchitecture {
@@ -66,8 +73,10 @@ export interface ModelArchitecture {
 export interface MoEProfile {
   numExperts: number;
   activeExpertsPerToken: number;
-  expertSize: number;
-  sharedExpertSize: number;
+  /** Weight bytes for one routed expert in one transformer layer. */
+  expertBytesPerLayer: number;
+  /** Weight bytes for the shared expert in one transformer layer. */
+  sharedExpertBytesPerLayer: number;
   activationDistribution: ExpertDistribution;
 }
 

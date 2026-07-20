@@ -149,6 +149,78 @@ describe("CLI", () => {
     ]);
   });
 
+  it("runs static analysis from an inspected ONNX package", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-static-"));
+    const modelPath = join(directory, "model.onnx");
+    const metadataPath = join(directory, "manifest.json");
+    const configPath = join(directory, "config.json");
+    await writeFile(modelPath, tinyOnnxModel("model.onnx.data", 16));
+    await writeFile(
+      join(directory, "model.onnx.data"),
+      new Uint8Array(16).fill(3),
+    );
+    await writeFile(metadataPath, JSON.stringify({
+      architecture: "TinyCausalLM",
+      vocab_size: 8,
+      hidden_size: 2,
+      intermediate_size: 4,
+      num_hidden_layers: 1,
+      num_attention_heads: 1,
+      num_key_value_heads: 1,
+      head_dim: 2,
+    }));
+    await writeFile(configPath, JSON.stringify({
+      hardware: { preset: "rtx-4090-2x" },
+      quantization: { kv_cache: "fp8", activations: "fp16" },
+      pipeline: {
+        batch_size: 1,
+        input_seq_len: 16,
+        output_seq_len: 4,
+        parallelism: {
+          tensor_parallel: 1,
+          pipeline_parallel: 1,
+          expert_parallel: 1,
+          data_parallel: 1,
+        },
+      },
+      memory: {
+        kv_cache_budget: 0.4,
+        expert_cache_budget: 0,
+        pinned_pool: 0.05,
+        offload: "none",
+        prefetch_ahead: 0,
+        pressure_threshold: 0.9,
+      },
+    }));
+    const capture = captureIo();
+
+    expect(await runCli(
+      ["onnx-static", configPath, modelPath, metadataPath],
+      capture.io,
+    )).toBe(0);
+    const output = JSON.parse(capture.stdout()) as {
+      manifest: {
+        fingerprint: string;
+        initializerLogicalBytes: number;
+      };
+      model: {
+        quantization: { weights: string; kvCache: string };
+        provenance: { evidence: string; source: string };
+      };
+      analysis: { feasible: boolean };
+    };
+    expect(output.manifest.initializerLogicalBytes).toBe(16);
+    expect(output.model.quantization).toMatchObject({
+      weights: "fp32",
+      kvCache: "fp8",
+    });
+    expect(output.model.provenance).toMatchObject({
+      evidence: "heuristic",
+      source: `ONNX manifest ${output.manifest.fingerprint}`,
+    });
+    expect(output.analysis.feasible).toBe(true);
+  });
+
   it("rejects unsafe or truncated ONNX external-data references", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-onnx-"));
     const modelPath = join(directory, "model.onnx");

@@ -7,7 +7,7 @@ describe("static analysis", () => {
     const topology = buildTopology("dgx-h100");
     const model = buildModelProfile("mixtral-8x22b", "fp8", "fp8");
     const pipeline: PipelineConfig = {
-      batchSize: 32,
+      batchSize: 1,
       inputSeqLen: 4096,
       outputSeqLen: 2048,
       parallelism: { tensorParallel: 4, pipelineParallel: 1, expertParallel: 2, dataParallel: 1 },
@@ -27,6 +27,45 @@ describe("static analysis", () => {
     expect(result.bottleneck).toBeDefined();
     expect(result.estimatedThroughput.decodeToksPerSec).toBeGreaterThan(0);
     expect(result.memoryBreakdown.length).toBe(8);
+    const expectedExpertBytesPerDevice =
+      4 * model.moe!.expertBytesPerLayer * model.architecture.numLayers;
+    expect(result.memoryBreakdown[0].expertCache)
+      .toBe(expectedExpertBytesPerDevice);
+  });
+
+  it("accounts for every MoE layer and replicates shared experts across EP ranks", () => {
+    const topology = buildTopology("dgx-h100");
+    const model = buildModelProfile("qwen-3-235b", "fp8", "fp8");
+    const pipeline: PipelineConfig = {
+      batchSize: 1,
+      inputSeqLen: 128,
+      outputSeqLen: 32,
+      parallelism: {
+        tensorParallel: 1,
+        pipelineParallel: 2,
+        expertParallel: 4,
+        dataParallel: 1,
+      },
+      memory: {
+        kvCacheBudgetFraction: 0.1,
+        expertCacheBudgetFraction: 0.1,
+        pinnedPoolFraction: 0.05,
+        offloadStrategy: "none",
+        prefetchAhead: 0,
+        pressureThreshold: 0.9,
+        reclaimBatchSize: 4,
+      },
+    };
+
+    const result = analyzeStatic(topology, model, pipeline);
+    const layersPerStage = 47;
+    const expertsPerRank = 32;
+    expect(result.memoryBreakdown[0].expertCache).toBe(
+      layersPerStage * (
+        expertsPerRank * model.moe!.expertBytesPerLayer
+        + model.moe!.sharedExpertBytesPerLayer
+      ),
+    );
   });
 
   it("Llama-3-70B on single RTX 4090 is NOT feasible without offload", () => {

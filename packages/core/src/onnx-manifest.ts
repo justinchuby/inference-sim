@@ -4,7 +4,7 @@ import {
 } from "./result-artifact.js";
 
 export const ONNX_MODEL_MANIFEST_KIND = "inference-sim/onnx-model";
-export const ONNX_MODEL_MANIFEST_REVISION = 1;
+export const ONNX_MODEL_MANIFEST_REVISION = 2;
 
 export interface OnnxTensorStorage {
   readonly kind: "inline" | "external";
@@ -51,6 +51,8 @@ export interface OnnxArchitectureEvidence {
   readonly vocabSize?: number;
   readonly numExperts?: number;
   readonly activeExpertsPerToken?: number;
+  readonly expertBytesPerLayer?: number;
+  readonly sharedExpertBytesPerLayer?: number;
 }
 
 export interface OnnxModelManifestUnsigned {
@@ -225,7 +227,7 @@ function parseUnsigned(input: unknown): OnnxModelManifestUnsigned {
       "ONNX model manifest graph initializer count does not match inventory",
     );
   }
-  const expectedMissing = requiredArchitectureFields
+  const expectedMissing = requiredArchitectureFields(architecture)
     .filter((field) => architecture[field] === undefined)
     .sort();
   if (
@@ -252,15 +254,27 @@ function parseUnsigned(input: unknown): OnnxModelManifestUnsigned {
   };
 }
 
-const requiredArchitectureFields = [
-  "hiddenSize",
-  "intermediateSize",
-  "numHiddenLayers",
-  "numAttentionHeads",
-  "numKeyValueHeads",
-  "headDimension",
-  "vocabSize",
-] as const;
+function requiredArchitectureFields(
+  architecture: OnnxArchitectureEvidence,
+): ReadonlyArray<keyof OnnxArchitectureEvidence> {
+  const denseFields: ReadonlyArray<keyof OnnxArchitectureEvidence> = [
+    "hiddenSize",
+    "intermediateSize",
+    "numHiddenLayers",
+    "numAttentionHeads",
+    "numKeyValueHeads",
+    "headDimension",
+    "vocabSize",
+  ];
+  return architecture.numExperts === undefined
+    ? denseFields
+    : [
+        ...denseFields,
+        "activeExpertsPerToken",
+        "expertBytesPerLayer",
+        "sharedExpertBytesPerLayer",
+      ];
+}
 
 function parseSource(value: unknown): OnnxModelManifestUnsigned["source"] {
   const source = requireRecord(value, "ONNX model manifest source");
@@ -496,6 +510,8 @@ function parseArchitecture(value: unknown): OnnxArchitectureEvidence {
     "vocabSize",
     "numExperts",
     "activeExpertsPerToken",
+    "expertBytesPerLayer",
+    "sharedExpertBytesPerLayer",
   ], "ONNX architecture evidence");
   const source = architecture.source;
   const sources: readonly OnnxArchitectureEvidence["source"][] = [
@@ -517,7 +533,13 @@ function parseArchitecture(value: unknown): OnnxArchitectureEvidence {
     );
   }
   for (const field of [
-    ...requiredArchitectureFields,
+    "hiddenSize",
+    "intermediateSize",
+    "numHiddenLayers",
+    "numAttentionHeads",
+    "numKeyValueHeads",
+    "headDimension",
+    "vocabSize",
     "numExperts",
     "activeExpertsPerToken",
   ] as const) {
@@ -527,6 +549,18 @@ function parseArchitecture(value: unknown): OnnxArchitectureEvidence {
         `ONNX architecture ${field}`,
       );
     }
+  }
+  if (architecture.expertBytesPerLayer !== undefined) {
+    result.expertBytesPerLayer = requirePositiveInteger(
+      architecture.expertBytesPerLayer,
+      "ONNX architecture expertBytesPerLayer",
+    );
+  }
+  if (architecture.sharedExpertBytesPerLayer !== undefined) {
+    result.sharedExpertBytesPerLayer = requireNonNegativeInteger(
+      architecture.sharedExpertBytesPerLayer,
+      "ONNX architecture sharedExpertBytesPerLayer",
+    );
   }
   return result as unknown as OnnxArchitectureEvidence;
 }

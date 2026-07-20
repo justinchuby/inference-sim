@@ -107,6 +107,10 @@ SHA-256 over every referenced sidecar, and normalizes optional onnx-genai
 `manifest.json`, `genai_config.json`, or inference metadata. Missing
 architecture evidence remains explicit; the importer does not infer model
 semantics from tensor names.
+`onnx-static` consumes that package directly with a hardware/pipeline config,
+preserves exact initializer capacity, records all profile assumptions, and
+then runs the shared static analyzer. MoE packages remain incomplete until
+metadata supplies routed and shared expert bytes per layer.
 The dashboard is React-based and extends the existing shadcn/Radix component
 layer. Its expert-placement selector and the CLI's `placement_strategy` feed
 the same contiguous/round-robin core contract; neither product surface

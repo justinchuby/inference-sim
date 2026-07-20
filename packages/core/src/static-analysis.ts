@@ -36,7 +36,10 @@ function sumLayerWeights(model: ModelProfile): number {
 
 function totalExpertWeights(model: ModelProfile): number {
   if (!model.moe) return 0;
-  return model.moe.numExperts * model.moe.expertSize + model.moe.sharedExpertSize * model.architecture.numLayers;
+  return (
+    model.moe.numExperts * model.moe.expertBytesPerLayer
+    + model.moe.sharedExpertBytesPerLayer
+  ) * model.architecture.numLayers;
 }
 
 function kvCachePerToken(model: ModelProfile): number {
@@ -90,7 +93,10 @@ export function analyzeStatic(
   if (model.moe) {
     totalExpertBytes = totalExpertWeights(model);
     const expertsPerEPRank = Math.ceil(model.moe.numExperts / parallelism.expertParallel);
-    expertWeightsPerDevice = expertsPerEPRank * model.moe.expertSize;
+    expertWeightsPerDevice = layersPerPPStage * (
+      expertsPerEPRank * model.moe.expertBytesPerLayer
+      + model.moe.sharedExpertBytesPerLayer
+    );
     hotExpertsPerDevice = expertsPerEPRank;
   }
 
@@ -157,10 +163,14 @@ export function analyzeStatic(
     );
   }
   if (model.moe && memPolicy.offloadStrategy === "partial") {
-    // Warm experts that don't fit on device go to host
+    // Shared experts are replicated across EP ranks; routed experts are sharded.
     const hotBudget = deviceCapacity * memPolicy.expertCacheBudgetFraction;
-    const hotExperts = Math.floor(hotBudget / model.moe.expertSize);
-    warmExperts = Math.max(0, hotExpertsPerDevice - hotExperts) * model.moe.expertSize;
+    const sharedBytes = layersPerPPStage * model.moe.sharedExpertBytesPerLayer;
+    const routedBudget = Math.max(0, hotBudget - sharedBytes);
+    const oneExpertAcrossStage =
+      layersPerPPStage * model.moe.expertBytesPerLayer;
+    const hotExperts = Math.floor(routedBudget / oneExpertAcrossStage);
+    warmExperts = Math.max(0, expertWeightsPerDevice - hotBudget);
     hotExpertsPerDevice = Math.min(hotExpertsPerDevice, hotExperts);
   }
 
@@ -242,7 +252,10 @@ function estimateThroughput(
   let activeParams = model.totalParams;
   if (model.moe) {
     const denseParams = model.layers.reduce((s, l) => s + l.attentionBytes, 0) / bytesPerElement(model.quantization.weights);
-    const activeExpertParams = model.moe.activeExpertsPerToken * model.moe.expertSize / bytesPerElement(model.quantization.weights);
+    const activeExpertParams = (
+      model.moe.activeExpertsPerToken * model.moe.expertBytesPerLayer
+      + model.moe.sharedExpertBytesPerLayer
+    ) / bytesPerElement(model.quantization.weights);
     activeParams = denseParams + activeExpertParams * model.architecture.numLayers;
   }
   const flopsPerToken = 2 * activeParams;
@@ -278,7 +291,9 @@ function identifyBottleneck(
 ): StaticAnalysisResult["bottleneck"] {
   // Arithmetic intensity during decode
   const activeParams = model.moe
-    ? model.moe.activeExpertsPerToken * model.moe.expertSize + model.layers[0].attentionBytes
+    ? model.moe.activeExpertsPerToken * model.moe.expertBytesPerLayer
+      + model.moe.sharedExpertBytesPerLayer
+      + model.layers[0].attentionBytes
     : model.layers[0].attentionBytes + model.layers[0].ffnBytes;
 
   // FLOPs per byte = 2 * batch / bytes_per_element (for GEMV in decode)

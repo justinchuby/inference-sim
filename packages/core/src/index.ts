@@ -6,6 +6,7 @@ export type {
   ComputeSpec,
   InterconnectSpec,
   ModelProfile,
+  ModelProfileProvenance,
   ModelArchitecture,
   MoEProfile,
   ExpertDistribution,
@@ -62,6 +63,10 @@ export {
   type OnnxOperatorCount,
   type OnnxTensorStorage,
 } from "./onnx-manifest.js";
+export {
+  resolveOnnxModelProfile,
+  type OnnxModelProfileOptions,
+} from "./onnx-model-profile.js";
 export {
   DiscreteEventSimulator,
   SimulationError,

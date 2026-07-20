@@ -5,6 +5,7 @@ import {
   canonicalJsonFingerprint,
   createOnnxModelManifest,
   parseOnnxModelManifest,
+  resolveOnnxModelProfile,
   serializeOnnxModelManifest,
   type OnnxModelManifestUnsigned,
 } from "../src/index.js";
@@ -119,5 +120,55 @@ describe("ONNX model manifest", () => {
       "../weights.data";
     expect(() => createOnnxModelManifest(unsafe))
       .toThrow("must remain inside the model package");
+  });
+
+  it("resolves a capacity-preserving model profile with explicit assumptions", () => {
+    const manifest = createOnnxModelManifest(unsigned());
+    const profile = resolveOnnxModelProfile(manifest, {
+      kvCacheQuantization: "fp8",
+    });
+
+    expect(profile).toMatchObject({
+      name: "TinyCausalLM",
+      architecture: {
+        kind: "dense",
+        numLayers: 1,
+        hiddenDim: 2,
+      },
+      totalParams: 4,
+      quantization: {
+        weights: "fp32",
+        kvCache: "fp8",
+        activations: "fp16",
+      },
+      provenance: {
+        evidence: "heuristic",
+        source: `ONNX manifest ${manifest.manifestFingerprint}`,
+      },
+    });
+    expect(profile.layers[0].attentionBytes + profile.layers[0].ffnBytes)
+      .toBe(manifest.totals.initializerLogicalBytes);
+    expect(profile.layers[0].kvCachePerToken).toBe(4);
+  });
+
+  it("requires explicit per-layer expert capacity before declaring MoE ready", () => {
+    const input = unsigned();
+    input.architecture = {
+      ...input.architecture,
+      numExperts: 8,
+      activeExpertsPerToken: 2,
+    };
+    input.profileReadiness = {
+      ready: false,
+      missingFields: [
+        "expertBytesPerLayer",
+        "sharedExpertBytesPerLayer",
+      ],
+    };
+
+    const manifest = createOnnxModelManifest(input);
+    expect(manifest.profileReadiness).toEqual(input.profileReadiness);
+    expect(() => resolveOnnxModelProfile(manifest))
+      .toThrow("ONNX model profile is incomplete");
   });
 });

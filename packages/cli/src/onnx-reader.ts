@@ -84,6 +84,13 @@ export async function inspectOnnxModel(
     "numHiddenLayers",
     "numKeyValueHeads",
     "vocabSize",
+    ...(architecture.numExperts === undefined
+      ? []
+      : [
+          "activeExpertsPerToken",
+          "expertBytesPerLayer",
+          "sharedExpertBytesPerLayer",
+        ]),
   ].filter((field) => (
     architecture[field as keyof OnnxArchitectureEvidence] === undefined
   )).sort();
@@ -404,6 +411,14 @@ function normalizeArchitectureEvidence(
       root.active_experts_per_token ?? root.num_experts_per_tok,
       "active_experts_per_token",
     ),
+    expertBytesPerLayer: optionalPositiveInteger(
+      root.expert_bytes_per_layer,
+      "expert_bytes_per_layer",
+    ),
+    sharedExpertBytesPerLayer: optionalNonNegativeInteger(
+      root.shared_expert_bytes_per_layer,
+      "shared_expert_bytes_per_layer",
+    ),
   });
 }
 
@@ -601,6 +616,19 @@ function optionalPositiveInteger(
   }
   if (!Number.isSafeInteger(value) || (value as number) <= 0) {
     throw new Error(`${label} must be a positive safe integer`);
+  }
+  return value as number;
+}
+
+function optionalNonNegativeInteger(
+  value: unknown,
+  label: string,
+): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`);
   }
   return value as number;
 }
