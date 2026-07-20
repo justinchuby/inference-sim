@@ -50,6 +50,12 @@ export default function TopologyGraph({
           type: MarkerType.ArrowClosed,
           color: edge.markerEnd.color,
         },
+    markerStart: edge.markerStart === undefined
+      ? undefined
+      : {
+          type: MarkerType.ArrowClosed,
+          color: edge.markerStart.color,
+        },
     data: edge.data as FlowEdgeData,
     labelStyle: {
       fill: "#52525b",
@@ -115,7 +121,7 @@ export default function TopologyGraph({
         <Legend color="border-emerald-300 bg-emerald-100" label="Memory" />
         <Legend color="border-rose-300 bg-rose-100" label="NIC / fabric" />
         <Legend color="bg-zinc-400" label="Access" dashed />
-        <Legend color="bg-zinc-700" label="Directed link" />
+        <Legend color="bg-zinc-700" label="Physical link" />
       </div>
 
       {selection
@@ -148,7 +154,7 @@ export default function TopologyGraph({
                           ? "Device-visible memory relationship"
                           : [
                               selection.data.transport,
-                              `${selection.data.logicalSourceId} → ${selection.data.logicalTargetId}`,
+                              `${selection.data.logicalSourceId} ${selection.data.bidirectional ? "↔" : "→"} ${selection.data.logicalTargetId}`,
                               selection.data.networkResourceIds?.length
                                 ? selection.data.networkResourceIds.join(" → ")
                                 : undefined,

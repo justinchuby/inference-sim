@@ -41,22 +41,26 @@ describe("topology graph projection", () => {
       scenario.devices.reduce(
         (sum, device) => sum + device.memoryDomainIds.length,
         0,
-      ) + scenario.links.length,
+      ) + 4,
     );
     expect(graph.edges.filter((edge) => edge.data.category === "link"))
-      .toHaveLength(scenario.links.length);
+      .toHaveLength(4);
     expect(graph.edges.find((edge) => edge.id === "node0:nvlink:forward"))
       .toMatchObject({
         source: "node0:gpu0:vram",
         target: "node0:gpu1:vram",
         label: "600 GB/s · 500 ns",
+        markerStart: { type: "arrowclosed" },
         markerEnd: { type: "arrowclosed" },
-        data: { scope: "intra-node" },
+        data: { scope: "intra-node", bidirectional: true },
       });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
-      .toBeUndefined();
+      .toBe("32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward")?.label)
       .toBe("32 GB/s · 1.5 us");
+    const vram = graph.nodes.find((node) => node.id === "node0:gpu0:vram")!;
+    const host = graph.nodes.find((node) => node.id === "node0:host")!;
+    expect(vram.position.y).toBeLessThan(host.position.y);
   });
 
   it("separates nodes deterministically across machines", () => {
@@ -80,6 +84,24 @@ describe("topology graph projection", () => {
         .filter((edge) => edge.data.category === "link")
         .some((edge) => edge.data.scope === "inter-node"),
     ).toBe(true);
+  });
+
+  it("keeps asymmetric reverse links on separate visual paths", () => {
+    const preset = buildScenarioPreset("multi-gpu");
+    const scenario = {
+      ...preset,
+      links: preset.links.map((link) => link.id === "node0:nvlink:reverse"
+        ? { ...link, bandwidthBytesPerSec: link.bandwidthBytesPerSec / 2 }
+        : link),
+    };
+    const graph = buildTopologyGraph(scenario);
+    const nvlinkEdges = graph.edges.filter((edge) => (
+      edge.data.kind === "nvlink"
+    ));
+
+    expect(nvlinkEdges).toHaveLength(2);
+    expect(nvlinkEdges.every((edge) => edge.markerStart === undefined))
+      .toBe(true);
   });
 
   it("projects advanced network resources into the logical link path", () => {

@@ -49,6 +49,8 @@ export interface TopologyGraphEdgeData {
   readonly networkResourceIds?: readonly string[];
   readonly segmentIndex?: number;
   readonly segmentCount?: number;
+  readonly bidirectional?: boolean;
+  readonly logicalReverseId?: string;
 }
 
 export interface TopologyGraphEdge {
@@ -69,20 +71,25 @@ export interface TopologyGraphEdge {
     readonly type: "arrowclosed";
     readonly color: string;
   };
+  readonly markerStart?: {
+    readonly type: "arrowclosed";
+    readonly color: string;
+  };
   readonly data: TopologyGraphEdgeData;
 }
 
 const NODE_WIDTH = 210;
-const NODE_GAP = 100;
+const NODE_GAP = 120;
 const GROUP_GAP = 90;
 const GROUP_X = 30;
 const GROUP_Y = 135;
 const GROUP_PADDING_X = 30;
 const GROUP_HEADER_HEIGHT = 70;
-const GROUP_HEIGHT = 500;
+const GROUP_HEIGHT = 590;
 const DEVICE_Y = GROUP_HEADER_HEIGHT;
-const MEMORY_Y = 245;
-const NETWORK_Y = 385;
+const LOCAL_MEMORY_Y = 225;
+const SHARED_MEMORY_Y = 345;
+const NETWORK_Y = 465;
 const FABRIC_Y = 30;
 
 export function buildTopologyGraph(
@@ -182,7 +189,9 @@ export function buildTopologyGraph(
         || scenario.execution.features.ssdStreaming;
       const localPosition = {
         x: GROUP_PADDING_X + centeredColumn(index, domains.length, columns),
-        y: MEMORY_Y,
+        y: domain.kind === "device" || domain.kind === "unified"
+          ? LOCAL_MEMORY_Y
+          : SHARED_MEMORY_Y,
       };
       positionById.set(domain.id, {
         x: groupOffset + localPosition.x,
@@ -263,8 +272,17 @@ export function buildTopologyGraph(
       },
     })),
   );
-  const labeledPairs = new Set<string>();
+  const renderedLinks = new Set<string>();
   const linkEdges: TopologyGraphEdge[] = scenario.links.flatMap((link) => {
+    if (renderedLinks.has(link.id)) return [];
+    const reverse = scenario.links.find((candidate) => (
+      candidate.id !== link.id
+      && candidate.sourceDomainId === link.targetDomainId
+      && candidate.targetDomainId === link.sourceDomainId
+      && equivalentLinkContract(link, candidate)
+    ));
+    renderedLinks.add(link.id);
+    if (reverse !== undefined) renderedLinks.add(reverse.id);
     const color = linkColor(link.kind);
     const path = [
       link.sourceDomainId,
@@ -275,26 +293,6 @@ export function buildTopologyGraph(
     ];
     const sourceX = positionById.get(path[0])?.x ?? 0;
     const targetX = positionById.get(path[path.length - 1])?.x ?? 0;
-    const labelKey = [
-      ...[link.sourceDomainId, link.targetDomainId].sort(),
-      link.kind,
-    ].join("::");
-    const crossesNode = scenario.memoryDomains.some((domain) => {
-      if (
-        domain.id === link.sourceDomainId
-        || domain.id === link.targetDomainId
-      ) {
-        return false;
-      }
-      const position = positionById.get(domain.id);
-      return position !== undefined
-        && position.y === positionById.get(link.sourceDomainId)?.y
-        && position.x > Math.min(sourceX, targetX)
-        && position.x < Math.max(sourceX, targetX);
-    });
-    const showLabel = !labeledPairs.has(labelKey)
-      && (!crossesNode || path.length > 2);
-    labeledPairs.add(labelKey);
     return path.slice(0, -1).map((source, segmentIndex) => {
       const target = path[segmentIndex + 1];
       const segmentSourceX = positionById.get(source)?.x ?? sourceX;
@@ -311,7 +309,7 @@ export function buildTopologyGraph(
           ? "left-target"
           : "right-target",
         type: "smoothstep" as const,
-        ...(showLabel && segmentIndex === labelSegment
+        ...(segmentIndex === labelSegment
           ? {
               label: [
                 link.transport,
@@ -333,6 +331,14 @@ export function buildTopologyGraph(
               },
             }
           : {}),
+        ...(reverse !== undefined && segmentIndex === 0
+          ? {
+              markerStart: {
+                type: "arrowclosed" as const,
+                color,
+              },
+            }
+          : {}),
         data: {
           category: "link" as const,
           scope: systemByDomain.get(link.sourceDomainId)
@@ -349,11 +355,26 @@ export function buildTopologyGraph(
           networkResourceIds: link.networkResourceIds,
           segmentIndex,
           segmentCount: path.length - 1,
+          bidirectional: reverse !== undefined,
+          logicalReverseId: reverse?.id,
         },
       };
     });
   });
   return { nodes, edges: [...accessEdges, ...linkEdges] };
+}
+
+function equivalentLinkContract(
+  left: SimulationScenario["links"][number],
+  right: SimulationScenario["links"][number],
+): boolean {
+  return left.kind === right.kind
+    && left.bandwidthBytesPerSec === right.bandwidthBytesPerSec
+    && left.latencyNs === right.latencyNs
+    && left.concurrencyLanes === right.concurrencyLanes
+    && left.transport === right.transport
+    && [...(left.networkResourceIds ?? [])].sort().join("\0")
+      === [...(right.networkResourceIds ?? [])].sort().join("\0");
 }
 
 function networkResourceNode(
