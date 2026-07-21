@@ -39,6 +39,7 @@ export interface TopologyGraphNode {
 export interface TopologyGraphEdgeData {
   readonly category: "access" | "link";
   readonly scope: "intra-node" | "inter-node";
+  readonly memoryRelation?: "local" | "accessible";
   readonly kind: string;
   readonly bandwidthBytesPerSec?: number;
   readonly latencyNs?: number;
@@ -121,6 +122,14 @@ export function buildTopologyGraph(
   const domainKindById = new Map(
     scenario.memoryDomains.map((domain) => [domain.id, domain.kind]),
   );
+  const domainOwnerById = new Map(
+    scenario.memoryDomains.map((domain) => [
+      domain.id,
+      domain.governor.kind === "device"
+        ? domain.governor.deviceId
+        : undefined,
+    ]),
+  );
   let groupOffset = GROUP_X;
 
   for (const nodeId of nodeIds) {
@@ -160,11 +169,13 @@ export function buildTopologyGraph(
         ],
       },
     });
+    const deviceLocalX = new Map<string, number>();
     devices.forEach((device, index) => {
       const localPosition = {
         x: GROUP_PADDING_X + centeredColumn(index, devices.length, columns),
         y: DEVICE_Y,
       };
+      deviceLocalX.set(device.id, localPosition.x);
       positionById.set(device.id, {
         x: groupOffset + localPosition.x,
         y: GROUP_Y + localPosition.y,
@@ -195,12 +206,32 @@ export function buildTopologyGraph(
         },
       });
     });
+    const sharedDomains = domains.filter((domain) => (
+      domain.kind !== "device" && domain.kind !== "unified"
+    ));
+    const unownedLocalDomains = domains.filter((domain) => (
+      (domain.kind === "device" || domain.kind === "unified")
+      && (domain.governor.kind !== "device"
+        || !deviceLocalX.has(domain.governor.deviceId))
+    ));
     domains.forEach((domain, index) => {
       const enabled = domain.kind !== "storage"
         || scenario.execution.features.ssdStreaming;
+      const localMemory = domain.kind === "device" || domain.kind === "unified";
+      const ownerX = domain.governor.kind === "device"
+        ? deviceLocalX.get(domain.governor.deviceId)
+        : undefined;
+      const rowDomains = localMemory ? unownedLocalDomains : sharedDomains;
+      const rowIndex = rowDomains.findIndex((candidate) => (
+        candidate.id === domain.id
+      ));
       const localPosition = {
-        x: GROUP_PADDING_X + centeredColumn(index, domains.length, columns),
-        y: domain.kind === "device" || domain.kind === "unified"
+        x: ownerX ?? GROUP_PADDING_X + centeredColumn(
+          rowIndex < 0 ? index : rowIndex,
+          rowIndex < 0 ? domains.length : rowDomains.length,
+          columns,
+        ),
+        y: localMemory
           ? LOCAL_MEMORY_Y
           : SHARED_MEMORY_Y,
       };
@@ -261,28 +292,34 @@ export function buildTopologyGraph(
   });
 
   const accessEdges: TopologyGraphEdge[] = scenario.devices.flatMap(
-    (device) => device.memoryDomainIds.map((domainId) => ({
-      id: `access:${device.id}:${domainId}`,
-      source: device.id,
-      target: domainId,
-      sourceHandle: "bottom-source",
-      targetHandle: "top-target",
-      type: "smoothstep" as const,
-      animated: false,
-      interactionWidth: 18,
-      style: {
-        stroke: "#a1a1aa",
-        strokeWidth: 1,
-        strokeDasharray: "4 4",
-      },
-      data: {
-        category: "access" as const,
-        scope: systemByDevice.get(device.id) === systemByDomain.get(domainId)
-          ? "intra-node" as const
-          : "inter-node" as const,
-        kind: "memory access",
-      },
-    })),
+    (device) => device.memoryDomainIds.map((domainId) => {
+      const localMemory = domainOwnerById.get(domainId) === device.id;
+      return {
+        id: `access:${device.id}:${domainId}`,
+        source: device.id,
+        target: domainId,
+        sourceHandle: "bottom-source",
+        targetHandle: "top-target",
+        type: "smoothstep" as const,
+        animated: false,
+        interactionWidth: 18,
+        style: {
+          stroke: localMemory ? "#059669" : "#a1a1aa",
+          strokeWidth: localMemory ? 2.5 : 1,
+          ...(localMemory ? {} : { strokeDasharray: "4 4" }),
+        },
+        data: {
+          category: "access" as const,
+          scope: systemByDevice.get(device.id) === systemByDomain.get(domainId)
+            ? "intra-node" as const
+            : "inter-node" as const,
+          kind: localMemory ? "local memory" : "memory access",
+          memoryRelation: localMemory
+            ? "local" as const
+            : "accessible" as const,
+        },
+      };
+    }),
   );
   const renderedLinks = new Set<string>();
   const labeledLinkGroups = new Set<string>();

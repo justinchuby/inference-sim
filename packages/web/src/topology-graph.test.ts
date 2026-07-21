@@ -57,6 +57,18 @@ describe("topology graph projection", () => {
       });
     expect(graph.edges.find((edge) => edge.data.category === "access"))
       .toMatchObject({ interactionWidth: 18 });
+    expect(graph.edges.find((edge) => (
+      edge.id === "access:node0:gpu0:node0:gpu0:vram"
+    ))).toMatchObject({
+      style: { stroke: "#059669", strokeWidth: 2.5 },
+      data: { kind: "local memory", memoryRelation: "local" },
+    });
+    expect(graph.edges.find((edge) => (
+      edge.id === "access:node0:gpu0:node0:host"
+    ))).toMatchObject({
+      style: { stroke: "#a1a1aa", strokeWidth: 1, strokeDasharray: "4 4" },
+      data: { kind: "memory access", memoryRelation: "accessible" },
+    });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
       .toBe("2× 32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward"))
@@ -75,8 +87,10 @@ describe("topology graph projection", () => {
         pathOptions: { offset: 68 },
       });
     const vram = graph.nodes.find((node) => node.id === "node0:gpu0:vram")!;
+    const gpu = graph.nodes.find((node) => node.id === "node0:gpu0")!;
     const host = graph.nodes.find((node) => node.id === "node0:host")!;
     expect(vram.position.y).toBeLessThan(host.position.y);
+    expect(vram.position.x).toBe(gpu.position.x);
   });
 
   it("separates nodes deterministically across machines", () => {

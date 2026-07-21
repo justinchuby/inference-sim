@@ -149,7 +149,8 @@ export default function TopologyGraph({
         <Legend color="border-sky-300 bg-sky-100" label="Compute" />
         <Legend color="border-emerald-300 bg-emerald-100" label="Memory" />
         <Legend color="border-rose-300 bg-rose-100" label="NIC / fabric" />
-        <Legend color="bg-zinc-400" label="Access" dashed />
+        <Legend color="bg-emerald-600" label="Local memory" />
+        <Legend color="bg-zinc-400" label="Accessible memory" dashed />
         <Legend color="bg-zinc-700" label="Physical link" />
       </div>
 
@@ -180,7 +181,9 @@ export default function TopologyGraph({
                       </div>
                       <div className="mt-1 text-[11px] text-zinc-600">
                         {selection.data.category === "access"
-                          ? "Device-visible memory relationship"
+                          ? selection.data.memoryRelation === "local"
+                            ? "Device-owned local memory relationship"
+                            : "Device-visible shared or remote memory relationship"
                           : [
                               selection.data.transport,
                               `${selection.data.logicalSourceId} ${selection.data.bidirectional ? "↔" : "→"} ${selection.data.logicalTargetId}`,
