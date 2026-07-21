@@ -91,6 +91,8 @@ export interface TopologyServingMetrics {
   readonly backgroundDrainNs: number;
   readonly batchServiceNs: number;
   readonly idleNs: number;
+  readonly compiledTopologyTemplates: number;
+  readonly reusedTopologyBatches: number;
   readonly planSteps: number;
   readonly computeOperations: number;
   readonly transferOperations: number;
@@ -180,6 +182,61 @@ export function topologyProfileFromServingBatch(
   };
 }
 
+function topologyTemplateKey(
+  batch: ServingBatchWork,
+  promptInvocations: number,
+  finalInvocations: number,
+  speculative?: ServingSchedulerConfig["speculative"],
+): string {
+  const draftTokens = batch.decode.reduce(
+    (sum, entry) => sum + entry.proposedAdditionalTokens,
+    0,
+  );
+  const pipelineStepInvocations = batch.decode.reduce(
+    (sum, entry) => sum + entry.targetTokenWidth,
+    0,
+  );
+  return [
+    batch.tokenWork,
+    batch.expectedOutputTokens,
+    draftTokens,
+    promptInvocations,
+    finalInvocations,
+    pipelineStepInvocations,
+    speculative?.family ?? "target_only",
+  ].join(":");
+}
+
+function reidentifyTopologyWorkload(
+  template: TopologyWorkloadResult,
+  profileId: string,
+): TopologyWorkloadResult {
+  const executionId = `${template.scenarioId}:${profileId}`;
+  return {
+    ...template,
+    profileId,
+    plan: {
+      ...template.plan,
+      id: `topology-workload:${profileId}`,
+      executionId,
+    },
+    execution: {
+      ...template.execution,
+      executionId,
+      trace: {
+        operations: template.execution.trace.operations.map((event) => ({
+          ...event,
+          executionId,
+        })),
+        terminal: {
+          ...template.execution.trace.terminal,
+          executionId,
+        },
+      },
+    },
+  };
+}
+
 export function simulateTopologyServingWorkload(
   scenario: SimulationScenario,
   config: ServingSchedulerConfig,
@@ -207,6 +264,9 @@ export function simulateTopologyServingWorkload(
           expertPlacement,
         );
   const batches = new Map<number, TopologyServingBatchResult>();
+  const topologyTemplates = new Map<string, TopologyWorkloadResult>();
+  let compiledTopologyTemplates = 0;
+  let reusedTopologyBatches = 0;
   const expertCache = runtimeExpertCacheConfig === undefined
     ? undefined
     : new ExpertCacheSimulator(runtimeExpertCacheConfig);
@@ -242,7 +302,10 @@ export function simulateTopologyServingWorkload(
     if (existing) {
       if (
         existing.startedAtNs !== startedAtNs
-        || JSON.stringify(existing.work) !== JSON.stringify(work)
+        || (
+          existing.work !== work
+          && JSON.stringify(existing.work) !== JSON.stringify(work)
+        )
       ) {
         throw new Error(
           `serving batch ${work.batchId} timing/work changed between simulation and replay`,
@@ -338,30 +401,55 @@ export function simulateTopologyServingWorkload(
         finalInvocations++;
       }
     }
-    const topology = simulateTopologyWorkload(
-      scenario,
-      batchExpertRoutes.length === 0
-        ? topologyProfileFromServingBatch(
-            work,
-            config.speculative,
-            modelWork,
-            pipeline,
-            promptInvocations,
-            finalInvocations,
-          )
-        : topologyProfileFromExpertServingBatch(
-            work,
-            config.speculative,
-            batchExpertRoutes,
-            batchPrefetchLoads,
-            requireExpertPlacement(expertPlacement),
-            modelWork,
-            pipeline,
-            promptInvocations,
-            finalInvocations,
-          ),
-      costModel,
-    );
+    const profile = batchExpertRoutes.length === 0
+      ? topologyProfileFromServingBatch(
+          work,
+          config.speculative,
+          modelWork,
+          pipeline,
+          promptInvocations,
+          finalInvocations,
+        )
+      : topologyProfileFromExpertServingBatch(
+          work,
+          config.speculative,
+          batchExpertRoutes,
+          batchPrefetchLoads,
+          requireExpertPlacement(expertPlacement),
+          modelWork,
+          pipeline,
+          promptInvocations,
+          finalInvocations,
+        );
+    const templateKey = expertCache === undefined
+      ? topologyTemplateKey(
+          work,
+          promptInvocations,
+          finalInvocations,
+          config.speculative,
+        )
+      : undefined;
+    const template = templateKey === undefined
+      ? undefined
+      : topologyTemplates.get(templateKey);
+    const topology = template === undefined
+      ? reidentifyTopologyWorkload(
+          simulateTopologyWorkload(scenario, profile, costModel),
+          templateKey === undefined
+            ? profile.id
+            : `serving-template:${topologyTemplates.size}`,
+        )
+      : template;
+    if (template === undefined) {
+      compiledTopologyTemplates++;
+    }
+    if (templateKey !== undefined) {
+      if (template === undefined) {
+        topologyTemplates.set(templateKey, topology);
+      } else {
+        reusedTopologyBatches++;
+      }
+    }
     const planArrivalNs = expertCache?.snapshot().currentTimeNs
       ?? startedAtNs;
     let foregroundCompletedAtNs = planArrivalNs
@@ -463,16 +551,6 @@ export function simulateTopologyServingWorkload(
       ),
       0,
     );
-  const operationEvents = physical === undefined
-    ? orderedBatches.flatMap(
-        (batch) => batch.topology.execution.trace.operations,
-      )
-    : physical.execution.trace.operations.map(({ event }) => event);
-  if (operationEvents.length !== planSteps) {
-    throw new Error(
-      `serving physical trace has ${operationEvents.length}/${planSteps} operations`,
-    );
-  }
   let computeOperations = 0;
   let transferOperations = 0;
   let collectiveOperations = 0;
@@ -481,34 +559,44 @@ export function simulateTopologyServingWorkload(
   let computeServiceNs = 0;
   let transferServiceNs = 0;
   let collectiveServiceNs = 0;
+  let observedOperationEvents = 0;
   const resourceBusy = new Map<string, number>();
-  for (const event of operationEvents) {
+  const accumulateOperation = (
+    event: PlanTraceEvent,
+    multiplicity = 1,
+  ): void => {
+    observedOperationEvents += multiplicity;
     const serviceNs = event.finishNs - event.startNs;
+    const weightedServiceNs = checkedMetricMultiply(
+      serviceNs,
+      multiplicity,
+      "serving weighted operation service",
+    );
     if (event.kind === "compute") {
-      computeOperations++;
+      computeOperations += multiplicity;
       computeServiceNs = checkedMetricAdd(
         computeServiceNs,
-        serviceNs,
+        weightedServiceNs,
         "serving compute service",
       );
     } else if (event.kind === "transfer") {
-      transferOperations++;
+      transferOperations += multiplicity;
       transferServiceNs = checkedMetricAdd(
         transferServiceNs,
-        serviceNs,
+        weightedServiceNs,
         "serving transfer service",
       );
     } else {
-      collectiveOperations++;
+      collectiveOperations += multiplicity;
       collectiveServiceNs = checkedMetricAdd(
         collectiveServiceNs,
-        serviceNs,
+        weightedServiceNs,
         "serving collective service",
       );
       if (event.collectiveAlgorithm === "all_reduce_ring") {
-        allReduceOperations++;
+        allReduceOperations += multiplicity;
       } else if (event.collectiveAlgorithm === "all_to_all_v") {
-        allToAllOperations++;
+        allToAllOperations += multiplicity;
       }
     }
     for (const reservation of event.resources) {
@@ -523,11 +611,34 @@ export function simulateTopologyServingWorkload(
         reservation.resourceId,
         checkedMetricAdd(
           resourceBusy.get(reservation.resourceId) ?? 0,
-          serviceNs,
+          weightedServiceNs,
           `serving resource ${reservation.resourceId} busy time`,
         ),
       );
     }
+  };
+  if (physical === undefined) {
+    const topologyMultiplicity = new Map<TopologyWorkloadResult, number>();
+    for (const { topology } of orderedBatches) {
+      topologyMultiplicity.set(
+        topology,
+        (topologyMultiplicity.get(topology) ?? 0) + 1,
+      );
+    }
+    for (const [topology, multiplicity] of topologyMultiplicity) {
+      for (const event of topology.execution.trace.operations) {
+        accumulateOperation(event, multiplicity);
+      }
+    }
+  } else {
+    for (const { event } of physical.execution.trace.operations) {
+      accumulateOperation(event);
+    }
+  }
+  if (observedOperationEvents !== planSteps) {
+    throw new Error(
+      `serving physical trace has ${observedOperationEvents}/${planSteps} operations`,
+    );
   }
   const totalDurationNs = serving.metrics.totalDurationNs;
   const resourceObservationNs = Math.max(
@@ -594,6 +705,9 @@ export function simulateTopologyServingWorkload(
       expertCache === undefined
         ? "batch plans use isolated relative-time execution"
         : "composed batch plans share one absolute-time resource, lease, and collective timeline through final drain",
+      expertCache === undefined
+        ? "structurally identical stateless batches share one immutable relative-time topology template; batch scheduling times and token emission remain exact"
+        : "stateful expert-cache batches compile independently because residency and physical transfer state can change every batch",
       "resource utilization is measured from authoritative operation reservations over the request-start-to-global-quiescence observation window",
       expertCache === undefined
         ? "batch plans execute serially while resources inside each plan retain declared concurrency"
@@ -611,6 +725,8 @@ export function simulateTopologyServingWorkload(
       backgroundDrainNs: resourceObservationNs - totalDurationNs,
       batchServiceNs: serving.metrics.batchServiceNs,
       idleNs: totalDurationNs - serving.metrics.batchServiceNs,
+      compiledTopologyTemplates,
+      reusedTopologyBatches,
       planSteps,
       computeOperations,
       transferOperations,

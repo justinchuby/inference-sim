@@ -1028,10 +1028,17 @@ function pipelineExecutionSummary(
     readonly deviceId: string;
   }>();
   let transferOperations = 0;
+  const transferCounts = new Map<TopologyWorkloadResult, number>();
   for (const result of results) {
+    const cachedTransferCount = transferCounts.get(result);
+    if (cachedTransferCount !== undefined) {
+      transferOperations += cachedTransferCount;
+      continue;
+    }
+    let resultTransferOperations = 0;
     for (const step of result.plan.steps) {
       if (step.operation.kind === "transfer") {
-        transferOperations++;
+        resultTransferOperations++;
       } else if (
         step.operation.kind === "compute"
         && step.operation.componentId !== undefined
@@ -1047,6 +1054,8 @@ function pipelineExecutionSummary(
         );
       }
     }
+    transferCounts.set(result, resultTransferOperations);
+    transferOperations += resultTransferOperations;
   }
   return components.size === 0
     ? {}

@@ -765,6 +765,16 @@ that fallback with shape-regime measurements. Metrics include TTFT and ITL
 average/p50/p95, request latency, throughput, sequence/token batch utilization,
 idle/service time, and KV high water.
 
+Stateless batches with the same aggregate topology work share one immutable
+relative-time FrozenPlan and replay template. The scheduler still records exact
+per-batch start/completion times, membership, token emission, and KV state;
+aggregate service and utilization metrics multiply the template reservations
+by their exact occurrence count. The cache key includes every profile field
+that can change generated operations. Stateful expert-cache batches never use
+this optimization because residency, prefetch, and physical resource state may
+change between otherwise similar batches. Results report compiled-template and
+reuse counts so tests can verify both the fast path and its exclusion boundary.
+
 Serving may opt into revision-3 stateful expert-cache composition. One cache
 instance persists across all batches, and every target token in prefill or
 verification receives one seeded top-K route. Draft-only proposer work does

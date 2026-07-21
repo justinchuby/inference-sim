@@ -79,6 +79,39 @@ describe("topology-aware serving", () => {
     expect(gpu).toEqual(repeat);
   });
 
+  it("reuses immutable stateless batch topology templates", () => {
+    const result = simulateTopologyServingWorkload(
+      buildScenarioPreset("multi-gpu"),
+      {
+        requests: [
+          { id: "long", arrivalNs: 0, promptTokens: 8, outputTokens: 32 },
+        ],
+        maxBatchSize: 1,
+        maxBatchTokens: 8,
+        prefillChunkTokens: 8,
+        maxKvTokens: 40,
+      },
+    );
+
+    expect(result.metrics.reusedTopologyBatches).toBeGreaterThan(0);
+    expect(
+      result.metrics.compiledTopologyTemplates
+        + result.metrics.reusedTopologyBatches,
+    ).toBe(result.batches.length);
+    const templateCounts = new Map<object, number>();
+    for (const batch of result.batches) {
+      templateCounts.set(
+        batch.topology,
+        (templateCounts.get(batch.topology) ?? 0) + 1,
+      );
+    }
+    expect(Math.max(...templateCounts.values())).toBeGreaterThan(1);
+    expect([...templateCounts.keys()].every((topology) => (
+      (topology as typeof result.batches[number]["topology"])
+        .plan.executionId.includes("serving-template:")
+    ))).toBe(true);
+  });
+
   it("distinguishes intermediate prefill from output-producing batches", () => {
     const result = simulateTopologyServingWorkload(
       buildScenarioPreset("single-gpu-cpu"),
@@ -220,6 +253,10 @@ describe("topology-aware serving", () => {
         },
         topK: 1,
       },
+    );
+    expect(result.metrics.reusedTopologyBatches).toBe(0);
+    expect(result.metrics.compiledTopologyTemplates).toBe(
+      result.batches.length,
     );
     const expertCache = result.expertCache;
     if (expertCache === undefined) {
