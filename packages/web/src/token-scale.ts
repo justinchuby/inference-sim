@@ -54,3 +54,13 @@ export function formatTokenCount(value: number): string {
   }
   return value.toLocaleString("en-US");
 }
+
+export function formatApproxTokenCount(value: number): string {
+  if (value >= 1_048_576) {
+    return `${(value / 1_048_576).toFixed(2).replace(/\.00$/, "")}M`;
+  }
+  if (value >= 1_024) {
+    return `${(value / 1_024).toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return value.toLocaleString("en-US");
+}

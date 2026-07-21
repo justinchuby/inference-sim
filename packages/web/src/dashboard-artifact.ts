@@ -727,7 +727,17 @@ function parseModelExecutionProfile(
     "attentionWeightBytesPerToken",
     "ffnWeightBytesPerToken",
     "forwardFlopsPerToken",
+    "kvCacheBytesPerToken",
+    "kvCacheEvidence",
   ], "modelBinding executionProfile");
+  if (
+    (profile.kvCacheBytesPerToken === undefined)
+    !== (profile.kvCacheEvidence === undefined)
+  ) {
+    throw new Error(
+      "modelBinding executionProfile KV bytes and evidence must appear together",
+    );
+  }
   return {
     modelId: requireString(
       profile.modelId,
@@ -755,6 +765,21 @@ function parseModelExecutionProfile(
       Number.MAX_SAFE_INTEGER,
       "modelBinding executionProfile forwardFlopsPerToken",
     ),
+    ...(profile.kvCacheBytesPerToken === undefined
+      ? {}
+      : {
+          kvCacheBytesPerToken: requireNumber(
+            profile.kvCacheBytesPerToken,
+            Number.MIN_VALUE,
+            Number.MAX_SAFE_INTEGER,
+            "modelBinding executionProfile kvCacheBytesPerToken",
+          ),
+          kvCacheEvidence: requireEnum(
+            profile.kvCacheEvidence,
+            ["architecture_derived", "metadata_declared"] as const,
+            "modelBinding executionProfile kvCacheEvidence",
+          ),
+        }),
   };
 }
 

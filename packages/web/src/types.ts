@@ -91,6 +91,8 @@ export interface DashboardModelExecutionProfile {
   readonly attentionWeightBytesPerToken: number;
   readonly ffnWeightBytesPerToken: number;
   readonly forwardFlopsPerToken: number;
+  readonly kvCacheBytesPerToken?: number;
+  readonly kvCacheEvidence?: "architecture_derived" | "metadata_declared";
 }
 
 export type RooflinePhase =

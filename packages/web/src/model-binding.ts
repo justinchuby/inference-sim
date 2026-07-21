@@ -115,9 +115,12 @@ export function createImportedModelBinding(
       0,
     ),
     modelFormat,
-    executionProfile: model === undefined
-      ? genericExecutionProfile(target)
-      : executionProfile(model, fingerprint),
+    executionProfile: withDeclaredKvCache(
+      model === undefined
+        ? genericExecutionProfile(target)
+        : executionProfile(model, fingerprint),
+      modelPackage.metadata.hardware.kvCacheMemoryPer1kTokensMiB,
+    ),
     ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
     executionCoverage,
     ...(modelPackage.metadata.pipelineStrategy === undefined
@@ -525,6 +528,24 @@ function executionProfile(
         : (attentionWeightBytesPerToken + ffnWeightBytesPerToken)
           / bytesPerElement(model.quantization.weights)
     ),
+    kvCacheBytesPerToken: model.layers.reduce(
+      (sum, layer) => sum + layer.kvCachePerToken,
+      0,
+    ),
+    kvCacheEvidence: "architecture_derived",
+  };
+}
+
+function withDeclaredKvCache(
+  profile: DashboardModelExecutionProfile,
+  memoryPer1kTokensMiB: number | undefined,
+): DashboardModelExecutionProfile {
+  if (memoryPer1kTokensMiB === undefined) return profile;
+  return {
+    ...profile,
+    kvCacheBytesPerToken:
+      memoryPer1kTokensMiB * 1024 ** 2 / 1_000,
+    kvCacheEvidence: "metadata_declared",
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatApproxTokenCount,
   formatTokenCount,
   nearestTokenStepIndex,
   OUTPUT_TOKEN_STEPS,
@@ -22,5 +23,7 @@ describe("token slider scale", () => {
     expect(formatTokenCount(1_048_576 + 32_768)).toBe("1.03M");
     expect(formatTokenCount(32_768)).toBe("32K");
     expect(formatTokenCount(768)).toBe("768");
+    expect(formatApproxTokenCount(99_157)).toBe("96.8K");
+    expect(formatApproxTokenCount(1_184_000)).toBe("1.13M");
   });
 });

@@ -91,6 +91,7 @@ import {
   calculateIdealRoofline,
   summarizeModelPackage,
 } from "./model-metrics.js";
+import { estimateContextCapacity } from "./context-capacity.js";
 import { Badge } from "./components/ui/badge.js";
 import { Button } from "./components/ui/button.js";
 import {
@@ -112,6 +113,7 @@ import {
 } from "./components/ui/select.js";
 import { Slider } from "./components/ui/slider.js";
 import {
+  formatApproxTokenCount,
   formatTokenCount,
   nearestTokenStepIndex,
   OUTPUT_TOKEN_STEPS,
@@ -2203,6 +2205,11 @@ function ConfigurationPanel({
     config.multiNodeCount,
     config.scenarioName,
   ]);
+  const contextCapacity = useMemo(() => (
+    selectedScenario === undefined
+      ? undefined
+      : estimateContextCapacity(config, selectedScenario)
+  ), [config, selectedScenario]);
   const setMode = (mode: WorkloadMode) => {
     const selectedFamily = speculativeOptions.find(
       (family) => family.value === config.speculative.family,
@@ -3033,6 +3040,51 @@ function ConfigurationPanel({
               )} tok · limit unbound
             </span>
           </div>
+          {contextCapacity === undefined
+            ? null
+            : contextCapacity.status === "unavailable"
+              ? (
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+                    <span>Config capacity</span>
+                    <span className="text-right font-semibold">Unknown · KV profile missing</span>
+                  </div>
+                )
+              : (
+                  <div className={[
+                    "border-l-2 pl-2 text-[11px] leading-4",
+                    contextCapacity.fitsConfiguredContext
+                      ? "border-emerald-500 text-zinc-600"
+                      : "border-amber-500 text-amber-800",
+                  ].join(" ")}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="flex items-center gap-1">
+                        <span>Config max / request</span>
+                        <ParameterHelp
+                          label="Configuration context capacity"
+                          description={`Conservative KV-capacity estimate after model weights and reserved allocations, divided across ${contextCapacity.concurrentRequests} potentially resident requests. It uses ${formatBytes(contextCapacity.kvCacheBytesPerToken)} of KV per token and is bottlenecked by ${contextCapacity.bottleneckDomainId}. It does not treat SSD as KV capacity or prove the model's architectural context limit.`}
+                        />
+                      </span>
+                      <span className="text-right font-bold tabular-nums">
+                        ≈{formatApproxTokenCount(
+                          contextCapacity.maxContextTokensPerRequest,
+                        )} tok
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-zinc-500">
+                      Single sequence ≈{formatApproxTokenCount(
+                        contextCapacity.maxSingleSequenceTokens,
+                      )} · {contextCapacity.bottleneckDomainId}
+                    </div>
+                    {contextCapacity.fitsConfiguredContext
+                      ? null
+                      : (
+                          <div className="mt-0.5 font-semibold text-amber-800">
+                            Selected context exceeds this capacity estimate
+                          </div>
+                        )}
+                  </div>
+                )}
           <SliderField
             label="Batch sequences"
             description="Maximum request slices selected for one scheduler batch across decode and prefill. This limits per-batch sequence width, not the number of requests that may be queued or retain KV state."
