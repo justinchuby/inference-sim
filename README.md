@@ -34,6 +34,8 @@ The browser workbench is a static application. Model files stay local and are
 decoded and hashed in dedicated Web Workers; simulation does not require an
 inference server or upload model data.
 
+![Inference Sim workbench showing model evidence, continuous-serving metrics, context capacity, and an interactive device topology](docs/images/inference-sim-workbench.jpg)
+
 ## Direction
 
 The simulation model is being built around the onnx-genai memory and
@@ -73,76 +75,78 @@ benchmarks.
 
 ## Development
 
+### Setup
+
 ```bash
 pnpm install --frozen-lockfile
 pnpm build
 pnpm test
+```
 
-pnpm sim presets
-pnpm sim scenario gpu-npu
-pnpm sim scenario multi-gpu-ring-4
-pnpm sim scenario /path/to/custom-scenario.yaml
-pnpm sim static examples/mixtral-dgx-h100.yaml
-pnpm sim speculative examples/speculative-mtp.yaml
-pnpm sim speculative-trace examples/speculative-token-trace-mtp.yaml single-gpu-cpu
-pnpm sim speculative-capture examples/runtime-capture-target-only.yaml examples/runtime-capture-speculative.yaml single-gpu-cpu
-pnpm sim expert-cache examples/expert-cache.yaml
-pnpm sim serving multi-gpu examples/serving.yaml
-pnpm sim serving multi-gpu examples/serving-speculative.yaml
-pnpm sim serving multi-gpu examples/serving-speculative-experts.yaml
-pnpm sim serving multi-gpu-ring-4 examples/serving-speculative.yaml
-pnpm sim serving-compare examples/serving-speculative.yaml
-pnpm sim calibrate examples/calibration-synthetic.yaml
-pnpm sim serving-compare examples/serving-speculative.yaml examples/calibration-synthetic.yaml
-pnpm sim run multi-gpu examples/target-only.yaml
-pnpm sim run multi-gpu-ring-8 examples/target-only.yaml
-pnpm sim run /path/to/custom-scenario.yaml examples/target-only.yaml
-pnpm sim compare examples/target-only.yaml
-pnpm sim fault-campaign multi-gpu examples/target-only.yaml
-pnpm sim concurrent-campaign multi-gpu examples/concurrent-campaign.yaml
-pnpm sim concurrent-node-failure multi-node examples/concurrent-node-failure.yaml
-pnpm sim node-failover multi-node single-gpu-cpu examples/node-failover.yaml
+Start the local workbench:
+
+```bash
 pnpm dev:web
 ```
 
-`run`, `compare`, `serving`, `serving-compare`, and `fault-campaign` accept an
-optional final calibration path; without one they use the bundled heuristic
-cost model. The included calibration file is explicitly synthetic and remains
-heuristic. A measured compute dataset does not by itself upgrade results from
-the heuristic built-in topology presets: end-to-end timing uses the weakest
-confidence among the performance inputs actually used. Exact-path
-communication curves replace declared link performance only for the selected
-path's duration.
-Calibration revision 3 scopes communication curves to an exact scenario,
-ordered directed-link path, participant count, algorithm, optional canonical
-AllToAllV traffic signature, and observed byte range. Imported calibration
-never silently falls back to topology bandwidth or extrapolates beyond that
-range. Declared link latency and bandwidth still select the physical path for
-each message size, so their provenance remains part of end-to-end confidence
-even when an exact-path curve supplies the selected path's duration.
-AllToAllV signatures use the GCD-reduced source-rank to expert-owner matrix, so
-proportional message sizes share a curve while different skew shapes do not.
+### Common CLI Workflows
 
-CLI commands that take one scenario accept a listed preset,
-`multi-gpu-ring-N` for `N=2..64`, or a revision-5 scenario YAML/JSON file.
-Custom files pass the same strict unknown-field, enum, safe-integer, topology,
-placement, route, memory-ledger, and parallelism validation used by embedded
-FrozenPlan scenarios before any workload executes. `compare` and
-`serving-compare` intentionally retain the six fixed topology families so a
-custom target does not silently change the comparison population.
-
-See [docs/DESIGN.md](docs/DESIGN.md) for contracts, scope, confidence classes,
-device semantics, speculative execution, and delivery gates.
-See [docs/ONNX_GENAI_CAPTURE.md](docs/ONNX_GENAI_CAPTURE.md) for producing and
-verifying paired runtime evidence from the onnx-genai integration branch.
-
-Inspect an ONNX model package:
+List and inspect device scenarios:
 
 ```bash
-pnpm sim onnx-inspect \
-  /path/to/model.onnx \
-  /path/to/manifest.json
+pnpm sim presets
+pnpm sim scenario multi-gpu-ring-4
+pnpm sim scenario /path/to/custom-scenario.yaml
 ```
+
+Inspect an ONNX model package and run static memory analysis:
+
+```bash
+pnpm sim onnx-inspect /path/to/model.onnx /path/to/manifest.json
+pnpm sim static examples/mixtral-dgx-h100.yaml
+```
+
+Run serving, speculative decoding, and expert-cache workloads:
+
+```bash
+pnpm sim serving multi-gpu examples/serving.yaml
+pnpm sim serving multi-gpu examples/serving-speculative.yaml
+pnpm sim speculative examples/speculative-mtp.yaml
+pnpm sim expert-cache examples/expert-cache.yaml
+```
+
+Compare topologies or exercise failure protocols:
+
+```bash
+pnpm sim serving-compare examples/serving-speculative.yaml
+pnpm sim compare examples/target-only.yaml
+pnpm sim fault-campaign multi-gpu examples/target-only.yaml
+pnpm sim node-failover multi-node single-gpu-cpu examples/node-failover.yaml
+```
+
+Use `pnpm sim --help` for the complete command list.
+
+### Calibration and Custom Scenarios
+
+- `run`, `compare`, `serving`, `serving-compare`, and
+  `fault-campaign` accept an optional final calibration path. Without one,
+  they use the bundled heuristic cost model.
+- The included calibration file is synthetic and remains heuristic. End-to-end
+  confidence is the weakest confidence among the performance inputs actually
+  used.
+- Calibration revision 3 binds communication curves to an exact scenario,
+  ordered link path, participant count, algorithm, optional AllToAllV traffic
+  signature, and measured byte range. It never extrapolates silently.
+- Commands that take one scenario accept a listed preset,
+  `multi-gpu-ring-N` for `N=2..64`, or a revision-5 scenario YAML/JSON file.
+  Custom scenarios pass the same strict validation used for embedded plans.
+- `compare` and `serving-compare` retain the six fixed topology families so
+  a custom target cannot silently change the comparison population.
+
+### Design Documentation
+
+- [Simulator design and execution contracts](docs/DESIGN.md)
+- [Producing and verifying onnx-genai runtime captures](docs/ONNX_GENAI_CAPTURE.md)
 
 ## License
 
