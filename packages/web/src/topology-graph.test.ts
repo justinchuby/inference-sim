@@ -79,7 +79,7 @@ describe("topology graph projection", () => {
       "node0:host",
     ]);
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
-      .toBe("2× 32 GB/s · 1.5 us");
+      .toBe("32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward"))
       .toMatchObject({
         sourceHandle: "top-source-lane-2",
@@ -88,7 +88,7 @@ describe("topology graph projection", () => {
         pathOptions: { offset: 32 },
       });
     expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward")?.label)
-      .toBeUndefined();
+      .toBe("32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie1:forward"))
       .toMatchObject({
         type: "smoothstep",
@@ -99,6 +99,7 @@ describe("topology graph projection", () => {
     const gpu = graph.nodes.find((node) => node.id === "node0:gpu0")!;
     const host = graph.nodes.find((node) => node.id === "node0:host")!;
     expect(vram.position.y).toBeLessThan(host.position.y);
+    expect(host.position.y - vram.position.y).toBeGreaterThanOrEqual(180);
     expect(vram.position.x).toBe(gpu.position.x);
   });
 

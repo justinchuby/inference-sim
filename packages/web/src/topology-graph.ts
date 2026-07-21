@@ -91,11 +91,11 @@ const GROUP_X = 30;
 const GROUP_Y = 135;
 const GROUP_PADDING_X = 30;
 const GROUP_HEADER_HEIGHT = 70;
-const GROUP_HEIGHT = 590;
+const GROUP_HEIGHT = 670;
 const DEVICE_Y = GROUP_HEADER_HEIGHT;
 const LOCAL_MEMORY_Y = 225;
-const SHARED_MEMORY_Y = 345;
-const NETWORK_Y = 465;
+const SHARED_MEMORY_Y = 405;
+const NETWORK_Y = 545;
 const FABRIC_Y = 30;
 
 export function buildTopologyGraph(
@@ -322,9 +322,8 @@ export function buildTopologyGraph(
     }),
   );
   const renderedLinks = new Set<string>();
-  const labeledLinkGroups = new Set<string>();
-  const linkLabelGroupCounts = new Map<string, number>();
-  const renderedLinkGroupCounts = new Map<string, number>();
+  const linkRouteGroupCounts = new Map<string, number>();
+  const renderedLinkRouteGroupCounts = new Map<string, number>();
   scenario.links.forEach((link, index) => {
     const hasEarlierReverse = scenario.links.slice(0, index).some((candidate) => (
       candidate.sourceDomainId === link.targetDomainId
@@ -332,8 +331,8 @@ export function buildTopologyGraph(
       && equivalentLinkContract(link, candidate)
     ));
     if (hasEarlierReverse) return;
-    const key = linkLabelGroupKey(link, domainKindById);
-    linkLabelGroupCounts.set(key, (linkLabelGroupCounts.get(key) ?? 0) + 1);
+    const key = linkRouteGroupKey(link, domainKindById);
+    linkRouteGroupCounts.set(key, (linkRouteGroupCounts.get(key) ?? 0) + 1);
   });
   const linkEdges: TopologyGraphEdge[] = scenario.links.flatMap((link) => {
     if (renderedLinks.has(link.id)) return [];
@@ -345,12 +344,10 @@ export function buildTopologyGraph(
     ));
     renderedLinks.add(link.id);
     if (reverse !== undefined) renderedLinks.add(reverse.id);
-    const labelGroupKey = linkLabelGroupKey(link, domainKindById);
-    const showLabel = !labeledLinkGroups.has(labelGroupKey);
-    labeledLinkGroups.add(labelGroupKey);
-    const parallelCount = linkLabelGroupCounts.get(labelGroupKey) ?? 1;
-    const parallelIndex = renderedLinkGroupCounts.get(labelGroupKey) ?? 0;
-    renderedLinkGroupCounts.set(labelGroupKey, parallelIndex + 1);
+    const routeGroupKey = linkRouteGroupKey(link, domainKindById);
+    const parallelCount = linkRouteGroupCounts.get(routeGroupKey) ?? 1;
+    const parallelIndex = renderedLinkRouteGroupCounts.get(routeGroupKey) ?? 0;
+    renderedLinkRouteGroupCounts.set(routeGroupKey, parallelIndex + 1);
     const sharedEndpoint = sharedLinkEndpoint(link, domainKindById);
     const color = linkColor(link.kind);
     const path = [
@@ -389,11 +386,11 @@ export function buildTopologyGraph(
               },
             }
           : {}),
-        ...(showLabel && segmentIndex === labelSegment
+        ...(segmentIndex === labelSegment
           ? {
               label: [
                 link.transport,
-                `${parallelCount > 1 ? `${parallelCount}× ` : ""}${formatRate(link.bandwidthBytesPerSec)}`,
+                formatRate(link.bandwidthBytesPerSec),
                 formatDuration(link.latencyNs),
               ].filter(Boolean).join(" · "),
             }
@@ -472,7 +469,7 @@ export function topologyRelatedNodeIds(
   ];
 }
 
-function linkLabelGroupKey(
+function linkRouteGroupKey(
   link: SimulationScenario["links"][number],
   domainKindById: ReadonlyMap<
     string,
