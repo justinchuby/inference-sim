@@ -21,11 +21,6 @@ body {
   min-height: 100vh;
 }
 
-button,
-input {
-  font: inherit;
-}
-
 .workspace-grid {
   display: grid;
   grid-template-columns: 272px minmax(0, 1fr) 304px;
