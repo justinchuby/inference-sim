@@ -445,6 +445,33 @@ export function buildTopologyGraph(
   return { nodes, edges: [...accessEdges, ...linkEdges] };
 }
 
+export function topologyEdgeTouchesNode(
+  edge: TopologyGraphEdge,
+  nodeId: string,
+): boolean {
+  return edge.source === nodeId
+    || edge.target === nodeId
+    || edge.data.logicalSourceId === nodeId
+    || edge.data.logicalTargetId === nodeId
+    || edge.data.networkResourceIds?.includes(nodeId) === true;
+}
+
+export function topologyRelatedNodeIds(
+  scenario: SimulationScenario,
+  nodeId: string,
+): readonly string[] {
+  if (!scenario.devices.some((device) => device.id === nodeId)) {
+    return [nodeId];
+  }
+  return [
+    nodeId,
+    ...scenario.memoryDomains.filter((domain) => (
+      domain.governor.kind === "device"
+      && domain.governor.deviceId === nodeId
+    )).map((domain) => domain.id),
+  ];
+}
+
 function linkLabelGroupKey(
   link: SimulationScenario["links"][number],
   domainKindById: ReadonlyMap<

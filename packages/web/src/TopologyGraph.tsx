@@ -16,6 +16,8 @@ import {
   buildTopologyGraph,
   formatDuration,
   formatRate,
+  topologyEdgeTouchesNode,
+  topologyRelatedNodeIds,
   type TopologyGraphEdgeData,
   type TopologyGraphNodeData,
 } from "./topology-graph.js";
@@ -60,48 +62,72 @@ export default function TopologyGraph({
     data: node.data as FlowNodeData,
     selected: selection?.category === "node" && selection.id === node.id,
   })), [graph.nodes, selection]);
+  const graphNodeById = useMemo(() => new Map(
+    graph.nodes.map((node) => [node.id, node]),
+  ), [graph.nodes]);
+  const selectedRelatedNodeIds = useMemo(() => (
+    selection?.category === "node" && selection.data.category !== "system"
+      ? topologyRelatedNodeIds(scenario, selection.id)
+      : []
+  ), [scenario, selection]);
   const edges: FlowEdge[] = useMemo(() => graph.edges.map((edge) => {
     const selected = selection?.category === "edge" && selection.id === edge.id;
+    const connected = selection?.category === "node"
+      && (selection.data.category === "system"
+        ? topologyEdgeTouchesSystem(
+            edge,
+            selection.data.nodeId,
+            graphNodeById,
+          )
+        : selectedRelatedNodeIds.some((nodeId) => (
+            topologyEdgeTouchesNode(edge, nodeId)
+          )));
+    const dimmed = selection?.category === "node" && !connected;
+    const emphasized = selected || connected;
     return {
       ...edge,
       selected,
-      zIndex: selected ? 20 : edge.data.category === "link" ? 2 : 1,
+      zIndex: selected ? 20 : connected ? 10 : edge.data.category === "link" ? 2 : 1,
       style: {
         ...edge.style,
         cursor: "pointer",
         strokeWidth: selected
           ? Math.max(4, edge.style.strokeWidth + 2)
-          : edge.style.strokeWidth,
-        ...(selected
-          ? { filter: "drop-shadow(0 0 2px rgba(24, 24, 27, 0.45))" }
+          : connected
+            ? Math.max(3, edge.style.strokeWidth + 1)
+            : edge.style.strokeWidth,
+        opacity: dimmed ? 0.22 : 1,
+        ...(emphasized
+          ? { filter: "drop-shadow(0 0 2px rgba(24, 24, 27, 0.4))" }
           : {}),
       },
       markerEnd: edge.markerEnd === undefined
         ? undefined
         : {
             type: MarkerType.ArrowClosed,
-            color: edge.markerEnd.color,
+            color: dimmed ? "#d4d4d8" : edge.markerEnd.color,
           },
       markerStart: edge.markerStart === undefined
         ? undefined
         : {
             type: MarkerType.ArrowClosed,
-            color: edge.markerStart.color,
+            color: dimmed ? "#d4d4d8" : edge.markerStart.color,
           },
       data: edge.data as FlowEdgeData,
       labelStyle: {
-        fill: selected ? "#18181b" : "#52525b",
+        fill: emphasized ? "#18181b" : "#52525b",
+        opacity: dimmed ? 0.35 : 1,
         fontSize: 10,
-        fontWeight: selected ? 700 : 600,
+        fontWeight: emphasized ? 700 : 600,
       },
       labelBgStyle: {
-        fill: selected ? "#fef3c7" : "#ffffff",
-        fillOpacity: selected ? 1 : 0.92,
+        fill: emphasized ? "#fef3c7" : "#ffffff",
+        fillOpacity: dimmed ? 0.3 : emphasized ? 1 : 0.92,
       },
       labelBgPadding: [4, 2] as [number, number],
       labelBgBorderRadius: 2,
     };
-  }), [graph.edges, selection]);
+  }), [graph.edges, graphNodeById, selectedRelatedNodeIds, selection]);
 
   return (
     <div
@@ -340,6 +366,23 @@ function TopologyNode({
       </div>
     </div>
   );
+}
+
+function topologyEdgeTouchesSystem(
+  edge: ReturnType<typeof buildTopologyGraph>["edges"][number],
+  nodeId: string,
+  graphNodeById: ReadonlyMap<
+    string,
+    ReturnType<typeof buildTopologyGraph>["nodes"][number]
+  >,
+): boolean {
+  return [
+    edge.source,
+    edge.target,
+    edge.data.logicalSourceId,
+    edge.data.logicalTargetId,
+    ...(edge.data.networkResourceIds ?? []),
+  ].some((id) => id !== undefined && graphNodeById.get(id)?.data.nodeId === nodeId);
 }
 
 function Legend({

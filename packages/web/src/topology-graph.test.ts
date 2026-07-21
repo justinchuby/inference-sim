@@ -7,6 +7,8 @@ import {
   buildTopologyGraph,
   formatDuration,
   formatRate,
+  topologyEdgeTouchesNode,
+  topologyRelatedNodeIds,
 } from "./topology-graph.js";
 
 describe("topology graph projection", () => {
@@ -69,6 +71,13 @@ describe("topology graph projection", () => {
       style: { stroke: "#a1a1aa", strokeWidth: 1, strokeDasharray: "4 4" },
       data: { kind: "memory access", memoryRelation: "accessible" },
     });
+    expect(topologyRelatedNodeIds(scenario, "node0:gpu0")).toEqual([
+      "node0:gpu0",
+      "node0:gpu0:vram",
+    ]);
+    expect(topologyRelatedNodeIds(scenario, "node0:host")).toEqual([
+      "node0:host",
+    ]);
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward")?.label)
       .toBe("2× 32 GB/s · 1.5 us");
     expect(graph.edges.find((edge) => edge.id === "node0:pcie0:forward"))
@@ -188,6 +197,15 @@ describe("topology graph projection", () => {
       },
     });
     expect(pathEdges[3].markerEnd).toMatchObject({ type: "arrowclosed" });
+    expect(pathEdges.every((edge) => (
+      topologyEdgeTouchesNode(edge, "node0:gpu0:vram")
+    ))).toBe(true);
+    expect(pathEdges.every((edge) => (
+      topologyEdgeTouchesNode(edge, "lan:fabric0")
+    ))).toBe(true);
+    expect(pathEdges.some((edge) => (
+      topologyEdgeTouchesNode(edge, "unrelated")
+    ))).toBe(false);
   });
 
   it("formats transport evidence without hiding units", () => {
