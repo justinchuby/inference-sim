@@ -7,6 +7,33 @@ The project is intentionally split between exact protocol checks and calibrated
 performance estimates. It can prove ledger and state-transition properties; it
 does not claim hardware-accurate latency without calibration data.
 
+**Live workbench:** [justinchuby.com/inference-sim](https://www.justinchuby.com/inference-sim/)
+
+## What You Can Model
+
+- Import local ONNX model packages directly in the browser, including external
+  tensor data and onnx-genai inference metadata for multi-model pipelines.
+- Inspect model size, parameter count, weight/activation dtype, quantization
+  down to INT2/INT1, estimated FLOPs, active-weight traffic, and theoretical
+  compute and bandwidth roofs.
+- Build or edit one- to four-node device topologies with separate compute,
+  VRAM/RAM/unified-memory/SSD domains, resource-manager capacity limits, and
+  selectable PCIe, fabric, Ethernet, or RDMA links.
+- Simulate target-only and supported speculative decode families, continuous
+  batching, chunked prefill, MoE placement and expert caching, TP/PP/EP/DP,
+  multimodal pipelines, and optional SSD streaming.
+- Explore prompts up to 1M tokens and outputs up to 32K tokens with logarithmic
+  controls. The workbench estimates the selected configuration's per-request
+  and single-sequence context capacity from model KV geometry, model residency,
+  placement, sharding, and user allocation limits.
+- Read replay-verified latency, TTFT/ITL, throughput, memory pressure, resource
+  utilization, roofline, topology, and confidence/provenance evidence; export
+  the complete deterministic result and import it later for verification.
+
+The browser workbench is a static application. Model files stay local and are
+decoded and hashed in dedicated Web Workers; simulation does not require an
+inference server or upload model data.
+
 ## Current Status
 
 Phase 1 is complete in `@inference-sim/core`:
@@ -87,6 +114,9 @@ Phase 3 has an initial speculative workload slice:
 - revisioned topology-cost calibration import with repeated observations,
   provenance, quality diagnostics, scoped applicability, stable fingerprints,
   exact-path transfer/collective curves, and fail-closed interpolation ranges.
+- immutable topology-plan template reuse for structurally identical stateless
+  serving batches, with exact occurrence-weighted metrics and explicit cache
+  exclusion for stateful expert-cache and physical streaming execution.
 
 The initial CLI and browser dashboard are implemented. The dashboard runs core
 simulation in a cancellable Web Worker and exposes topology selection,
@@ -95,6 +125,9 @@ target-only versus proposer-family serving, modeled latency/throughput, request
 TTFT/ITL, memory, resource-utilization and caching charts, and a recent event
 inspector. Serving can run one selected topology or compare all six in one
 replay-verified view.
+It also provides a model-aware roofline view, interactive selectable topology
+graph, hardware compute-profile catalog, local model and result import/export,
+long-context controls, and a configuration-specific context-capacity estimate.
 The CLI also exports a compiled workload as a self-contained, revisioned
 FrozenPlan artifact and executes that artifact without consulting mutable
 preset definitions. Scenario, plan, and whole-envelope fingerprints fail
@@ -235,6 +268,25 @@ prompt-lookup, draft-model, MTP, EAGLE-3, shared-KV, and self-speculative
 proposers with target-authoritative verification and composite checkpoint
 restore. Self-speculative is modeled as a design projection because the current
 onnx-genai runtime does not expose it as a released proposer mode.
+
+## Simulation Scale
+
+Long-context inputs do not expand into one event per prompt token: chunked
+prefill is represented as exact aggregate token work per scheduled batch.
+Repeated stateless serving batches compile into immutable relative-time
+topology templates, while request scheduling, batch membership, token
+timestamps, KV accounting, and completion times remain exact. Aggregate
+operation and utilization metrics multiply each template's reservations by its
+exact occurrence count instead of rescanning duplicate plans.
+
+The test suite includes a 1,048,576-token chunked prompt and a lossless 32,768
+output-token trace. A 32-request by 4,096-output-token stress case (131,072
+generated tokens) is also used during performance validation. Stateful MoE
+residency, expert prefetch, SSD streaming, and shared physical-resource paths
+are deliberately simulated batch by batch and are never accelerated by the
+stateless template cache. Wall-clock runtime depends on the browser and host;
+these workloads are correctness and scalability guards, not hardware latency
+benchmarks.
 
 ## Development
 
