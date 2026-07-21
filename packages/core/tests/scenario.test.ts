@@ -12,6 +12,7 @@ import {
   configureSmallLanNetwork,
   findTransferPath,
   findTransferRoute,
+  parseSimulationScenario,
   validateScenario,
   type MemoryDomainSpec,
   type SimLinkSpec,
@@ -835,5 +836,39 @@ describe("validateScenario", () => {
         && issue.message.includes("2-rank communicator")
       ),
     )).toBe(true);
+  });
+
+  it("validates structured custom compute peaks", () => {
+    const base = buildScenarioPreset("cpu-only");
+    const valid: SimulationScenario = {
+      ...base,
+      devices: base.devices.map((device) => ({
+        ...device,
+        customComputePeaks: [
+          { dtype: "fp32", operationsPerSecond: 12e12 },
+          { dtype: "int8", operationsPerSecond: 48e12 },
+        ],
+      })),
+    };
+    expect(validateScenario(valid).valid).toBe(true);
+    expect(parseSimulationScenario(structuredClone(valid))).toEqual(valid);
+
+    const invalid: SimulationScenario = {
+      ...valid,
+      devices: valid.devices.map((device) => ({
+        ...device,
+        computeProfileId: "intel-xeon-6980p-cpu",
+        customComputePeaks: [
+          { dtype: "fp32", operationsPerSecond: -1 },
+          { dtype: "fp32", operationsPerSecond: 1e12 },
+        ],
+      })),
+    };
+    const codes = new Set(validateScenario(invalid).issues.map((issue) => (
+      issue.code
+    )));
+    expect(codes).toContain("multiple_compute_profiles");
+    expect(codes).toContain("positive_compute_peak");
+    expect(codes).toContain("duplicate_value");
   });
 });

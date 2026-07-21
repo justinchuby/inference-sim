@@ -187,6 +187,9 @@ export function buildTopologyGraph(
             compactList(device.capabilities),
             compactList(device.supportedDtypes),
             hardwareComputeProfile(device.computeProfileId)?.model
+              ?? (device.customComputePeaks === undefined
+                ? undefined
+                : "Custom compute")
               ?? "compute peak not bound",
           ],
         },

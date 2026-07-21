@@ -123,6 +123,39 @@ describe("simulateDashboard", () => {
     ))).toBe(true);
   });
 
+  it("uses user-declared dense compute peaks without labeling them official", () => {
+    const scenario = buildScenarioPreset("multi-gpu");
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario: {
+        ...scenario,
+        devices: scenario.devices.map((device) => ({
+          ...device,
+          customComputePeaks: [{
+            dtype: "fp16",
+            operationsPerSecond: 10e12,
+          }],
+        })),
+      },
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "fp16"),
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+      },
+    });
+
+    expect(result.roofline?.computeRoof).toMatchObject({
+      label: "User-declared dense compute",
+      dtype: "fp16",
+      evidence: "user_declared",
+    });
+    expect(result.roofline?.assumptions.some((assumption) => (
+      assumption.includes("not vendor-verified")
+    ))).toBe(true);
+  });
+
   it("labels speculative verification as its own roofline phase", () => {
     const result = simulateDashboard({
       ...base,

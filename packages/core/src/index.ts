@@ -284,6 +284,7 @@ export {
   type CommunicatorRankSpec,
   type ComputeCapability,
   type ConfidenceClass,
+  type CustomComputePeakSpec,
   type EvidenceProvenance,
   type GovernorOwner,
   type MemoryDomainKind,

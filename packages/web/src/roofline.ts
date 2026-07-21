@@ -130,7 +130,9 @@ export function buildDashboardRoofline(
       "Arithmetic intensity is model FLOPs divided by active weight bytes at the selected execution width.",
       computeRoof?.evidence === "vendor_peak"
         ? "The compute roof sums official dense peaks for every active device with a compatible hardware profile."
-        : "Without a bound compatible hardware profile, the compute roof is an effective ceiling from the topology cost model.",
+        : computeRoof?.evidence === "user_declared"
+          ? "The compute roof sums user-declared dense peaks for every active device; these values are not vendor-verified."
+          : "Without a bound compatible hardware profile, the compute roof is an effective ceiling from the topology cost model.",
       "Weight-only quantization changes active bytes but does not select a pure integer compute roof when activations use floating point.",
       "Interconnect and storage roofs are counterfactual ceilings unless the replay actually routes model data through that tier.",
       "Pipeline component FLOPs are allocated in proportion to component weight bytes and are heuristic.",
@@ -259,28 +261,43 @@ function resolvedComputeRoof(
     (candidate) => candidate.id === id,
   )).filter((device) => device !== undefined);
   const boundProfiles = devices.filter((device) => (
-    device.computeProfileId !== undefined
+    device.computeProfileId !== undefined || device.customComputePeaks !== undefined
   ));
   if (boundProfiles.length > 0) {
     if (boundProfiles.length !== devices.length) return undefined;
-    const peaks = boundProfiles.map((device) => ({
-      device,
-      profile: hardwareComputeProfile(device.computeProfileId),
-      peak: denseHardwareComputePeak(device.computeProfileId, dtype),
-    }));
-    if (peaks.some((item) => item.profile === undefined || item.peak === undefined)) {
+    const peaks = boundProfiles.map((device) => {
+      if (device.customComputePeaks !== undefined) {
+        return {
+          device,
+          peak: device.customComputePeaks.find((item) => (
+            item.dtype.toLowerCase() === dtype.toLowerCase()
+          )),
+        };
+      }
+      return {
+        device,
+        profile: hardwareComputeProfile(device.computeProfileId),
+        peak: denseHardwareComputePeak(device.computeProfileId, dtype),
+      };
+    });
+    if (peaks.some((item) => item.peak === undefined)) {
       return undefined;
     }
+    const userDeclared = peaks.some((item) => (
+      item.device.customComputePeaks !== undefined
+    ));
     return {
-      label: "Official dense compute",
+      label: userDeclared ? "User-declared dense compute" : "Official dense compute",
       flopsPerSecond: peaks.reduce((sum, item) => (
         sum + item.peak!.operationsPerSecond
       ), 0),
-      evidence: "vendor_peak",
+      evidence: userDeclared ? "user_declared" : "vendor_peak",
       dtype,
-      profileIds: peaks.map((item) => item.profile!.id),
+      profileIds: peaks.map((item) => (
+        item.profile?.id ?? `custom:${item.device.id}`
+      )),
       sourceUrls: [...new Set(peaks.flatMap((item) => (
-        item.profile!.sources.map((itemSource) => itemSource.url)
+        item.profile?.sources.map((itemSource) => itemSource.url) ?? []
       )))],
     };
   }

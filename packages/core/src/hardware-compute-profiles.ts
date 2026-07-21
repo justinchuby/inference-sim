@@ -97,6 +97,7 @@ const INTEL_GAUDI_SOURCE = source(
 );
 
 export const HARDWARE_COMPUTE_PROFILES: readonly HardwareComputeProfile[] = [
+  ...cpuProfiles(),
   ...(["H100 SXM", "H200 SXM"] as const).map((model) => ({
     id: `nvidia-${model.toLowerCase().replaceAll(" ", "-")}`,
     vendor: "NVIDIA" as const,
@@ -265,6 +266,203 @@ export const HARDWARE_COMPUTE_PROFILES: readonly HardwareComputeProfile[] = [
   ...qualcommProfiles(),
   ...appleProfiles(),
 ];
+
+function cpuProfiles(): readonly HardwareComputeProfile[] {
+  const profile = (
+    id: string,
+    vendor: HardwareComputeProfile["vendor"],
+    model: string,
+    releaseDate: string,
+    productClass: HardwareComputeProfile["productClass"],
+    aliases: readonly string[],
+    itemSource: HardwareComputeSource,
+    options: Pick<HardwareComputeProfile, "peaks"> & { readonly notes?: string } = {
+      peaks: [],
+    },
+  ): HardwareComputeProfile => ({
+    id,
+    vendor,
+    model,
+    releaseDate,
+    deviceKind: "cpu",
+    productClass,
+    aliases,
+    sources: [itemSource],
+    peaks: options.peaks,
+    notes: options.notes ?? `${vendor} does not publish an auditable dtype-specific CPU compute peak for this processor.`,
+  });
+
+  const appleM2 = source(
+    "Apple M2 announcement",
+    "https://www.apple.com/newsroom/2022/06/apple-unveils-m2-with-breakthrough-performance-and-capabilities/",
+  );
+  const appleM2ProMax = source(
+    "Apple M2 Pro and M2 Max announcement",
+    "https://www.apple.com/newsroom/2023/01/apple-unveils-m2-pro-and-m2-max-next-generation-chips-for-next-level-workflows/",
+  );
+  const appleM2Ultra = source(
+    "Apple M2 Ultra announcement",
+    "https://www.apple.com/newsroom/2023/06/apple-introduces-m2-ultra/",
+  );
+  const appleM3 = source(
+    "Apple M3, M3 Pro, and M3 Max announcement",
+    "https://www.apple.com/newsroom/2023/10/apple-unveils-m3-m3-pro-and-m3-max-the-most-advanced-chips-for-a-personal-computer/",
+  );
+  const appleM3Ultra = source(
+    "Apple M3 Ultra announcement",
+    "https://www.apple.com/newsroom/2025/03/apple-reveals-m3-ultra-taking-apple-silicon-to-a-new-extreme/",
+  );
+  const appleM4 = source(
+    "Apple M4 announcement",
+    "https://www.apple.com/newsroom/2024/05/apple-introduces-m4-chip/",
+  );
+  const appleM4ProMax = source(
+    "Apple M4 Pro and M4 Max announcement",
+    "https://www.apple.com/newsroom/2024/10/apple-introduces-m4-pro-and-m4-max/",
+  );
+  const apple = [
+    ["apple-m2-cpu", "M2 CPU", "2022-06-06", ["M2 8-core CPU"], appleM2],
+    ["apple-m2-pro-cpu", "M2 Pro CPU", "2023-01-17", ["M2 Pro 12-core CPU"], appleM2ProMax],
+    ["apple-m2-max-cpu", "M2 Max CPU", "2023-01-17", ["M2 Max 12-core CPU"], appleM2ProMax],
+    ["apple-m2-ultra-cpu", "M2 Ultra CPU", "2023-06-05", ["M2 Ultra 24-core CPU"], appleM2Ultra],
+    ["apple-m3-cpu", "M3 CPU", "2023-10-30", ["M3 8-core CPU"], appleM3],
+    ["apple-m3-pro-cpu", "M3 Pro CPU", "2023-10-30", ["M3 Pro 12-core CPU"], appleM3],
+    ["apple-m3-max-cpu", "M3 Max CPU", "2023-10-30", ["M3 Max 16-core CPU"], appleM3],
+    ["apple-m3-ultra-cpu", "M3 Ultra CPU", "2025-03-05", ["M3 Ultra 32-core CPU"], appleM3Ultra],
+    ["apple-m4-cpu", "M4 CPU", "2024-05-07", ["M4 10-core CPU"], appleM4],
+    ["apple-m4-pro-cpu", "M4 Pro CPU", "2024-10-30", ["M4 Pro 14-core CPU"], appleM4ProMax],
+    ["apple-m4-max-cpu", "M4 Max CPU", "2024-10-30", ["M4 Max 16-core CPU"], appleM4ProMax],
+  ] as const;
+
+  const intelDesktop = source(
+    "Intel Core desktop processor generations and launch dates",
+    "https://www.intel.com/content/www/us/en/support/articles/000099655/processors.html",
+  );
+  const intelMeteorLake = source(
+    "Intel Core Ultra Series 1 product collection",
+    "https://www.intel.com/content/www/us/en/products/details/processors/core-ultra/products.html",
+  );
+  const intelArrowLake = source(
+    "Intel Core Ultra Series 2 product collection",
+    "https://www.intel.com/content/www/us/en/products/details/processors/core-ultra/series-2/products.html",
+  );
+  const intelConsumer = [
+    ["intel-core-i5-13600k-cpu", "Core i5-13600K CPU", "2022-10-20", ["i5-13600K", "Raptor Lake"], intelDesktop],
+    ["intel-core-i7-13700k-cpu", "Core i7-13700K CPU", "2022-10-20", ["i7-13700K", "Raptor Lake"], intelDesktop],
+    ["intel-core-i9-13900k-cpu", "Core i9-13900K CPU", "2022-10-20", ["i9-13900K", "Raptor Lake"], intelDesktop],
+    ["intel-core-i5-14600k-cpu", "Core i5-14600K CPU", "2023-10-17", ["i5-14600K", "Raptor Lake Refresh"], intelDesktop],
+    ["intel-core-i7-14700k-cpu", "Core i7-14700K CPU", "2023-10-17", ["i7-14700K", "Raptor Lake Refresh"], intelDesktop],
+    ["intel-core-i9-14900k-cpu", "Core i9-14900K CPU", "2023-10-17", ["i9-14900K", "Raptor Lake Refresh"], intelDesktop],
+    ["intel-core-ultra-5-125h-cpu", "Core Ultra 5 125H CPU", "2023-12-14", ["Ultra 5 125H", "Meteor Lake"], intelMeteorLake],
+    ["intel-core-ultra-7-165h-cpu", "Core Ultra 7 165H CPU", "2023-12-14", ["Ultra 7 165H", "Meteor Lake"], intelMeteorLake],
+    ["intel-core-ultra-9-185h-cpu", "Core Ultra 9 185H CPU", "2023-12-14", ["Ultra 9 185H", "Meteor Lake"], intelMeteorLake],
+    ["intel-core-ultra-5-245k-cpu", "Core Ultra 5 245K CPU", "2024-10-24", ["Ultra 5 245K", "Arrow Lake"], intelArrowLake],
+    ["intel-core-ultra-7-265k-cpu", "Core Ultra 7 265K CPU", "2024-10-24", ["Ultra 7 265K", "Arrow Lake"], intelArrowLake],
+    ["intel-core-ultra-9-285k-cpu", "Core Ultra 9 285K CPU", "2024-10-24", ["Ultra 9 285K", "Arrow Lake"], intelArrowLake],
+  ] as const;
+
+  const intel8480 = source(
+    "Intel Xeon Platinum 8480+ processor specifications",
+    "https://www.intel.com/content/www/us/en/products/sku/231746/intel-xeon-platinum-8480-processor-105m-cache-2-00-ghz/specifications.html",
+  );
+  const intel8592 = source(
+    "Intel Xeon Platinum 8592+ processor specifications",
+    "https://www.intel.com/content/www/us/en/products/sku/237255/intel-xeon-platinum-8592-processor-320m-cache-1-90-ghz/specifications.html",
+  );
+  const intel6980 = source(
+    "Intel Xeon 6980P processor specifications",
+    "https://www.intel.com/content/www/us/en/products/sku/240777/intel-xeon-6980p-processor-504m-cache-2-00-ghz/specifications.html",
+  );
+  const intelServer = [
+    profile("intel-xeon-platinum-8480-plus-cpu", "Intel", "Xeon Platinum 8480+ CPU", "2023-01-10", "datacenter", ["Xeon 8480+", "4th Gen Xeon", "Sapphire Rapids"], intel8480, {
+      peaks: [peak("fp64", 3.584 * T, "vector"), peak("fp32", 7.168 * T, "vector")],
+      notes: "Conservative base-clock vector roof: 56 cores at 2.0 GHz with two documented AVX-512 FMA units per core; AMX is excluded.",
+    }),
+    profile("intel-xeon-platinum-8592-plus-cpu", "Intel", "Xeon Platinum 8592+ CPU", "2023-12-14", "datacenter", ["Xeon 8592+", "5th Gen Xeon", "Emerald Rapids"], intel8592),
+    profile("intel-xeon-6980p-cpu", "Intel", "Xeon 6980P CPU", "2024-09-24", "datacenter", ["Xeon 6980P", "6th Gen Xeon", "Granite Rapids"], intel6980, {
+      peaks: [peak("fp64", 8.192 * T, "vector"), peak("fp32", 16.384 * T, "vector")],
+      notes: "Conservative base-clock vector roof: 128 cores at 2.0 GHz with two AVX-512 FMA units per core; AMX is excluded.",
+    }),
+  ];
+
+  const amdRyzen7000 = source(
+    "AMD Ryzen 7000 Series desktop processor quick reference guide",
+    "https://www.amd.com/content/dam/amd/en/documents/partner-hub/ryzen/amd-ryzen-7000-series-desktop-processors-quick-reference-guide.pdf",
+  );
+  const amdRyzen9000 = source(
+    "AMD Ryzen 9000 Series desktop processors",
+    "https://www.amd.com/en/products/processors/desktops/ryzen/9000-series.html",
+  );
+  const amdConsumer = [
+    ["amd-ryzen-5-7600x-cpu", "Ryzen 5 7600X CPU", "2022-09-27", ["Ryzen 5 7600X", "Zen 4"], amdRyzen7000],
+    ["amd-ryzen-7-7700x-cpu", "Ryzen 7 7700X CPU", "2022-09-27", ["Ryzen 7 7700X", "Zen 4"], amdRyzen7000],
+    ["amd-ryzen-9-7950x-cpu", "Ryzen 9 7950X CPU", "2022-09-27", ["Ryzen 9 7950X", "Zen 4"], amdRyzen7000],
+    ["amd-ryzen-5-9600x-cpu", "Ryzen 5 9600X CPU", "2024-08-08", ["Ryzen 5 9600X", "Zen 5"], amdRyzen9000],
+    ["amd-ryzen-7-9700x-cpu", "Ryzen 7 9700X CPU", "2024-08-08", ["Ryzen 7 9700X", "Zen 5"], amdRyzen9000],
+    ["amd-ryzen-9-9950x-cpu", "Ryzen 9 9950X CPU", "2024-08-15", ["Ryzen 9 9950X", "Zen 5"], amdRyzen9000],
+  ] as const;
+  const amdThreadripper7000 = source(
+    "AMD Ryzen Threadripper PRO 7000 WX-Series announcement",
+    "https://www.amd.com/en/newsroom/press-releases/2023-10-19-amd-introduces-new-amd-ryzen-threadripper-7000-ser.html",
+  );
+  const amdThreadripper9000 = source(
+    "AMD Ryzen Threadripper PRO 9000 WX-Series launch",
+    "https://www.amd.com/en/blogs/2025/amd-introduces-new-zen-5-based-ryzen-threadripper-pro.html",
+  );
+  const amd9654 = source(
+    "AMD EPYC 9654 product specifications",
+    "https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9654.html",
+  );
+  const amd9965 = source(
+    "AMD EPYC 9005 Series processor specifications",
+    "https://www.amd.com/en/products/processors/server/epyc/9005-series.html",
+  );
+  const amdWorkstationAndServer = [
+    profile("amd-threadripper-pro-7995wx-cpu", "AMD", "Ryzen Threadripper PRO 7995WX CPU", "2023-11-21", "desktop", ["Threadripper PRO 7995WX", "Storm Peak"], amdThreadripper7000),
+    profile("amd-threadripper-pro-9995wx-cpu", "AMD", "Ryzen Threadripper PRO 9995WX CPU", "2025-07-23", "desktop", ["Threadripper PRO 9995WX", "Shimada Peak"], amdThreadripper9000),
+    profile("amd-epyc-9654-cpu", "AMD", "EPYC 9654 CPU", "2022-11-10", "datacenter", ["EPYC 9654", "EPYC 9004", "Genoa"], amd9654, {
+      peaks: [peak("fp64", 3.6864 * T, "vector"), peak("fp32", 7.3728 * T, "vector")],
+      notes: "Conservative base-clock vector roof: 96 cores at 2.4 GHz with two 256-bit FMA pipes per Zen 4 core.",
+    }),
+    profile("amd-epyc-9965-cpu", "AMD", "EPYC 9965 CPU", "2024-10-10", "datacenter", ["EPYC 9965", "EPYC 9005", "Turin Dense"], amd9965),
+  ];
+
+  const qualcommXPlus = source(
+    "Qualcomm Snapdragon X Plus specifications",
+    "https://www.qualcomm.com/laptops/products/snapdragon-x-plus",
+  );
+  const qualcommXElite = source(
+    "Qualcomm Snapdragon X Elite specifications",
+    "https://www.qualcomm.com/laptops/products/snapdragon-x-elite",
+  );
+  const qualcommX2 = source(
+    "Qualcomm Snapdragon X2 Elite product brief",
+    "https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/Snapdragon-X2-Elite-Product-Brief.pdf",
+  );
+  const qualcomm = [
+    ["qualcomm-snapdragon-x-plus-cpu", "Snapdragon X Plus CPU", "2024-06-18", ["Snapdragon X Plus", "X1P", "Oryon CPU"], qualcommXPlus],
+    ["qualcomm-snapdragon-x-elite-cpu", "Snapdragon X Elite CPU", "2024-06-18", ["Snapdragon X Elite", "X1E", "12-core Oryon CPU"], qualcommXElite],
+    ["qualcomm-snapdragon-x2-elite-cpu", "Snapdragon X2 Elite CPU", "2026", ["Snapdragon X2 Elite", "X2E-88-100", "X2E-80-100", "Oryon CPU"], qualcommX2],
+    ["qualcomm-snapdragon-x2-elite-extreme-cpu", "Snapdragon X2 Elite Extreme CPU", "2026", ["Snapdragon X2 Elite Extreme", "X2E-96-100", "18-core Oryon CPU"], qualcommX2],
+  ] as const;
+
+  return [
+    ...apple.map(([id, model, releaseDate, aliases, itemSource]) => (
+      profile(id, "Apple", model, releaseDate, "integrated", aliases, itemSource)
+    )),
+    ...intelConsumer.map(([id, model, releaseDate, aliases, itemSource]) => (
+      profile(id, "Intel", model, releaseDate, "desktop", aliases, itemSource)
+    )),
+    ...intelServer,
+    ...amdConsumer.map(([id, model, releaseDate, aliases, itemSource]) => (
+      profile(id, "AMD", model, releaseDate, "desktop", aliases, itemSource)
+    )),
+    ...amdWorkstationAndServer,
+    ...qualcomm.map(([id, model, releaseDate, aliases, itemSource]) => (
+      profile(id, "Qualcomm", model, releaseDate, "mobile", aliases, itemSource)
+    )),
+  ];
+}
 
 function intelProfiles(): readonly HardwareComputeProfile[] {
   const npuSource = (model: string, url: string) => source(

@@ -35,6 +35,50 @@ describe("hardware compute registry", () => {
     });
   });
 
+  it("offers sourced CPU profiles without inventing undisclosed peaks", () => {
+    const cpuProfiles = HARDWARE_COMPUTE_PROFILES.filter((profile) => (
+      profile.deviceKind === "cpu"
+    ));
+    expect(cpuProfiles).toHaveLength(40);
+    expect(new Set(cpuProfiles.map((profile) => profile.vendor)))
+      .toEqual(new Set(["AMD", "Intel", "Apple", "Qualcomm"]));
+    expect(cpuProfiles.every((profile) => profile.deviceKind === "cpu")).toBe(true);
+    expect(cpuProfiles.every((profile) => Number(profile.releaseDate.slice(0, 4)) >= 2022))
+      .toBe(true);
+    expect(denseHardwareComputePeak("amd-epyc-9654-cpu", "fp32"))
+      .toMatchObject({ operationsPerSecond: 7.3728e12 });
+    expect(hardwareComputeProfile("apple-m4-max-cpu")?.peaks)
+      .toEqual([]);
+    expect(hardwareComputeProfile("qualcomm-snapdragon-x2-elite-extreme-cpu")?.peaks)
+      .toEqual([]);
+  });
+
+  it("covers representative CPU families and performance tiers", () => {
+    const ids = new Set(HARDWARE_COMPUTE_PROFILES.filter((profile) => (
+      profile.deviceKind === "cpu"
+    )).map((profile) => profile.id));
+    const expectedFamilies = [
+      ["apple-m2-cpu", "apple-m2-pro-cpu", "apple-m2-max-cpu", "apple-m2-ultra-cpu"],
+      ["apple-m3-cpu", "apple-m3-pro-cpu", "apple-m3-max-cpu", "apple-m3-ultra-cpu"],
+      ["apple-m4-cpu", "apple-m4-pro-cpu", "apple-m4-max-cpu"],
+      ["intel-core-i5-13600k-cpu", "intel-core-i7-13700k-cpu", "intel-core-i9-13900k-cpu"],
+      ["intel-core-i5-14600k-cpu", "intel-core-i7-14700k-cpu", "intel-core-i9-14900k-cpu"],
+      ["intel-core-ultra-5-125h-cpu", "intel-core-ultra-7-165h-cpu", "intel-core-ultra-9-185h-cpu"],
+      ["intel-core-ultra-5-245k-cpu", "intel-core-ultra-7-265k-cpu", "intel-core-ultra-9-285k-cpu"],
+      ["intel-xeon-platinum-8480-plus-cpu", "intel-xeon-platinum-8592-plus-cpu", "intel-xeon-6980p-cpu"],
+      ["amd-ryzen-5-7600x-cpu", "amd-ryzen-7-7700x-cpu", "amd-ryzen-9-7950x-cpu"],
+      ["amd-ryzen-5-9600x-cpu", "amd-ryzen-7-9700x-cpu", "amd-ryzen-9-9950x-cpu"],
+      ["amd-threadripper-pro-7995wx-cpu", "amd-threadripper-pro-9995wx-cpu"],
+      ["amd-epyc-9654-cpu", "amd-epyc-9965-cpu"],
+      ["qualcomm-snapdragon-x-plus-cpu", "qualcomm-snapdragon-x-elite-cpu"],
+      ["qualcomm-snapdragon-x2-elite-cpu", "qualcomm-snapdragon-x2-elite-extreme-cpu"],
+    ];
+    for (const family of expectedFamilies) {
+      expect(family.every((id) => ids.has(id)), `missing CPU family member from ${family.join(", ")}`)
+        .toBe(true);
+    }
+  });
+
   it("does not reinterpret generic TOPS as dtype-specific compute", () => {
     expect(hardwareComputeProfile("apple-m4-neural-engine")?.peaks[0])
       .toMatchObject({ dtype: "vendor_ai", sparsity: "unspecified" });

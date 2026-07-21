@@ -111,7 +111,11 @@ export interface DashboardRooflineResult {
   readonly computeRoof?: {
     readonly label: string;
     readonly flopsPerSecond: number;
-    readonly evidence: "vendor_peak" | "calibrated_effective" | "heuristic_effective";
+    readonly evidence:
+      | "vendor_peak"
+      | "user_declared"
+      | "calibrated_effective"
+      | "heuristic_effective";
     readonly dtype: string;
     readonly profileIds?: readonly string[];
     readonly sourceUrls?: readonly string[];

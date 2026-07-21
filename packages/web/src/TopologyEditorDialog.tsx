@@ -36,7 +36,10 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select.js";
@@ -53,6 +56,17 @@ import {
   NETWORK_TRANSPORTS,
 } from "./topology-editor.js";
 import TopologyGraph from "./TopologyGraph.js";
+
+const CUSTOM_COMPUTE_DTYPES = [
+  "fp32",
+  "bf16",
+  "fp16",
+  "fp8",
+  "int8",
+  "int4",
+  "int2",
+  "int1",
+] as const;
 
 export default function TopologyEditorDialog({
   open,
@@ -363,7 +377,11 @@ function DeviceEditor({
   const computeProfiles = HARDWARE_COMPUTE_PROFILES.filter((profile) => (
     profile.deviceKind === device.kind
   ));
+  const computeProfileVendors = [...new Set(computeProfiles.map((profile) => (
+    profile.vendor
+  )))];
   const selectedProfile = hardwareComputeProfile(device.computeProfileId);
+  const customCompute = device.customComputePeaks !== undefined;
   return (
     <section className="rounded-md border border-zinc-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
@@ -379,18 +397,31 @@ function DeviceEditor({
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <EditorField label="Hardware compute profile" className="sm:col-span-2">
           <Select
-            value={device.computeProfileId ?? "__unspecified__"}
+            value={device.computeProfileId
+              ?? (customCompute ? "__custom__" : "__unspecified__")}
             onValueChange={(value) => onDeviceChange((current) => {
               if (value === "__unspecified__") {
                 const { computeProfileId: _removed, ...rest } = current;
-                return rest;
+                const { customComputePeaks: _customRemoved, ...withoutCustom } = rest;
+                return withoutCustom;
+              }
+              if (value === "__custom__") {
+                const { computeProfileId: _removed, ...rest } = current;
+                return {
+                  ...rest,
+                  customComputePeaks: current.customComputePeaks ?? [{
+                    dtype: current.supportedDtypes[0] ?? "fp32",
+                    operationsPerSecond: 1e12,
+                  }],
+                };
               }
               const profile = hardwareComputeProfile(value);
               const dtypes = profile === undefined
                 ? []
                 : hardwareComputeDtypes(profile);
+              const { customComputePeaks: _customRemoved, ...withoutCustom } = current;
               return {
-                ...current,
+                ...withoutCustom,
                 computeProfileId: value,
                 supportedDtypes: dtypes.length === 0
                   ? current.supportedDtypes
@@ -401,14 +432,48 @@ function DeviceEditor({
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="__unspecified__">Unspecified hardware</SelectItem>
-              {computeProfiles.map((profile) => (
-                <SelectItem key={profile.id} value={profile.id}>
-                  {profile.vendor} {profile.model}
-                </SelectItem>
+              <SelectItem value="__custom__">Custom dense peaks</SelectItem>
+              {computeProfileVendors.map((vendor, vendorIndex) => (
+                <SelectGroup key={vendor}>
+                  {vendorIndex === 0 ? null : <SelectSeparator />}
+                  <SelectLabel>{vendor}</SelectLabel>
+                  {computeProfiles.filter((profile) => (
+                    profile.vendor === vendor
+                  )).map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id}>
+                      {profile.model}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               ))}
             </SelectContent>
           </Select>
-          {selectedProfile === undefined ? (
+          {customCompute ? (
+            <div className="mt-3 border-t border-zinc-200 pt-3">
+              <div className="mb-2 text-[11px] font-semibold text-zinc-600">
+                Custom dense peaks · TOPS
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {CUSTOM_COMPUTE_DTYPES.map((dtype) => (
+                  <EditorField key={dtype} label={dtype.toUpperCase()}>
+                    <NumberInput
+                      value={(device.customComputePeaks?.find((peak) => (
+                        peak.dtype === dtype
+                      ))?.operationsPerSecond ?? 0) / 1e12}
+                      minimum={0}
+                      step={0.1}
+                      onChange={(tops) => onDeviceChange((current) => (
+                        updateCustomComputePeak(current, dtype, tops)
+                      ))}
+                    />
+                  </EditorField>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-zinc-500">
+                Zero leaves a dtype unbound. Positive values become user-declared dense roofline ceilings.
+              </p>
+            </div>
+          ) : selectedProfile === undefined ? (
             <p className="mt-1.5 text-[11px] leading-4 text-zinc-500">
               No official peak is bound. The simulator may use a calibrated or heuristic effective ceiling.
             </p>
@@ -558,6 +623,26 @@ function DeviceEditor({
       ))}
     </section>
   );
+}
+
+function updateCustomComputePeak(
+  device: SimDeviceSpec,
+  dtype: string,
+  tops: number,
+): SimDeviceSpec {
+  const peaks = (device.customComputePeaks ?? []).filter((peak) => (
+    peak.dtype !== dtype
+  ));
+  const nextPeaks = tops <= 0
+    ? peaks
+    : [...peaks, { dtype, operationsPerSecond: tops * 1e12 }];
+  return {
+    ...device,
+    customComputePeaks: nextPeaks,
+    supportedDtypes: tops <= 0 || device.supportedDtypes.includes(dtype)
+      ? device.supportedDtypes
+      : [...device.supportedDtypes, dtype],
+  };
 }
 
 function computeProfileSummary(

@@ -18,6 +18,11 @@ export type ComputeCapability =
   | "draft"
   | "lookup";
 
+export interface CustomComputePeakSpec {
+  readonly dtype: string;
+  readonly operationsPerSecond: number;
+}
+
 export interface EvidenceProvenance {
   readonly confidence: ConfidenceClass;
   readonly source: string;
@@ -54,6 +59,7 @@ export interface SimDeviceSpec {
   readonly capabilities: readonly ComputeCapability[];
   readonly supportedDtypes: readonly string[];
   readonly computeProfileId?: string;
+  readonly customComputePeaks?: readonly CustomComputePeakSpec[];
   readonly maxConcurrentCompute: number;
   readonly provenance: EvidenceProvenance;
 }

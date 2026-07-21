@@ -355,6 +355,39 @@ export function validateScenario(
         );
       }
     }
+    if (
+      device.computeProfileId !== undefined
+      && device.customComputePeaks !== undefined
+    ) {
+      add(
+        "multiple_compute_profiles",
+        path,
+        "computeProfileId and customComputePeaks are mutually exclusive",
+      );
+    }
+    if (device.customComputePeaks !== undefined) {
+      if (device.customComputePeaks.length === 0) {
+        add(
+          "empty_custom_compute_peaks",
+          `${path}.customComputePeaks`,
+          "must contain at least one dtype peak",
+        );
+      }
+      validateUniqueStrings(
+        device.customComputePeaks.map((peak) => peak.dtype),
+        `${path}.customComputePeaks.dtypes`,
+        add,
+      );
+      device.customComputePeaks.forEach((peak, peakIndex) => {
+        if (!Number.isFinite(peak.operationsPerSecond) || peak.operationsPerSecond <= 0) {
+          add(
+            "positive_compute_peak",
+            `${path}.customComputePeaks[${peakIndex}].operationsPerSecond`,
+            `must be a positive finite number; got ${peak.operationsPerSecond}`,
+          );
+        }
+      });
+    }
     if (device.memoryDomainIds.length === 0) {
       add("no_memory", `${path}.memoryDomainIds`, "must not be empty");
     }

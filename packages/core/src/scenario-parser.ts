@@ -112,7 +112,7 @@ function parseDevices(value: unknown, scenarioLabel: string): void {
         "supportedDtypes",
         "maxConcurrentCompute",
         "provenance",
-      ], ["computeProfileId"], label);
+      ], ["computeProfileId", "customComputePeaks"], label);
       requireStrings(
         device,
         ["id", "nodeId", "kind", "executionProvider"],
@@ -123,6 +123,20 @@ function parseDevices(value: unknown, scenarioLabel: string): void {
       requireStringArray(device.supportedDtypes, `${label} supportedDtypes`);
       if (device.computeProfileId !== undefined) {
         requireNonEmptyString(device.computeProfileId, `${label} computeProfileId`);
+      }
+      if (device.customComputePeaks !== undefined) {
+        requireRecordArray(
+          device.customComputePeaks,
+          `${label} customComputePeaks`,
+        ).forEach((item, peakIndex) => {
+          const peakLabel = `${label} customComputePeaks[${peakIndex}]`;
+          assertKeys(item, ["dtype", "operationsPerSecond"], [], peakLabel);
+          requireNonEmptyString(item.dtype, `${peakLabel} dtype`);
+          requireFiniteNumber(
+            item.operationsPerSecond,
+            `${peakLabel} operationsPerSecond`,
+          );
+        });
       }
       requireFiniteNumber(
         device.maxConcurrentCompute,
