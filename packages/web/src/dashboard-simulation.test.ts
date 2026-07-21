@@ -747,6 +747,48 @@ describe("simulateDashboard", () => {
     expect(result.topology.planSteps).toBeGreaterThan(0);
   });
 
+  it("preserves a million-token prompt through chunked prefill", () => {
+    const result = simulateDashboard({
+      ...base,
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 1,
+        promptTokens: 1_048_576,
+        outputTokens: 1,
+        maxBatchSize: 1,
+        maxBatchTokens: 512,
+        prefillChunkTokens: 512,
+      },
+    });
+
+    expect(result.serving?.metrics.prefillTokens).toBe(1_048_576);
+    expect(result.serving?.metrics.outputTokens).toBe(1);
+    expect(result.serving?.batches).toHaveLength(2_048);
+  }, 30_000);
+
+  it("preserves a 32K exact output trace", () => {
+    const result = simulateDashboard({
+      ...base,
+      mode: "serving",
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 1,
+        promptTokens: 16,
+        outputTokens: 32_768,
+        maxBatchSize: 1,
+        maxBatchTokens: 16,
+        prefillChunkTokens: 16,
+      },
+    });
+
+    expect(result.serving?.metrics.outputTokens).toBe(32_768);
+    expect(result.serving?.requests[0]?.tokenTimestampsNs)
+      .toHaveLength(32_768);
+  }, 30_000);
+
   it("preserves an explicit target-only serving baseline", () => {
     const result = simulateDashboard({
       ...base,

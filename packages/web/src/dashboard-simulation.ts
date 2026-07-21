@@ -504,8 +504,16 @@ function buildServingConfig(
   config: DashboardRunConfig,
 ): ServingSchedulerConfig {
   const requestCount = clampInteger(config.serving.requestCount, 1, 32);
-  const promptTokens = clampInteger(config.serving.promptTokens, 16, 4096);
-  const outputTokens = clampInteger(config.serving.outputTokens, 1, 512);
+  const promptTokens = clampInteger(
+    config.serving.promptTokens,
+    16,
+    1_048_576,
+  );
+  const outputTokens = clampInteger(
+    config.serving.outputTokens,
+    1,
+    32_768,
+  );
   const peakPerRequest = promptTokens + outputTokens - 1;
   const draftWidth = clampInteger(config.serving.draftWidth, 1, 8);
   const first = clamp(
@@ -830,7 +838,7 @@ function runSpeculative(
   const outputTokens = clampInteger(
     config.speculative.outputTokens,
     1,
-    512,
+    32_768,
   );
   const draftWidth = clampInteger(config.speculative.draftWidth, 1, 8);
   const capacityTokens = initialTokenLength + outputTokens + draftWidth;

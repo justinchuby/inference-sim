@@ -111,6 +111,12 @@ import {
   SelectValue,
 } from "./components/ui/select.js";
 import { Slider } from "./components/ui/slider.js";
+import {
+  formatTokenCount,
+  nearestTokenStepIndex,
+  OUTPUT_TOKEN_STEPS,
+  PROMPT_TOKEN_STEPS,
+} from "./token-scale.js";
 import { Switch } from "./components/ui/switch.js";
 import {
   Tabs,
@@ -2991,32 +2997,42 @@ function ConfigurationPanel({
               serving: { ...config.serving, arrivalGapUs },
             })}
           />
-          <SliderField
+          <TokenSliderField
             label="Prompt tokens"
-            description="Input tokens per request. The scheduler processes these through chunked prefill before that request can decode."
+            description="Input tokens per request, including repository context and prior tool history. The logarithmic scale reaches 1M tokens. The scheduler processes them through chunked prefill before decode; the selected model must support the resulting total context."
             value={config.serving.promptTokens}
-            minimum={64}
-            maximum={2048}
-            step={64}
+            steps={PROMPT_TOKEN_STEPS}
             disabled={disabled}
             onChange={(promptTokens) => onChange({
               ...config,
               serving: { ...config.serving, promptTokens },
             })}
           />
-          <SliderField
+          <TokenSliderField
             label="Output tokens"
-            description="Tokens generated per request. When a request reaches this count, it completes and releases its KV cache allocation."
+            description="Tokens generated per request. The logarithmic scale reaches 32K for exact decode traces. A 1M context window is a prompt-plus-output capacity, not a promise that one response can generate 1M tokens."
             value={config.serving.outputTokens}
-            minimum={8}
-            maximum={256}
-            step={8}
+            steps={OUTPUT_TOKEN_STEPS}
             disabled={disabled}
             onChange={(outputTokens) => onChange({
               ...config,
               serving: { ...config.serving, outputTokens },
             })}
           />
+          <div className="flex items-start justify-between gap-2 text-[11px] text-zinc-500">
+            <span className="flex items-center gap-1">
+              <span>Context / request</span>
+              <ParameterHelp
+                label="Context per request"
+                description="Prompt plus generated tokens retained for one request. The imported ONNX package does not currently declare a model context-window limit, so this total is reported but not treated as model compatibility evidence."
+              />
+            </span>
+            <span className="text-right font-semibold tabular-nums text-zinc-700">
+              {formatTokenCount(
+                config.serving.promptTokens + config.serving.outputTokens,
+              )} tok · limit unbound
+            </span>
+          </div>
           <SliderField
             label="Batch sequences"
             description="Maximum request slices selected for one scheduler batch across decode and prefill. This limits per-batch sequence width, not the number of requests that may be queued or retain KV state."
@@ -3237,12 +3253,11 @@ function ConfigurationPanel({
                       </SelectContent>
                     </Select>
                   </Field>
-                  <SliderField
+                  <TokenSliderField
                     label="Output tokens"
+                    description="Generated tokens in the standalone speculative trace. The logarithmic scale reaches 32K while keeping the iteration evidence inspectable."
                     value={config.speculative.outputTokens}
-                    minimum={32}
-                    maximum={512}
-                    step={16}
+                    steps={OUTPUT_TOKEN_STEPS}
                     disabled={disabled}
                     onChange={(outputTokens) => onChange({
                       ...config,
@@ -5046,6 +5061,51 @@ function SliderField({
         onValueChange={([next]) => onChange(next)}
         aria-label={label}
       />
+    </div>
+  );
+}
+
+function TokenSliderField({
+  label,
+  description,
+  value,
+  steps,
+  disabled,
+  onChange,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly value: number;
+  readonly steps: readonly number[];
+  readonly disabled: boolean;
+  readonly onChange: (value: number) => void;
+}): React.JSX.Element {
+  const index = nearestTokenStepIndex(value, steps);
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+        <span className="flex min-w-0 items-center gap-1.5 font-semibold text-zinc-600">
+          <span>{label}</span>
+          <ParameterHelp label={label} description={description} />
+        </span>
+        <span className="font-bold tabular-nums text-zinc-900">
+          {formatTokenCount(value)}
+        </span>
+      </div>
+      <Slider
+        value={[index]}
+        min={0}
+        max={steps.length - 1}
+        step={1}
+        disabled={disabled}
+        onValueChange={([next]) => onChange(steps[next] ?? steps[index])}
+        aria-label={label}
+        aria-valuetext={`${value.toLocaleString("en-US")} tokens`}
+      />
+      <div className="mt-0.5 flex justify-between text-[10px] tabular-nums text-zinc-400">
+        <span>{formatTokenCount(steps[0] ?? 0)}</span>
+        <span>{formatTokenCount(steps.at(-1) ?? 0)}</span>
+      </div>
     </div>
   );
 }
