@@ -365,6 +365,7 @@ export function App(): React.JSX.Element {
     useState(DEFAULT_ONNX_SEARCH_CONFIG);
   const [onnxMode, setOnnxMode] = useState<"analyze" | "search">("analyze");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [artifactOpen, setArtifactOpen] = useState(false);
   const [historyEntries, setHistoryEntries] =
     useState<readonly ArtifactHistoryEntry[]>([]);
   const [historyError, setHistoryError] = useState<string | undefined>(
@@ -1226,20 +1227,6 @@ export function App(): React.JSX.Element {
                 }
               }}
             />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Import ONNX model manifest"
-                  onClick={() => onnxManifestInputRef.current?.click()}
-                  disabled={runState.status === "running"}
-                >
-                  <Database className="size-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Import ONNX model manifest</TooltipContent>
-            </Tooltip>
             <input
               ref={frozenPlanInputRef}
               type="file"
@@ -1254,20 +1241,6 @@ export function App(): React.JSX.Element {
                 }
               }}
             />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Import and execute FrozenPlan"
-                  onClick={() => frozenPlanInputRef.current?.click()}
-                  disabled={runState.status === "running"}
-                >
-                  <FilePlay className="size-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Import and execute FrozenPlan</TooltipContent>
-            </Tooltip>
             <input
               ref={artifactInputRef}
               type="file"
@@ -1282,20 +1255,29 @@ export function App(): React.JSX.Element {
                 }
               }}
             />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Import and replay result"
-                  onClick={() => artifactInputRef.current?.click()}
-                  disabled={runState.status === "running"}
-                >
-                  <Upload className="size-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Import and replay result</TooltipContent>
-            </Tooltip>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setArtifactOpen(true)}
+              disabled={runState.status === "running"}
+            >
+              <FolderOpen className="size-4" />
+              Open artifact
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-label="Export verified result"
+              onClick={() => {
+                if (runState.artifact) downloadArtifact(runState.artifact);
+              }}
+              disabled={
+                runState.status === "running" || runState.artifact === undefined
+              }
+            >
+              <Download className="size-4" />
+              Export result
+            </Button>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1411,7 +1393,6 @@ export function App(): React.JSX.Element {
                   <Results
                     result={result}
                     topologyScenario={displayedScenario}
-                    artifact={runState.artifact}
                     artifactReplay={runState.artifactReplay}
                   />
                 )
@@ -1446,8 +1427,87 @@ export function App(): React.JSX.Element {
           onDownload={downloadHistoryEntry}
           onDelete={deleteHistoryEntry}
         />
+        <ArtifactOpenDialog
+          open={artifactOpen}
+          onOpenChange={setArtifactOpen}
+          onManifest={() => onnxManifestInputRef.current?.click()}
+          onFrozenPlan={() => frozenPlanInputRef.current?.click()}
+          onResult={() => artifactInputRef.current?.click()}
+        />
       </div>
     </TooltipProvider>
+  );
+}
+
+function ArtifactOpenDialog({
+  open,
+  onOpenChange,
+  onManifest,
+  onFrozenPlan,
+  onResult,
+}: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onManifest: () => void;
+  readonly onFrozenPlan: () => void;
+  readonly onResult: () => void;
+}): React.JSX.Element {
+  const choose = (action: () => void) => {
+    onOpenChange(false);
+    action();
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(calc(100vw-2rem),520px)]">
+        <div className="border-b border-zinc-200 px-5 py-4 pr-14">
+          <DialogTitle className="text-sm font-bold">Open artifact</DialogTitle>
+          <DialogDescription className="mt-1 text-xs text-zinc-500">
+            Choose the artifact type
+          </DialogDescription>
+        </div>
+        <div className="grid gap-2 p-4">
+          <Button
+            variant="secondary"
+            className="h-auto justify-start px-3 py-3 text-left"
+            onClick={() => choose(onManifest)}
+          >
+            <Database className="size-4 shrink-0" />
+            <span>
+              <span className="block text-xs font-semibold">Model manifest</span>
+              <span className="block text-[11px] font-normal text-zinc-500">
+                ONNX GenAI analysis JSON
+              </span>
+            </span>
+          </Button>
+          <Button
+            variant="secondary"
+            className="h-auto justify-start px-3 py-3 text-left"
+            onClick={() => choose(onFrozenPlan)}
+          >
+            <FilePlay className="size-4 shrink-0" />
+            <span>
+              <span className="block text-xs font-semibold">FrozenPlan</span>
+              <span className="block text-[11px] font-normal text-zinc-500">
+                Executable plan JSON
+              </span>
+            </span>
+          </Button>
+          <Button
+            variant="secondary"
+            className="h-auto justify-start px-3 py-3 text-left"
+            onClick={() => choose(onResult)}
+          >
+            <Upload className="size-4 shrink-0" />
+            <span>
+              <span className="block text-xs font-semibold">Verified result</span>
+              <span className="block text-[11px] font-normal text-zinc-500">
+                Replay artifact JSON
+              </span>
+            </span>
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -2284,7 +2344,7 @@ function ConfigurationPanel({
               onClick={() => modelDirectoryInput.current?.click()}
             >
               <FolderOpen className="size-4" />
-              Import folder
+              Open folder
             </Button>
             <Button
               type="button"
@@ -2295,7 +2355,7 @@ function ConfigurationPanel({
               onClick={() => modelFilesInput.current?.click()}
             >
               <Upload className="size-4" />
-              Import files
+              Open files
             </Button>
           </div>
           {config.modelBinding
@@ -3761,12 +3821,10 @@ function formatScenarioSystemCount(scenario: SimulationScenario): string {
 function Results({
   result,
   topologyScenario,
-  artifact,
   artifactReplay,
 }: {
   readonly result: DashboardResult;
   readonly topologyScenario?: SimulationScenario;
-  readonly artifact?: DashboardArtifactDownload;
   readonly artifactReplay?: DashboardArtifactReplay;
 }): React.JSX.Element {
   const metrics = result.mode === "speculative"
@@ -3810,23 +3868,6 @@ function Results({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {artifact
-            ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Export verified result"
-                      onClick={() => downloadArtifact(artifact)}
-                    >
-                      <Download className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Export verified result</TooltipContent>
-                </Tooltip>
-              )
-            : null}
           {artifactReplay
             ? (
                 <Badge variant={artifactReplay.matches ? "success" : "danger"}>
