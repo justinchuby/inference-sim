@@ -9,6 +9,7 @@ import {
   type TopologyPipelineWork,
 } from "@inference-sim/core";
 import type { ImportedModelPackage } from "./model-package-import.js";
+import type { ModelComponentProfile } from "@inference-sim/core";
 import type {
   DashboardModelBinding,
   DashboardModelExecutionProfile,
@@ -17,6 +18,9 @@ import type {
 
 /** Built-in presets offered by the workbench, ordered by parameter count. */
 export const DASHBOARD_MODEL_PRESETS = [
+  "stable-diffusion-3.5-large",
+  "flux-1-schnell",
+  "flux-1-dev",
   "qwen3-0.6b",
   "llama-3.2-1b",
   "whisper-large-v3",
@@ -68,9 +72,12 @@ export function createBuiltinModelBinding(
   const model = buildModelProfile(preset, weightDtype, kvCacheDtype);
   const fingerprint =
     `builtin:${preset}:${weightDtype}:${kvCacheDtype}:${modality}`;
-  // Serving a multimodal checkpoint without media is a real deployment: the
-  // encoders stay resident but never run, and nothing expands the prompt.
-  const pipelineExecution = modality === "multimodal"
+  // An image generator's components are the model, not optional input, so the
+  // modality choice does not apply to them. For an autoregressive model,
+  // serving the checkpoint without media is a real deployment: the encoders
+  // stay resident but never run, and nothing expands the prompt.
+  const generatesImages = model.diffusion !== undefined;
+  const pipelineExecution = generatesImages || modality === "multimodal"
     ? builtinPipelineExecution(model, preset)
     : undefined;
   const moeLimitations = [
@@ -99,7 +106,7 @@ export function createBuiltinModelBinding(
     },
     executionProfile: executionProfile(model, preset),
     ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
-    ...(model.components === undefined
+    ...(model.components === undefined || generatesImages
       ? {}
       : {
           mediaTokensPerItem: model.components.reduce(
@@ -122,6 +129,78 @@ export function createBuiltinModelBinding(
 }
 
 /**
+ * Pipeline work for an image-generation preset. There is no autoregressive
+ * target to keep, so the denoiser replaces it: text encoders condition once,
+ * the denoiser runs once per step (twice per step under classifier-free
+ * guidance), and the latent decoder runs once at the end.
+ */
+function diffusionPipelineExecution(
+  model: ModelProfile,
+  preset: string,
+  components: readonly ModelComponentProfile[],
+): TopologyPipelineWork {
+  const denoiserBytes = model.layers.reduce(
+    (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
+    0,
+  );
+  const conditioning = components.filter(
+    (component) => component.phase !== "final_only",
+  );
+  const output = components.filter(
+    (component) => component.phase === "final_only",
+  );
+  const ordered = [...conditioning, ...output];
+  return {
+    strategyKind: "iterative",
+    replacesTarget: true,
+    components: [
+      ...conditioning.map((component, index) => ({
+        id: component.id,
+        role: component.role,
+        phase: component.phase,
+        strategyKind: "single_pass",
+        invocationMultiplier: 1,
+        weightBytes: component.weightBytes,
+        isPrimary: false,
+        order: index,
+      })),
+      {
+        id: preset,
+        role: "denoiser",
+        phase: "every_step" as const,
+        strategyKind: "iterative",
+        invocationMultiplier: model.diffusion!.denoiserInvocations,
+        weightBytes: denoiserBytes,
+        isPrimary: true,
+        order: conditioning.length,
+      },
+      ...output.map((component, index) => ({
+        id: component.id,
+        role: component.role,
+        phase: component.phase,
+        strategyKind: "single_pass",
+        invocationMultiplier: 1,
+        weightBytes: component.weightBytes,
+        isPrimary: false,
+        order: conditioning.length + 1 + index,
+      })),
+    ],
+    edges: ordered.map((component, index) => ({
+      fromComponent: component.id,
+      toComponent: index < conditioning.length - 1
+        ? ordered[index + 1]!.id
+        : index === conditioning.length - 1
+          ? preset
+          : component.id,
+    })).filter((edge) => edge.fromComponent !== edge.toComponent)
+      .concat(output.map((component) => ({
+        fromComponent: preset,
+        toComponent: component.id,
+      }))),
+  };
+}
+
+/**
  * Pipeline work for a built-in multimodal preset. The decoder stays the
  * autoregressive target, so `replacesTarget` is false: encoders run once per
  * request during prefill and the decoder runs every step.
@@ -133,6 +212,9 @@ function builtinPipelineExecution(
   const components = model.components;
   if (components === undefined || components.length === 0) {
     return undefined;
+  }
+  if (model.diffusion !== undefined) {
+    return diffusionPipelineExecution(model, preset, components);
   }
   const decoderBytes = model.layers.reduce(
     (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,

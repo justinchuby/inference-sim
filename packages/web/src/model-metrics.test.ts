@@ -23,6 +23,40 @@ import {
 } from "./model-binding.js";
 
 describe("model UI metrics", () => {
+  it("replaces the decoder with an iterative denoiser for image models", () => {
+    const binding = createBuiltinModelBinding("flux-1-schnell");
+    const pipeline = binding.pipelineExecution!;
+
+    // No autoregressive target survives, so the pipeline owns the whole run.
+    expect(pipeline.replacesTarget).toBe(true);
+    expect(pipeline.strategyKind).toBe("iterative");
+    expect(binding.executionProfile.kvCacheBytesPerToken ?? 0).toBe(0);
+
+    const denoiser = pipeline.components.find((c) => c.isPrimary)!;
+    expect(denoiser.role).toBe("denoiser");
+    expect(denoiser.phase).toBe("every_step");
+    // Timestep-distilled: four steps, no guidance doubling.
+    expect(denoiser.invocationMultiplier).toBe(4);
+
+    // Text towers condition once; the latent decoder runs at the end.
+    const roles = pipeline.components.map((c) => `${c.role}:${c.phase}`);
+    expect(roles).toContain("text_encoder:prompt_only");
+    expect(roles).toContain("vae_decoder:final_only");
+  });
+
+  it("doubles denoiser invocations under classifier-free guidance", () => {
+    const guided = createBuiltinModelBinding("stable-diffusion-3.5-large");
+    const distilled = createBuiltinModelBinding("flux-1-dev");
+    const primary = (b: typeof guided) => (
+      b.pipelineExecution!.components.find((c) => c.isPrimary)!
+    );
+
+    // 40 steps with guidance runs the denoiser twice per step.
+    expect(primary(guided).invocationMultiplier).toBe(80);
+    // Guidance-distilled: 50 steps, one pass each.
+    expect(primary(distilled).invocationMultiplier).toBe(50);
+  });
+
   it("only runs media components when the run selects media", () => {
     const multimodal = createBuiltinModelBinding(
       "qwen3-vl-8b", "fp16", "fp16", "multimodal",
@@ -88,8 +122,12 @@ describe("model UI metrics", () => {
     for (const binding of bindings) {
       expect(binding.totalParameters).toBeGreaterThan(0);
       expect(binding.weightBytes).toBeGreaterThan(0);
-      expect(binding.executionProfile.kvCacheBytesPerToken).toBeGreaterThan(0);
       expect(binding.executionProfile.forwardFlopsPerToken).toBeGreaterThan(0);
+      // A denoiser caches no KV; everything autoregressive must.
+      const generatesImages =
+        binding.pipelineExecution?.replacesTarget === true;
+      expect(binding.executionProfile.kvCacheBytesPerToken ?? 0)
+        .toBeGreaterThan(generatesImages ? -1 : 0);
     }
     expect(new Set(bindings.map((binding) => binding.displayName)).size)
       .toBe(bindings.length);

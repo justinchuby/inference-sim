@@ -62,7 +62,20 @@ export interface ModelProfile {
    * repeated here.
    */
   components?: readonly ModelComponentProfile[];
+  /** Present for iterative denoisers. */
+  diffusion?: DiffusionProfile;
   provenance: ModelProfileProvenance;
+}
+
+export interface DiffusionProfile {
+  readonly denoisingSteps: number;
+  /** Latent positions the denoiser attends over at the default resolution. */
+  readonly latentTokens: number;
+  readonly defaultResolutionPx: number;
+  /** Classifier-free guidance doubles the denoiser batch at every step. */
+  readonly classifierFreeGuidance: boolean;
+  /** Denoiser forward passes for one image. */
+  readonly denoiserInvocations: number;
 }
 
 export type ModelComponentPhase =
@@ -93,7 +106,8 @@ export interface ModelProfileProvenance {
 }
 
 export interface ModelArchitecture {
-  kind: "dense" | "moe";
+  /** `diffusion` denotes an iterative denoiser: no vocabulary and no KV cache. */
+  kind: "dense" | "moe" | "diffusion";
   numLayers: number;
   hiddenDim: number;
   numHeads: number;

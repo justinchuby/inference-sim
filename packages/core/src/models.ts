@@ -7,6 +7,7 @@
  * geometry; `tests/models.test.ts` checks it against the published count.
  */
 import type {
+  DiffusionProfile,
   ExpertDistribution,
   LayerProfile,
   ModelComponentPhase,
@@ -229,6 +230,82 @@ function projectorParams(spec: ProjectorSpec): number {
 }
 
 // ============================================================
+// Diffusion denoiser geometry
+// ============================================================
+
+/**
+ * One MMDiT block. Dual-stream blocks carry a separate image and text tower
+ * that attend jointly; single-stream blocks fuse the two after the streams
+ * merge. Both carry adaptive-layernorm modulation, which is a large enough
+ * share of a denoiser to matter.
+ */
+export interface MmditBlockSpec {
+  readonly stream: "dual" | "single";
+  readonly mlpRatio: number;
+  /** Modulation vectors the block conditions on, each a hidden-wide matrix. */
+  readonly modulationChunks: number;
+}
+
+function mmditBlockParams(hiddenDim: number, block: MmditBlockSpec): number {
+  const square = hiddenDim * hiddenDim;
+  if (block.stream === "dual") {
+    // Per stream: QKV and output projection, an up/down MLP, and modulation.
+    const perStream = 4 + 2 * block.mlpRatio + block.modulationChunks;
+    return 2 * perStream * square;
+  }
+  // Fused: one projection produces QKV and the MLP input, another consumes the
+  // concatenated attention and MLP output.
+  const fusedIn = 3 + block.mlpRatio;
+  const fusedOut = 1 + block.mlpRatio;
+  return (fusedIn + fusedOut + block.modulationChunks) * square;
+}
+
+/** Attention share of a block, for the attention/FFN split consumers expect. */
+function mmditBlockAttentionParams(
+  hiddenDim: number,
+  block: MmditBlockSpec,
+): number {
+  const square = hiddenDim * hiddenDim;
+  return block.stream === "dual" ? 8 * square : 4 * square;
+}
+
+interface DiffusionSpec {
+  readonly dualBlocks: number;
+  readonly singleBlocks: number;
+  readonly mlpRatio: number;
+  readonly dualModulationChunks: number;
+  readonly singleModulationChunks: number;
+  /** VAE spatial downsample factor. */
+  readonly vaeFactor: number;
+  /** Denoiser patch size over the latent. */
+  readonly patchSize: number;
+  readonly defaultResolutionPx: number;
+  readonly denoisingSteps: number;
+  /** Classifier-free guidance doubles the denoiser batch. */
+  readonly classifierFreeGuidance: boolean;
+}
+
+function diffusionBlockAt(spec: DiffusionSpec, layer: number): MmditBlockSpec {
+  return layer < spec.dualBlocks
+    ? {
+        stream: "dual",
+        mlpRatio: spec.mlpRatio,
+        modulationChunks: spec.dualModulationChunks,
+      }
+    : {
+        stream: "single",
+        mlpRatio: spec.mlpRatio,
+        modulationChunks: spec.singleModulationChunks,
+      };
+}
+
+/** Latent tokens the denoiser attends over at the default resolution. */
+export function diffusionLatentTokens(spec: DiffusionSpec): number {
+  const side = spec.defaultResolutionPx / spec.vaeFactor / spec.patchSize;
+  return Math.round(side * side);
+}
+
+// ============================================================
 // Preset declarations
 // ============================================================
 
@@ -267,6 +344,12 @@ export interface ModelSpec {
     | ((layer: number) => AttentionGeometry | undefined);
   readonly moe?: MoESpec;
   readonly multimodal?: MultimodalSpec;
+  /**
+   * Present for image-generation models. A diffusion denoiser is not
+   * autoregressive: it caches no KV, has no vocabulary, and runs once per
+   * denoising step over a fixed latent grid.
+   */
+  readonly diffusion?: DiffusionSpec;
   readonly assumptions?: readonly string[];
 }
 
@@ -312,12 +395,23 @@ function crossAttentionAt(
 
 /** Self-attention plus any cross-attention carried by the same layer. */
 function layerAttentionParams(spec: ModelSpec, layer: number): number {
+  if (spec.diffusion !== undefined) {
+    return mmditBlockAttentionParams(
+      spec.hiddenDim,
+      diffusionBlockAt(spec.diffusion, layer),
+    );
+  }
   const cross = crossAttentionAt(spec, layer);
   return attentionParams(spec.hiddenDim, attentionAt(spec, layer))
     + (cross === undefined ? 0 : attentionParams(spec.hiddenDim, cross));
 }
 
 function layerFfnParams(spec: ModelSpec, layer: number): number {
+  if (spec.diffusion !== undefined) {
+    const block = diffusionBlockAt(spec.diffusion, layer);
+    return mmditBlockParams(spec.hiddenDim, block)
+      - mmditBlockAttentionParams(spec.hiddenDim, block);
+  }
   return ffnParams(
     spec.hiddenDim,
     intermediateAt(spec, layer),
@@ -404,6 +498,17 @@ function buildComponents(
   });
 }
 
+function buildDiffusionProfile(spec: DiffusionSpec): DiffusionProfile {
+  const batchPerStep = spec.classifierFreeGuidance ? 2 : 1;
+  return {
+    denoisingSteps: spec.denoisingSteps,
+    latentTokens: diffusionLatentTokens(spec),
+    defaultResolutionPx: spec.defaultResolutionPx,
+    classifierFreeGuidance: spec.classifierFreeGuidance,
+    denoiserInvocations: spec.denoisingSteps * batchPerStep,
+  };
+}
+
 function presetProvenance(
   presetId: string,
   spec: ModelSpec,
@@ -437,7 +542,10 @@ function buildProfile(
       index,
       attentionBytes: layerAttentionParams(spec, index) * bpp,
       ffnBytes: layerFfnParams(spec, index) * bpp,
-      kvCachePerToken: kvElementsPerToken(attention) * kvBpp,
+      // A denoiser is not autoregressive, so it caches nothing per token.
+      kvCachePerToken: spec.diffusion === undefined
+        ? kvElementsPerToken(attention) * kvBpp
+        : 0,
     });
   }
   const { numHeads, numKVHeads } = reportedHeadCounts(
@@ -447,7 +555,9 @@ function buildProfile(
   const profile: ModelProfile = {
     name: spec.name,
     architecture: {
-      kind: spec.moe === undefined ? "dense" : "moe",
+      kind: spec.diffusion !== undefined
+        ? "diffusion"
+        : spec.moe === undefined ? "dense" : "moe",
       numLayers: spec.numLayers,
       hiddenDim: spec.hiddenDim,
       numHeads,
@@ -468,6 +578,9 @@ function buildProfile(
     ...(spec.multimodal === undefined
       ? {}
       : { components: buildComponents(spec.multimodal, bpp) }),
+    ...(spec.diffusion === undefined
+      ? {}
+      : { diffusion: buildDiffusionProfile(spec.diffusion) }),
     provenance: presetProvenance(presetId, spec, totalParams),
   };
   if (spec.moe === undefined) {
@@ -566,6 +679,85 @@ const TEXT_DECODER_ONLY =
 const MXFP4_UNIFORM_DTYPE =
   "Released weights quantize experts to MXFP4 while attention and embeddings"
   + " stay wider; one uniform weight dtype is applied here.";
+
+/** CLIP ViT-L/14 text tower, the conditioning encoder every SD-family model uses. */
+const CLIP_L_ENCODER: MultimodalComponentSpec = {
+  id: "text_encoder_clip_l",
+  role: "text_encoder",
+  phase: "prompt_only",
+  encoder: {
+    kind: "vit",
+    numLayers: 12,
+    hiddenDim: 768,
+    numHeads: 12,
+    intermediateSize: 3072,
+    gatedMlp: false,
+    // A text tower has no patch embedding; the token embedding is charged
+    // through the projector entry instead.
+    patchSize: 0,
+    temporalPatchSize: 0,
+    inChannels: 0,
+  },
+};
+
+/** T5 v1.1 XXL encoder, gated-GELU. */
+const T5_XXL_ENCODER: MultimodalComponentSpec = {
+  id: "text_encoder_t5xxl",
+  role: "text_encoder",
+  phase: "prompt_only",
+  encoder: {
+    kind: "vit",
+    numLayers: 24,
+    hiddenDim: 4096,
+    numHeads: 64,
+    intermediateSize: 10240,
+    gatedMlp: true,
+    patchSize: 0,
+    temporalPatchSize: 0,
+    inChannels: 0,
+  },
+};
+
+const OPENCLIP_BIGG_ENCODER: MultimodalComponentSpec = {
+  id: "text_encoder_openclip_bigg",
+  role: "text_encoder",
+  phase: "prompt_only",
+  encoder: {
+    kind: "vit",
+    numLayers: 32,
+    hiddenDim: 1280,
+    numHeads: 20,
+    intermediateSize: 5120,
+    gatedMlp: false,
+    patchSize: 0,
+    temporalPatchSize: 0,
+    inChannels: 0,
+  },
+};
+
+/** Latent decoder, run once at the end of a generation. */
+function vaeDecoder(latentChannels: number): MultimodalComponentSpec {
+  return {
+    id: "vae_decoder",
+    role: "vae_decoder",
+    phase: "final_only",
+    encoder: {
+      kind: "vit",
+      numLayers: 8,
+      hiddenDim: 512,
+      numHeads: 8,
+      intermediateSize: 512,
+      gatedMlp: false,
+      patchSize: 3,
+      temporalPatchSize: 1,
+      inChannels: latentChannels,
+    },
+  };
+}
+
+const DIFFUSION_UNMODELED =
+  "Scheduler arithmetic, guidance embedding, and VAE tiling are not modeled;"
+  + " the denoiser and its per-step invocation count are.";
 
 export const MODEL_SPECS: Record<string, ModelSpec> = {
   // -------------------------------------------------------- dense, on-device
@@ -902,6 +1094,107 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
         + " decoder sequence.",
       "Cross-attention KV is computed once per window; it is charged here as"
         + " per-layer weights only.",
+    ],
+  },
+
+  // ------------------------------------------------------- image generation
+  "flux-1-schnell": {
+    name: "FLUX.1-schnell",
+    publishedTotalParams: 17e9,
+    numLayers: 57,
+    hiddenDim: 3072,
+    // A denoiser has no vocabulary; conditioning arrives from the text towers.
+    vocabSize: 0,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 24, numKVHeads: 24, headDim: 128 },
+    intermediateSize: 0,
+    diffusion: {
+      dualBlocks: 19,
+      singleBlocks: 38,
+      mlpRatio: 4,
+      dualModulationChunks: 6,
+      singleModulationChunks: 3,
+      vaeFactor: 8,
+      patchSize: 2,
+      defaultResolutionPx: 1024,
+      denoisingSteps: 4,
+      classifierFreeGuidance: false,
+    },
+    multimodal: {
+      components: [CLIP_L_ENCODER, T5_XXL_ENCODER, vaeDecoder(16)],
+    },
+    assumptions: [
+      "Timestep-distilled: four denoising steps and no classifier-free"
+        + " guidance, so the denoiser runs once per step.",
+      DIFFUSION_UNMODELED,
+    ],
+  },
+
+  "flux-1-dev": {
+    name: "FLUX.1-dev",
+    publishedTotalParams: 17e9,
+    numLayers: 57,
+    hiddenDim: 3072,
+    vocabSize: 0,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 24, numKVHeads: 24, headDim: 128 },
+    intermediateSize: 0,
+    diffusion: {
+      dualBlocks: 19,
+      singleBlocks: 38,
+      mlpRatio: 4,
+      dualModulationChunks: 6,
+      singleModulationChunks: 3,
+      vaeFactor: 8,
+      patchSize: 2,
+      defaultResolutionPx: 1024,
+      denoisingSteps: 50,
+      classifierFreeGuidance: false,
+    },
+    multimodal: {
+      components: [CLIP_L_ENCODER, T5_XXL_ENCODER, vaeDecoder(16)],
+    },
+    assumptions: [
+      "Guidance-distilled: guidance is embedded in the forward pass, so the"
+        + " denoiser runs once per step rather than twice.",
+      DIFFUSION_UNMODELED,
+    ],
+  },
+
+  "stable-diffusion-3.5-large": {
+    name: "Stable-Diffusion-3.5-Large",
+    publishedTotalParams: 13.7e9,
+    numLayers: 38,
+    hiddenDim: 2432,
+    vocabSize: 0,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 38, numKVHeads: 38, headDim: 64 },
+    intermediateSize: 0,
+    diffusion: {
+      dualBlocks: 38,
+      singleBlocks: 0,
+      mlpRatio: 4,
+      dualModulationChunks: 6,
+      singleModulationChunks: 3,
+      vaeFactor: 8,
+      patchSize: 2,
+      defaultResolutionPx: 1024,
+      denoisingSteps: 40,
+      classifierFreeGuidance: true,
+    },
+    multimodal: {
+      components: [
+        CLIP_L_ENCODER,
+        OPENCLIP_BIGG_ENCODER,
+        T5_XXL_ENCODER,
+        vaeDecoder(16),
+      ],
+    },
+    assumptions: [
+      "Classifier-free guidance doubles the denoiser batch at every step.",
+      "The extra attention block on the first 13 layers is not modeled"
+        + " separately.",
+      DIFFUSION_UNMODELED,
     ],
   },
 

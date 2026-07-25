@@ -27,9 +27,12 @@ describe("model presets", () => {
       const model = buildModelProfile(preset, "fp16", "fp16");
       const spec = MODEL_SPECS[preset]!;
 
+      const diffusion = model.architecture.kind === "diffusion";
       expect(model.layers, preset).toHaveLength(spec.numLayers);
       expect(model.totalParams, preset).toBe(derivedTotalParams(spec));
-      expect(model.embeddingBytes, preset).toBeGreaterThan(0);
+      // A denoiser has no vocabulary, so it has no embedding table.
+      expect(model.embeddingBytes, preset)
+        .toBeGreaterThan(diffusion ? -1 : 0);
       expect(model.architecture.numKVHeads, preset)
         .toBeLessThanOrEqual(model.architecture.numHeads);
       for (const layer of model.layers) {
@@ -44,11 +47,12 @@ describe("model presets", () => {
         0,
       );
       expect(denseFfn > 0 || model.moe !== undefined, preset).toBe(true);
-      // At least one layer must cache KV or the model cannot decode.
+      // An autoregressive model must cache KV somewhere or it cannot decode;
+      // a denoiser must cache none, because it is not autoregressive.
       expect(
         model.layers.some((layer) => layer.kvCachePerToken > 0),
         preset,
-      ).toBe(true);
+      ).toBe(!diffusion);
     }
   });
 

@@ -20,9 +20,15 @@ does not claim hardware-accurate latency without calibration data.
 - Nine of those presets are multimodal, covering the ways vision and audio
   actually attach to a decoder: ViT towers with a merging projector, an
   encoder-free stack that projects raw patches, a cross-attention adapter that
-  adds no decoder tokens at all, and an encoder-decoder audio model. Each one
-  reports its own encoder weights and how many decoder tokens a media item
-  costs.
+  adds no decoder tokens at all, and an encoder-decoder audio model. Choose
+  text-only or media per run: a multimodal checkpoint served without images
+  keeps its encoders resident but idle, while selecting media runs them and
+  charges each item's decoder tokens to the prompt.
+- Three of the presets generate images rather than tokens. An MMDiT denoiser is
+  not autoregressive, so it caches no KV and runs once per denoising step,
+  twice under classifier-free guidance, between the text towers that condition
+  it and the latent decoder that ends the run. UNet-era models are not modeled;
+  their geometry does not reduce to a layer stack.
 - Import local ONNX model packages directly in the browser, including external
   tensor data and onnx-genai inference metadata for multi-model pipelines.
 - Inspect model size, parameter count, weight/activation dtype, quantization

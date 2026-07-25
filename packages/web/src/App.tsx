@@ -681,12 +681,15 @@ export function App(): React.JSX.Element {
     const selectedKvCacheDtype = kvCacheDtype
       ?? BUILTIN_KV_CACHE_DTYPES.find((dtype) => dtype === currentKvCacheDtype)
       ?? "fp16";
+    const probe = createBuiltinModelBinding(preset);
     // A model without media components has nothing to enable, so selecting one
     // must not leave a stale multimodal choice behind.
-    const selectedModality = createBuiltinModelBinding(preset)
-      .mediaTokensPerItem === undefined
+    const selectedModality = probe.mediaTokensPerItem === undefined
       ? "text"
       : modality ?? config.modality;
+    // An image generator has no autoregressive target, so serving it makes no
+    // sense; its pipeline replaces the decoder entirely.
+    const generatesImages = probe.pipelineExecution?.replacesTarget === true;
     const { trace: _trace, ...speculative } = config.speculative;
     changeConfig({
       ...config,
@@ -697,7 +700,7 @@ export function App(): React.JSX.Element {
         selectedKvCacheDtype,
         selectedModality,
       ),
-      mode: "serving",
+      mode: generatesImages ? "pipeline" : "serving",
       speculative: {
         ...speculative,
         family: "prompt_lookup",
