@@ -212,6 +212,7 @@ describe("scenario presets", () => {
         capacityBytes: 2 * 1024 ** 4,
         reservedBytes: 512 * 1024 ** 3,
         freeBytes: 1536 * 1024 ** 3,
+        reservedByPurpose: { backing: 512 * 1024 ** 3 },
       },
       {
         domainId: "node0:unified",
@@ -220,8 +221,51 @@ describe("scenario presets", () => {
         capacityBytes: 128 * 1024 ** 3,
         reservedBytes: 92 * 1024 ** 3 + 256 * 1024 ** 2,
         freeBytes: 36 * 1024 ** 3 - 256 * 1024 ** 2,
+        reservedByPurpose: {
+          cache: 16 * 1024 ** 3,
+          kv: 16 * 1024 ** 3,
+          weights: 60 * 1024 ** 3,
+          workspace: 256 * 1024 ** 2,
+        },
       },
     ]);
+  });
+
+  it("splits every domain reservation by what the allocation is for", () => {
+    for (const name of [...SCENARIO_PRESET_NAMES, ...COMPUTER_PRESET_NAMES]) {
+      const ledger = calculateScenarioMemoryLedger(buildScenarioPreset(name));
+      for (const entry of ledger) {
+        const purposeTotal = Object.values(entry.reservedByPurpose).reduce(
+          (sum, bytes) => sum + bytes,
+          0,
+        );
+        // The breakdown is the reservation, not an approximation of it.
+        expect(purposeTotal, `${name}/${entry.domainId}`)
+          .toBe(entry.reservedBytes);
+        for (const [purpose, bytes] of Object.entries(entry.reservedByPurpose)) {
+          expect(bytes, `${name}/${entry.domainId}/${purpose}`)
+            .toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it("drops the breakdown for domains the feature flags disable", () => {
+    const base = buildScenarioPreset("single-gpu-cpu");
+    const disabled = {
+      ...base,
+      execution: {
+        ...base.execution,
+        features: { ssdStreaming: false },
+      },
+    };
+    const storage = calculateScenarioMemoryLedger(disabled).find(
+      (entry) => entry.domainId.endsWith(":storage"),
+    )!;
+
+    expect(storage.enabled).toBe(false);
+    expect(storage.reservedBytes).toBe(0);
+    expect(storage.reservedByPurpose).toEqual({});
   });
 
   it("separates physical memory capacity from resource-manager limits", () => {

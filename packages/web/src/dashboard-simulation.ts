@@ -597,6 +597,7 @@ function servingDashboardResult(
         ? "target_only"
         : speculativeFamilyContract(config.serving.decodeMode).support,
       metrics: serving.serving.metrics,
+      kvBudgetTokens: dashboardKvBudgetTokens(config),
       requests: serving.serving.requests,
       ...(serving.physical === undefined
         ? {}
@@ -689,6 +690,7 @@ function summarizeScenario(
     memoryLedger: calculateScenarioMemoryLedger(scenario, {
       allocationBytes: allocationBytesForDashboard(config, scenario),
     }),
+    ssdStreaming: scenario.execution.features.ssdStreaming,
   };
 }
 
@@ -709,6 +711,15 @@ function allocationBytesForDashboard(
     config.mode === "expert-cache"
       ? 0
       : config.modelBinding?.weightBytes,
+  );
+
+  // KV is a real reservation driven by the workload, not a preset constant.
+  // Without this the ledger reports the preset's placeholder extent and the
+  // memory breakdown cannot be reconciled with the run.
+  distributeAllocationBytes(
+    result,
+    allocations.filter((allocation) => allocation.purpose === "kv"),
+    dashboardKvReservationBytes(config),
   );
 
   const cacheAllocations = allocations.filter(
@@ -772,6 +783,33 @@ function allocationBytesForDashboard(
         ),
   );
   return result;
+}
+
+/**
+ * KV bytes the run reserves: the scheduler's whole token budget at the model's
+ * per-token KV cost. Modes without a continuous-batching scheduler reserve no
+ * KV, so their placeholder allocation collapses to zero.
+ */
+export function dashboardKvReservationBytes(
+  config: DashboardRunConfig,
+): number | undefined {
+  const bytesPerToken = config.modelBinding?.executionProfile
+    .kvCacheBytesPerToken;
+  if (bytesPerToken === undefined) {
+    return undefined;
+  }
+  if (config.mode !== "serving") {
+    return 0;
+  }
+  return dashboardKvBudgetTokens(config) * bytesPerToken;
+}
+
+/** Token budget the serving scheduler is given for the whole run. */
+export function dashboardKvBudgetTokens(config: DashboardRunConfig): number {
+  const requestCount = clampInteger(config.serving.requestCount, 1, 32);
+  const promptTokens = clampInteger(config.serving.promptTokens, 16, 1_048_576);
+  const outputTokens = clampInteger(config.serving.outputTokens, 1, 32_768);
+  return requestCount * (promptTokens + outputTokens - 1);
 }
 
 function distributeAllocationBytes(

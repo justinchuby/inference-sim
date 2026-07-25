@@ -307,6 +307,7 @@ export {
   type ScenarioExecutionPolicy,
   type ScenarioValidationIssue,
   type ScenarioValidationResult,
+  type AllocationPurpose,
   type ScenarioMemoryLedgerEntry,
   type ScenarioMemoryLedgerOptions,
   type ScenarioWorkloadSpec,

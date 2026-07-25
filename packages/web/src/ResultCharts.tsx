@@ -65,7 +65,7 @@ export default function ResultCharts({
       <section className="panel">
         <SectionHeading
           title="Memory domains"
-          detail={`${result.scenario.deviceCount} compute chips · ${result.scenario.linkCount} links`}
+          detail="Reserved bytes by what the allocation is for"
         />
         <MemoryChart result={result} />
       </section>
@@ -659,18 +659,63 @@ function ResourceChart({
   );
 }
 
+/**
+ * What each allocation purpose means to someone tuning a run, ordered by how
+ * directly they control it. Free space is last so the used extent reads as one
+ * contiguous block from the axis.
+ */
+const MEMORY_PURPOSES = [
+  { key: "weights", label: "Weights", fill: "#0369a1" },
+  { key: "kv", label: "KV cache", fill: "#0891b2" },
+  { key: "cache", label: "Expert cache", fill: "#7c3aed" },
+  { key: "backing", label: "Expert backing", fill: "#a855f7" },
+  { key: "workspace", label: "Workspace", fill: "#f59e0b" },
+  { key: "staging", label: "Staging", fill: "#f97316" },
+  { key: "checkpoint", label: "Checkpoint", fill: "#65a30d" },
+  { key: "sidecar", label: "Sidecar", fill: "#84cc16" },
+] as const;
+
+function formatGiB(bytes: number): string {
+  const giB = bytes / 1024 ** 3;
+  if (giB >= 100) return `${giB.toFixed(0)} GiB`;
+  if (giB >= 1) return `${giB.toFixed(1)} GiB`;
+  const miB = bytes / 1024 ** 2;
+  return miB >= 1 ? `${miB.toFixed(0)} MiB` : `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
 function MemoryChart({
   result,
 }: {
   readonly result: DashboardResult;
 }): React.JSX.Element {
-  const data = result.scenario.memoryLedger
-    .filter((entry) => entry.enabled)
-    .map((entry) => ({
-      name: shortDomain(entry.domainId),
-      used: entry.reservedBytes / entry.capacityBytes * 100,
-      free: entry.freeBytes / entry.capacityBytes * 100,
-    }));
+  const entries = result.scenario.memoryLedger.filter((entry) => entry.enabled);
+  const usedPurposes = MEMORY_PURPOSES.filter((purpose) => (
+    entries.some((entry) => (entry.reservedByPurpose[purpose.key] ?? 0) > 0)
+  ));
+  // Domains differ by orders of magnitude, so a shared byte axis would hide
+  // an 80 GiB device next to a 2 TiB SSD. Each bar is normalized to its own
+  // allocatable extent and every number the user reads is in bytes.
+  const data = entries.map((entry) => {
+    const limit = Math.max(1, entry.capacityBytes);
+    const bytes = Object.fromEntries(usedPurposes.map((purpose) => [
+      purpose.key,
+      entry.reservedByPurpose[purpose.key] ?? 0,
+    ]));
+    return {
+      name: `${shortDomain(entry.domainId)} · ${formatGiB(entry.capacityBytes)}`,
+      capacityBytes: entry.capacityBytes,
+      physicalCapacityBytes: entry.physicalCapacityBytes,
+      reservedBytes: entry.reservedBytes,
+      freeBytes: entry.freeBytes,
+      bytes,
+      free: entry.freeBytes / limit * 100,
+      ...Object.fromEntries(usedPurposes.map((purpose) => [
+        purpose.key,
+        (bytes[purpose.key] ?? 0) / limit * 100,
+      ])),
+    };
+  });
+
   return (
     <div className="chart-frame">
       <ResponsiveContainer width="100%" height="100%">
@@ -687,19 +732,98 @@ function MemoryChart({
           <YAxis
             type="category"
             dataKey="name"
-            width={92}
+            width={132}
             tick={{ fill: "#52525b", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
           />
           <ChartTooltip
-            formatter={(value) => `${Number(value).toFixed(1)}%`}
-            contentStyle={chartTooltipStyle}
+            content={<MemoryTooltip purposes={usedPurposes} />}
+            cursor={{ fill: "rgba(24,24,27,0.04)" }}
           />
-          <Bar dataKey="used" name="Reserved" stackId="memory" fill="#0369a1" />
-          <Bar dataKey="free" name="Free" stackId="memory" fill="#d4d4d8" />
+          <Legend
+            wrapperStyle={{ fontSize: 11, paddingTop: 4 }}
+            iconSize={8}
+          />
+          {usedPurposes.map((purpose) => (
+            <Bar
+              key={purpose.key}
+              dataKey={purpose.key}
+              name={purpose.label}
+              stackId="memory"
+              fill={purpose.fill}
+            />
+          ))}
+          <Bar
+            dataKey="free"
+            name="Allocatable free"
+            stackId="memory"
+            fill="#e4e4e7"
+          />
         </BarChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+interface MemoryRow {
+  readonly name: string;
+  readonly capacityBytes: number;
+  readonly physicalCapacityBytes: number;
+  readonly reservedBytes: number;
+  readonly freeBytes: number;
+  readonly bytes: Record<string, number>;
+}
+
+function MemoryTooltip({
+  active,
+  payload,
+  purposes,
+}: {
+  readonly active?: boolean;
+  readonly payload?: readonly { readonly payload?: MemoryRow }[];
+  readonly purposes: readonly typeof MEMORY_PURPOSES[number][];
+}): React.JSX.Element | null {
+  const row = payload?.[0]?.payload;
+  if (!active || row === undefined) {
+    return null;
+  }
+  const limit = row.capacityBytes;
+  const physical = row.physicalCapacityBytes;
+  const share = (bytes: number) => (
+    limit > 0 ? `${(bytes / limit * 100).toFixed(1)}%` : "n/a"
+  );
+  return (
+    <div style={chartTooltipStyle} className="bg-white p-2.5">
+      <div className="mb-1 font-semibold">{row.name}</div>
+      <div className="space-y-0.5">
+        {purposes
+          .filter((purpose) => (row.bytes[purpose.key] ?? 0) > 0)
+          .map((purpose) => (
+            <div key={purpose.key} className="flex justify-between gap-4">
+              <span style={{ color: purpose.fill }}>{purpose.label}</span>
+              <span>
+                {formatGiB(row.bytes[purpose.key]!)}
+                {" · "}
+                {share(row.bytes[purpose.key]!)}
+              </span>
+            </div>
+          ))}
+        <div className="flex justify-between gap-4 font-medium">
+          <span>Reserved</span>
+          <span>{formatGiB(row.reservedBytes)} · {share(row.reservedBytes)}</span>
+        </div>
+        <div className="flex justify-between gap-4 text-zinc-500">
+          <span>Allocatable free</span>
+          <span>{formatGiB(row.freeBytes)} · {share(row.freeBytes)}</span>
+        </div>
+      </div>
+      <div className="mt-1.5 border-t border-zinc-200 pt-1.5 text-[11px] text-zinc-500">
+        <div>Resource limit {formatGiB(limit)}</div>
+        {physical > limit
+          ? <div>Physical {formatGiB(physical)} · {formatGiB(physical - limit)} withheld</div>
+          : <div>Physical {formatGiB(physical)}</div>}
+      </div>
     </div>
   );
 }

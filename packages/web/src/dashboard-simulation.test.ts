@@ -480,9 +480,54 @@ describe("simulateDashboard", () => {
     );
   });
 
+  it("reserves KV from the run's own token budget, not a preset constant", () => {
+    const modelBinding = createBuiltinModelBinding("llama-3-8b");
+    const bytesPerToken = modelBinding.executionProfile.kvCacheBytesPerToken!;
+    const result = simulateDashboard({
+      ...base,
+      mode: "serving",
+      modelBinding,
+      serving: {
+        ...base.serving,
+        useExpertCache: false,
+        decodeMode: "target_only",
+        requestCount: 4,
+        promptTokens: 256,
+        outputTokens: 32,
+      },
+    });
+
+    const budgetTokens = 4 * (256 + 32 - 1);
+    const kvBytes = result.scenario.memoryLedger.reduce(
+      (sum, entry) => sum + (entry.reservedByPurpose.kv ?? 0),
+      0,
+    );
+    expect(kvBytes).toBe(budgetTokens * bytesPerToken);
+
+    // Doubling the requests must double the KV reservation.
+    const doubled = simulateDashboard({
+      ...base,
+      mode: "serving",
+      modelBinding,
+      serving: {
+        ...base.serving,
+        useExpertCache: false,
+        decodeMode: "target_only",
+        requestCount: 8,
+        promptTokens: 256,
+        outputTokens: 32,
+      },
+    });
+    const doubledKvBytes = doubled.scenario.memoryLedger.reduce(
+      (sum, entry) => sum + (entry.reservedByPurpose.kv ?? 0),
+      0,
+    );
+    expect(doubledKvBytes).toBe(kvBytes * 2);
+  });
+
   it("uses resource-manager limits instead of physical capacity", () => {
     const preset = buildScenarioPreset("cpu-only");
-    // The host domain keeps 128 GiB of physical capacity but only 17 GiB of
+    // The host domain keeps 128 GiB of physical capacity but only 12 GiB of
     // allocatable extent. Expert caches are dropped so the scenario's own
     // reservations still fit inside that limit.
     const customScenario = {
@@ -491,7 +536,7 @@ describe("simulateDashboard", () => {
       family: "custom" as const,
       memoryDomains: preset.memoryDomains.map((domain) => (
         domain.kind === "host"
-          ? { ...domain, resourceLimitBytes: 17 * 1024 ** 3 }
+          ? { ...domain, resourceLimitBytes: 12 * 1024 ** 3 }
           : domain
       )),
       placements: preset.placements.map((placement) => ({

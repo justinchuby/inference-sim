@@ -5,6 +5,7 @@ import {
   type AllocationReservation,
   type MemoryDomainSpec,
   type NetworkResourceSpec,
+  type AllocationPurpose,
   type ScenarioMemoryLedgerEntry,
   type ScenarioMemoryLedgerOptions,
   type ScenarioValidationIssue,
@@ -1505,6 +1506,10 @@ export function calculateScenarioMemoryLedger(
     }
   }
   const reserved = new Map<string, number>();
+  const reservedByPurpose = new Map<
+    string,
+    Map<AllocationPurpose, number>
+  >();
   for (const placement of scenario.placements) {
     for (const allocation of placement.allocations) {
       const allocationBytes = options.allocationBytes?.[
@@ -1520,6 +1525,13 @@ export function calculateScenarioMemoryLedger(
         }]);
       }
       reserved.set(allocation.domainId, total);
+      const purposes = reservedByPurpose.get(allocation.domainId)
+        ?? new Map<AllocationPurpose, number>();
+      purposes.set(
+        allocation.purpose,
+        (purposes.get(allocation.purpose) ?? 0) + allocationBytes,
+      );
+      reservedByPurpose.set(allocation.domainId, purposes);
     }
   }
   return scenario.memoryDomains
@@ -1528,6 +1540,9 @@ export function calculateScenarioMemoryLedger(
         || scenario.execution.features.ssdStreaming;
       const reservedBytes = enabled ? reserved.get(domain.id) ?? 0 : 0;
       const capacityBytes = enabled ? domain.resourceLimitBytes : 0;
+      const purposes = enabled
+        ? reservedByPurpose.get(domain.id) ?? new Map()
+        : new Map<AllocationPurpose, number>();
       return {
         domainId: domain.id,
         enabled,
@@ -1535,6 +1550,11 @@ export function calculateScenarioMemoryLedger(
         capacityBytes,
         reservedBytes,
         freeBytes: capacityBytes - reservedBytes,
+        reservedByPurpose: Object.fromEntries(
+          [...purposes.entries()]
+            .filter(([, bytes]) => bytes > 0)
+            .sort(([left], [right]) => compareIds(left, right)),
+        ),
       };
     })
     .sort((left, right) => compareIds(left.domainId, right.domainId));

@@ -227,6 +227,9 @@ export interface ScenarioValidationResult {
   readonly issues: readonly ScenarioValidationIssue[];
 }
 
+export type AllocationPurpose =
+  PartitionPlacement["allocations"][number]["purpose"];
+
 export interface ScenarioMemoryLedgerEntry {
   readonly domainId: string;
   readonly enabled: boolean;
@@ -234,6 +237,12 @@ export interface ScenarioMemoryLedgerEntry {
   readonly capacityBytes: number;
   readonly reservedBytes: number;
   readonly freeBytes: number;
+  /**
+   * Reserved bytes split by what the allocation is for. Sums to
+   * `reservedBytes`, and answers which workload decision is consuming the
+   * domain rather than only how full it is.
+   */
+  readonly reservedByPurpose: Readonly<Partial<Record<AllocationPurpose, number>>>;
 }
 
 export interface ScenarioMemoryLedgerOptions {

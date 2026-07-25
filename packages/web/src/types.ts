@@ -215,6 +215,8 @@ export interface DashboardResult {
     readonly deviceCount: number;
     readonly linkCount: number;
     readonly memoryLedger: readonly ScenarioMemoryLedgerEntry[];
+    /** Scenario feature flags, so the result can show what was switched off. */
+    readonly ssdStreaming: boolean;
   };
   readonly mode: WorkloadMode;
   readonly durationMs: number;
@@ -285,6 +287,8 @@ export interface DashboardResult {
     readonly decodeMode: "target_only" | SpeculativeProposerFamily;
     readonly support: "onnx_genai_current" | "design_only" | "target_only";
     readonly metrics: ServingMetrics;
+    /** KV token budget the scheduler was given, for byte reconciliation. */
+    readonly kvBudgetTokens: number;
     readonly requests: readonly ServingRequestResult[];
     readonly physicalReplayEvents?: number;
     readonly maximumConcurrentPlans?: number;

@@ -148,6 +148,7 @@ import type {
   WorkerResponse,
   WorkloadMode,
 } from "./types.js";
+import { finalizeEditedTopology } from "./topology-editor.js";
 
 const BUILTIN_WEIGHT_DTYPES = [
   "fp16",
@@ -2509,6 +2510,13 @@ function ConfigurationPanel({
                     }
                   }}
                 />
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+                  <span>Hardware</span>
+                  <ParameterHelp
+                    label="Hardware"
+                    description="What the model runs on: the device topology, how many ranks it uses, and the scenario feature flags that change what the resource manager will allocate."
+                  />
+                </div>
                 <div className="mb-4">
                   <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
                     Device topology
@@ -2726,10 +2734,6 @@ function ConfigurationPanel({
                               {selectedScenario.execution.topologyEpoch}
                             </div>
                             <div className="truncate text-[11px] font-medium text-zinc-600">
-                              SSD streaming{" "}
-                              {selectedScenario.execution.features.ssdStreaming
-                                ? "on"
-                                : "off"} ·{" "}
                               {formatBytes(selectedScenario.memoryDomains
                                 .filter((domain) => domain.kind === "storage")
                                 .reduce(
@@ -2786,108 +2790,56 @@ function ConfigurationPanel({
                   : null}
               </>
             )}
-
-        <div className="mb-4 border-y border-zinc-200 py-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-zinc-600">
-              Timing evidence
-            </span>
-            <Badge
-              variant={calibration.parsed?.fit.confidence === "calibrated"
-                ? "success"
-                : "warning"}
-            >
-              {calibration.parsed
-                ? calibration.parsed.dataset.provenance.kind
-                : "bundled heuristic"}
-            </Badge>
-          </div>
-          <input
-            ref={calibrationInput}
-            type="file"
-            accept=".yaml,.yml,.json,application/json,text/yaml"
-            className="sr-only"
-            disabled={disabled}
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              if (file) {
-                onCalibrationFile(file);
-              }
-            }}
-          />
-          {calibration.parsed
-            ? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-semibold text-zinc-800">
-                      {calibration.fileName}
-                    </div>
-                    <div className="truncate text-[11px] text-zinc-500">
-                      {calibration.parsed.fit.datasetFingerprint}
-                    </div>
-                  </div>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Replace calibration"
-                        disabled={disabled}
-                        onClick={() => calibrationInput.current?.click()}
-                      >
-                        <Upload className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Replace calibration</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Remove calibration"
-                        disabled={disabled}
-                        onClick={onClearCalibration}
-                      >
-                        <X className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Remove calibration</TooltipContent>
-                  </Tooltip>
-                </div>
-              )
-            : (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className="w-full"
-                  disabled={disabled}
-                  onClick={() => calibrationInput.current?.click()}
+        {selectedScenario
+          ? (
+              <div className="mb-4 flex min-h-9 items-center justify-between gap-3">
+                <label
+                  className="flex items-center gap-1 text-sm font-medium text-zinc-700"
+                  htmlFor="hardware-ssd-streaming"
                 >
-                  <Upload className="size-4" />
-                  Import calibration
-                </Button>
-              )}
-          {calibration.error
-            ? (
-                <div className="mt-2 text-xs leading-4 text-rose-700">
-                  {calibration.error}
-                </div>
-              )
-            : null}
-        </div>
+                  SSD streaming
+                  <ParameterHelp
+                    label="SSD streaming"
+                    description="Allow cold weights and background prefetches to read from SSD. With it off, storage domains leave the allocatable ledger entirely and any workload that needs SSD-backed experts fails closed instead of silently borrowing capacity."
+                  />
+                </label>
+                <Switch
+                  id="hardware-ssd-streaming"
+                  checked={selectedScenario.execution.features.ssdStreaming}
+                  disabled={disabled}
+                  onCheckedChange={(ssdStreaming) => {
+                    onEditedTopology(finalizeEditedTopology({
+                      ...selectedScenario,
+                      execution: {
+                        ...selectedScenario.execution,
+                        features: {
+                          ...selectedScenario.execution.features,
+                          ssdStreaming,
+                        },
+                      },
+                    }));
+                  }}
+                />
+              </div>
+            )
+          : null}
+
 
         <Tabs
           value={config.mode}
           onValueChange={(mode) => setMode(mode as WorkloadMode)}
         >
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+          <span>Workload</span>
+          <ParameterHelp
+            label="Workload"
+            description="What this run measures. Serving is a full continuous-batching run and is where speculative decoding and the expert cache are switched on for a realistic workload. The study tabs isolate one mechanism instead: they answer how a proposer or a cache behaves on its own, not what a served deployment does."
+          />
+        </div>
         <TabsList className="mb-4 w-full grid-cols-4">
-          <TabsTrigger value="serving">Serving</TabsTrigger>
+          <TabsTrigger value="serving" aria-label="Continuous serving">
+            Serving
+          </TabsTrigger>
           <ModeTab
             value="pipeline"
             label="Pipeline"
@@ -2896,12 +2848,14 @@ function ConfigurationPanel({
           />
           <ModeTab
             value="speculative"
-            label="Spec"
-            accessibleLabel="Speculative"
+            label="Spec study"
+            accessibleLabel="Speculative study"
             available={speculativeAvailable}
             unavailableReason={speculativeUnavailableReason}
           />
-          <TabsTrigger value="expert-cache">Experts</TabsTrigger>
+          <TabsTrigger value="expert-cache" aria-label="Expert cache study">
+            Cache study
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="pipeline" className="space-y-4">
           <SliderField
@@ -2945,7 +2899,10 @@ function ConfigurationPanel({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Decode mode">
+          <Field
+            label="Decode mode"
+            description="Speculative decoding inside this continuous-serving run. To study a proposer's acceptance profile on its own instead, use the Spec study workload."
+          >
             <Select
               value={config.serving.decodeMode}
               disabled={disabled}
@@ -2973,10 +2930,14 @@ function ConfigurationPanel({
           </Field>
           <div className="flex min-h-9 items-center justify-between gap-3">
             <label
-              className="text-sm font-medium text-zinc-700"
+              className="flex items-center gap-1 text-sm font-medium text-zinc-700"
               htmlFor="serving-expert-cache"
             >
               Stateful expert cache
+              <ParameterHelp
+                label="Stateful expert cache"
+                description="Route MoE experts through a real hot/warm/cold cache during this serving run instead of assuming every expert is resident. To study cache hit rates and eviction on their own, use the Cache study workload."
+              />
             </label>
             <Switch
               id="serving-expert-cache"
@@ -3094,7 +3055,13 @@ function ConfigurationPanel({
             <span className="text-right font-semibold tabular-nums text-zinc-700">
               {formatTokenCount(
                 config.serving.promptTokens + config.serving.outputTokens,
-              )} tok · limit unbound
+              )} tok
+              {contextCapacity?.status === "available"
+                ? ` · ${formatBytes(
+                  (config.serving.promptTokens + config.serving.outputTokens)
+                  * contextCapacity.kvCacheBytesPerToken,
+                )} KV`
+                : " · limit unbound"}
             </span>
           </div>
           {contextCapacity === undefined
@@ -3125,7 +3092,10 @@ function ConfigurationPanel({
                       <span className="text-right font-bold tabular-nums">
                         ≈{formatApproxTokenCount(
                           contextCapacity.maxContextTokensPerRequest,
-                        )} tok
+                        )} tok · {formatBytes(
+                          contextCapacity.maxContextTokensPerRequest
+                          * contextCapacity.kvCacheBytesPerToken,
+                        )}
                       </span>
                     </div>
                     <div className="mt-0.5 text-zinc-500">
@@ -3518,6 +3488,101 @@ function ConfigurationPanel({
           />
         </TabsContent>
         </Tabs>
+
+        <div className="mb-4 border-y border-zinc-200 py-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-zinc-600">
+              Timing evidence
+            </span>
+            <Badge
+              variant={calibration.parsed?.fit.confidence === "calibrated"
+                ? "success"
+                : "warning"}
+            >
+              {calibration.parsed
+                ? calibration.parsed.dataset.provenance.kind
+                : "bundled heuristic"}
+            </Badge>
+          </div>
+          <input
+            ref={calibrationInput}
+            type="file"
+            accept=".yaml,.yml,.json,application/json,text/yaml"
+            className="sr-only"
+            disabled={disabled}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) {
+                onCalibrationFile(file);
+              }
+            }}
+          />
+          {calibration.parsed
+            ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <FileCheck2 className="size-4 shrink-0 text-emerald-700" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-zinc-800">
+                      {calibration.fileName}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {calibration.parsed.fit.datasetFingerprint}
+                    </div>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Replace calibration"
+                        disabled={disabled}
+                        onClick={() => calibrationInput.current?.click()}
+                      >
+                        <Upload className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Replace calibration</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Remove calibration"
+                        disabled={disabled}
+                        onClick={onClearCalibration}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Remove calibration</TooltipContent>
+                  </Tooltip>
+                </div>
+              )
+            : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="w-full"
+                  disabled={disabled}
+                  onClick={() => calibrationInput.current?.click()}
+                >
+                  <Upload className="size-4" />
+                  Import calibration
+                </Button>
+              )}
+          {calibration.error
+            ? (
+                <div className="mt-2 text-xs leading-4 text-rose-700">
+                  {calibration.error}
+                </div>
+              )
+            : null}
+        </div>
       </div>
       {topologyEditorOpen && selectedScenario
         ? (
@@ -4035,6 +4100,26 @@ function Results({
                   {result.speculative.tokenTrace.matchesTargetOnly
                     ? "token parity"
                     : "token mismatch"}
+                </Badge>
+              )
+            : null}
+          {result.scenario.ssdStreaming
+            ? null
+            : <Badge variant="warning">SSD streaming off</Badge>}
+          {result.model?.modelFormat
+            && result.model.modelFormat.weightQuantization !== "none"
+            ? (
+                <Badge variant="neutral">
+                  {result.model.modelFormat.weightDtypes[0]} weights
+                </Badge>
+              )
+            : null}
+          {result.model?.modelFormat
+            && result.model.modelFormat.kvCacheDtype !== "fp16"
+            && result.model.modelFormat.kvCacheDtype !== "unknown"
+            ? (
+                <Badge variant="neutral">
+                  {result.model.modelFormat.kvCacheDtype} KV
                 </Badge>
               )
             : null}
@@ -5107,15 +5192,20 @@ function EmptyState({ state }: { readonly state: RunState }): React.JSX.Element 
 
 function Field({
   label,
+  description,
   children,
 }: {
   readonly label: string;
+  readonly description?: string;
   readonly children: React.ReactNode;
 }): React.JSX.Element {
   return (
     <label className="mb-4 block">
-      <span className="mb-1.5 block text-xs font-semibold text-zinc-600">
+      <span className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-zinc-600">
         {label}
+        {description === undefined
+          ? null
+          : <ParameterHelp label={label} description={description} />}
       </span>
       {children}
     </label>
@@ -5432,6 +5522,16 @@ function servingMetrics(result: DashboardResult) {
   const serving = result.serving!;
   const metrics = serving.metrics;
   const speculative = serving.decodeMode !== "target_only";
+  // Tokens alone cannot be reconciled with the memory breakdown, so report the
+  // extent the run actually held and how much of its reservation that used.
+  const kvReservedBytes = result.scenario.memoryLedger.reduce(
+    (sum, entry) => sum + (entry.reservedByPurpose.kv ?? 0),
+    0,
+  );
+  const kvBytesPerToken = kvReservedBytes > 0 && serving.kvBudgetTokens > 0
+    ? kvReservedBytes / serving.kvBudgetTokens
+    : 0;
+  const kvHighWaterBytes = metrics.kvHighWaterTokens * kvBytesPerToken;
   return [
     {
       label: "P95 TTFT",
@@ -5459,9 +5559,13 @@ function servingMetrics(result: DashboardResult) {
     },
     {
       label: "KV high water",
-      value: `${metrics.kvHighWaterTokens.toLocaleString()} tok`,
-      detail: speculative
-        ? `${metrics.acceptedAdditionalTokens}/${metrics.proposedAdditionalTokens} additional drafts accepted`
+      value: kvBytesPerToken > 0
+        ? formatBytes(kvHighWaterBytes)
+        : `${metrics.kvHighWaterTokens.toLocaleString()} tok`,
+      detail: kvBytesPerToken > 0
+        ? `${metrics.kvHighWaterTokens.toLocaleString()} tok · ${
+          (kvHighWaterBytes / kvReservedBytes * 100).toFixed(0)
+        }% of ${formatBytes(kvReservedBytes)} reserved`
         : `${(metrics.sequenceBatchUtilization * 100).toFixed(1)}% sequence slots`,
       icon: <Database className="size-4 text-sky-700" />,
     },
