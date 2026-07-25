@@ -261,6 +261,8 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     quiesceTimeoutUs: 250,
     executionCount: 4,
   },
+  modality: "text",
+  mediaItemsPerRequest: 1,
 };
 
 const DEFAULT_ONNX_CONFIG: OnnxStaticBrowserConfig = {
@@ -665,6 +667,7 @@ export function App(): React.JSX.Element {
     preset: DashboardModelPreset,
     weightDtype?: QuantType,
     kvCacheDtype?: QuantType,
+    modality?: DashboardRunConfig["modality"],
   ) => {
     const currentWeightDtype = config.modelBinding?.source === "builtin_model"
       ? config.modelBinding.modelFormat?.weightDtypes[0]
@@ -678,13 +681,21 @@ export function App(): React.JSX.Element {
     const selectedKvCacheDtype = kvCacheDtype
       ?? BUILTIN_KV_CACHE_DTYPES.find((dtype) => dtype === currentKvCacheDtype)
       ?? "fp16";
+    // A model without media components has nothing to enable, so selecting one
+    // must not leave a stale multimodal choice behind.
+    const selectedModality = createBuiltinModelBinding(preset)
+      .mediaTokensPerItem === undefined
+      ? "text"
+      : modality ?? config.modality;
     const { trace: _trace, ...speculative } = config.speculative;
     changeConfig({
       ...config,
+      modality: selectedModality,
       modelBinding: createBuiltinModelBinding(
         preset,
         selectedWeightDtype,
         selectedKvCacheDtype,
+        selectedModality,
       ),
       mode: "serving",
       speculative: {
@@ -2176,6 +2187,7 @@ function ConfigurationPanel({
     preset: DashboardModelPreset,
     weightDtype?: QuantType,
     kvCacheDtype?: QuantType,
+    modality?: DashboardRunConfig["modality"],
   ) => void;
   readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
@@ -2268,6 +2280,10 @@ function ConfigurationPanel({
         (dtype) => dtype === config.modelBinding?.modelFormat?.kvCacheDtype,
       ) ?? "fp16"
     : undefined;
+  const mediaPromptTokens = config.modality === "multimodal"
+    ? (config.modelBinding?.mediaTokensPerItem ?? 0)
+      * config.mediaItemsPerRequest
+    : 0;
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
       <div className="configuration-scroll">
@@ -2379,6 +2395,75 @@ function ConfigurationPanel({
                     </SelectContent>
                   </Select>
                 </label>
+              )}
+          {config.modelBinding?.mediaTokensPerItem === undefined
+            ? null
+            : (
+                <>
+                  <label className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-zinc-600">
+                    <span className="flex shrink-0 items-center gap-1 font-medium">
+                      Input
+                      <ParameterHelp
+                        label="Input modality"
+                        description="Whether this run sends media. A multimodal checkpoint served text-only is a real deployment: the encoders stay resident but never run, and nothing expands the prompt. Selecting media runs the encoders once per request and adds the media's decoder tokens to every prompt."
+                      />
+                    </span>
+                    <Select
+                      value={config.modality}
+                      disabled={disabled || modelPackage.importing}
+                      onValueChange={(modality) => {
+                        onBuiltinModel(
+                          selectedModelValue as DashboardModelPreset,
+                          selectedWeightDtype,
+                          selectedKvCacheDtype,
+                          modality as DashboardRunConfig["modality"],
+                        );
+                      }}
+                    >
+                      <SelectTrigger
+                        aria-label="Input modality"
+                        className="h-8 w-32"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="text">Text only</SelectItem>
+                        <SelectItem value="multimodal">Text + media</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  {config.modality === "text"
+                    ? (
+                        <div className="mt-1 text-[11px] text-zinc-500">
+                          Encoders resident but idle ·{" "}
+                          {config.modelBinding.mediaTokensPerItem} tok per item
+                          if enabled
+                        </div>
+                      )
+                    : (
+                        <div className="mt-1.5">
+                          <SliderField
+                            label="Media per request"
+                            description="Images or audio windows attached to every request. Each one runs the encoder and contributes its decoder tokens to the prompt, so this drives prefill work and KV alongside the text prompt."
+                            value={config.mediaItemsPerRequest}
+                            minimum={0}
+                            maximum={8}
+                            step={1}
+                            disabled={disabled}
+                            onChange={(mediaItemsPerRequest) => onChange({
+                              ...config,
+                              mediaItemsPerRequest,
+                            })}
+                          />
+                          <div className="mt-1 text-[11px] text-zinc-500">
+                            +{(
+                              config.modelBinding.mediaTokensPerItem
+                              * config.mediaItemsPerRequest
+                            ).toLocaleString()} prompt tokens per request
+                          </div>
+                        </div>
+                      )}
+                </>
               )}
           {selectedKvCacheDtype === undefined
             ? null
@@ -3081,11 +3166,15 @@ function ConfigurationPanel({
             </span>
             <span className="text-right font-semibold tabular-nums text-zinc-700">
               {formatTokenCount(
-                config.serving.promptTokens + config.serving.outputTokens,
+                config.serving.promptTokens
+                + config.serving.outputTokens
+                + mediaPromptTokens,
               )} tok
               {contextCapacity?.status === "available"
                 ? ` · ${formatBytes(
-                  (config.serving.promptTokens + config.serving.outputTokens)
+                  (config.serving.promptTokens
+                    + config.serving.outputTokens
+                    + mediaPromptTokens)
                   * contextCapacity.kvCacheBytesPerToken,
                 )} KV`
                 : " · limit unbound"}

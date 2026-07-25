@@ -244,6 +244,8 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       "serving",
       "expertCache",
       "fault",
+      "modality",
+      "mediaItemsPerRequest",
     ], "artifact input");
     const scenarioName = requireEnum(
       config.scenarioName,
@@ -296,6 +298,17 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     const serving = parseServingConfig(config.serving);
     const expertCache = parseExpertCacheConfig(config.expertCache);
     const fault = parseFaultConfig(config.fault);
+    const modality = requireEnum(
+      config.modality,
+      ["text", "multimodal"] as const,
+      "artifact input modality",
+    );
+    const mediaItemsPerRequest = requireInteger(
+      config.mediaItemsPerRequest,
+      0,
+      64,
+      "artifact input mediaItemsPerRequest",
+    );
     const modelBinding = config.modelBinding === undefined
       ? undefined
       : parseModelBinding(config.modelBinding);
@@ -325,6 +338,8 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       serving,
       expertCache,
       fault,
+      modality,
+      mediaItemsPerRequest,
       ...(calibration === undefined ? {} : { calibration }),
     };
   } catch (error) {

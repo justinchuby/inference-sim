@@ -55,6 +55,8 @@ function config(seed: number): DashboardRunConfig {
       quiesceTimeoutUs: 250,
       executionCount: 4,
     },
+    modality: "text",
+    mediaItemsPerRequest: 1,
   };
 }
 

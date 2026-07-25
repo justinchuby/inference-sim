@@ -23,6 +23,45 @@ import {
 } from "./model-binding.js";
 
 describe("model UI metrics", () => {
+  it("only runs media components when the run selects media", () => {
+    const multimodal = createBuiltinModelBinding(
+      "qwen3-vl-8b", "fp16", "fp16", "multimodal",
+    );
+    const textOnly = createBuiltinModelBinding(
+      "qwen3-vl-8b", "fp16", "fp16", "text",
+    );
+
+    expect(multimodal.pipelineExecution).toBeDefined();
+    expect(multimodal.pipelineExecution!.components.map((c) => c.role))
+      .toContain("vision_encoder");
+    // Text-only keeps the tower resident but never schedules it.
+    expect(textOnly.pipelineExecution).toBeUndefined();
+    expect(textOnly.weightBytes).toBe(multimodal.weightBytes);
+    // Both still report what a media item would cost.
+    expect(textOnly.mediaTokensPerItem).toBe(multimodal.mediaTokensPerItem);
+    expect(textOnly.mediaTokensPerItem).toBeGreaterThan(0);
+    // The two runs are distinct experiments.
+    expect(textOnly.modelFingerprints).not.toEqual(multimodal.modelFingerprints);
+  });
+
+  it("reports no media cost for a text-only model", () => {
+    const binding = createBuiltinModelBinding("llama-3-8b");
+
+    expect(binding.mediaTokensPerItem).toBeUndefined();
+    expect(binding.pipelineExecution).toBeUndefined();
+  });
+
+  it("charges no decoder tokens for a cross-attending adapter", () => {
+    // Llama-3.2-Vision cross-attends image features, so media costs encoder
+    // work but adds no prompt positions.
+    const binding = createBuiltinModelBinding(
+      "llama-3.2-11b-vision", "fp16", "fp16", "multimodal",
+    );
+
+    expect(binding.mediaTokensPerItem).toBe(0);
+    expect(binding.pipelineExecution).toBeDefined();
+  });
+
   it("binds KV cache dtype independently of the weight dtype", () => {
     const fp16 = createBuiltinModelBinding("qwen3-0.6b", "fp16", "fp16");
     const fp8Kv = createBuiltinModelBinding("qwen3-0.6b", "fp16", "fp8");

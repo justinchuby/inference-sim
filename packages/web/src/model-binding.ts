@@ -63,17 +63,23 @@ export function createBuiltinModelBinding(
   preset: DashboardModelPreset,
   weightDtype: QuantType = "fp16",
   kvCacheDtype: QuantType = "fp16",
+  modality: "text" | "multimodal" = "multimodal",
 ): DashboardModelBinding {
   const model = buildModelProfile(preset, weightDtype, kvCacheDtype);
-  const fingerprint = `builtin:${preset}:${weightDtype}:${kvCacheDtype}`;
-  const pipelineExecution = builtinPipelineExecution(model, preset);
+  const fingerprint =
+    `builtin:${preset}:${weightDtype}:${kvCacheDtype}:${modality}`;
+  // Serving a multimodal checkpoint without media is a real deployment: the
+  // encoders stay resident but never run, and nothing expands the prompt.
+  const pipelineExecution = modality === "multimodal"
+    ? builtinPipelineExecution(model, preset)
+    : undefined;
   const moeLimitations = [
     ...(model.moe === undefined
       ? []
       : ["model_moe_routing_not_bound_to_expert_workload"]),
     ...(pipelineExecution === undefined
       ? []
-      : ["vision_request_tile_expansion_not_modeled"]),
+      : ["media_item_count_is_uniform_across_requests"]),
   ];
   return {
     source: "builtin_model",
@@ -93,6 +99,14 @@ export function createBuiltinModelBinding(
     },
     executionProfile: executionProfile(model, preset),
     ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
+    ...(model.components === undefined
+      ? {}
+      : {
+          mediaTokensPerItem: model.components.reduce(
+            (sum, component) => sum + (component.tokensPerItem ?? 0),
+            0,
+          ),
+        }),
     executionCoverage: {
       fidelity: moeLimitations.length === 0 ? "complete" : "partial",
       scope: "full_model",

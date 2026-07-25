@@ -61,6 +61,8 @@ const base: DashboardRunConfig = {
     quiesceTimeoutUs: 250,
     executionCount: 4,
   },
+  modality: "text",
+  mediaItemsPerRequest: 1,
 };
 
 describe("simulateDashboard", () => {
@@ -560,6 +562,52 @@ describe("simulateDashboard", () => {
 
     expect(fault.failedNodeId).not.toBe("node-that-does-not-exist");
     expect(fault.rankStates.some((state) => state.onFailedNode)).toBe(true);
+  });
+
+  it("expands the prompt and KV budget by the media a request carries", () => {
+    const run = (modality: "text" | "multimodal", mediaItemsPerRequest: number) => {
+      const modelBinding = createBuiltinModelBinding(
+        "qwen3-vl-8b", "fp16", "fp16", modality,
+      );
+      return {
+        binding: modelBinding,
+        result: simulateDashboard({
+          ...base,
+          mode: "serving",
+          modality,
+          mediaItemsPerRequest,
+          modelBinding,
+          serving: {
+            ...base.serving,
+            useExpertCache: false,
+            decodeMode: "target_only",
+            requestCount: 2,
+            promptTokens: 256,
+            outputTokens: 16,
+          },
+        }),
+      };
+    };
+    const kvBytes = (result: ReturnType<typeof run>["result"]) => (
+      result.scenario.memoryLedger.reduce(
+        (sum, entry) => sum + (entry.reservedByPurpose.kv ?? 0),
+        0,
+      )
+    );
+
+    const textOnly = run("text", 2);
+    const withMedia = run("multimodal", 2);
+    const perItem = withMedia.binding.mediaTokensPerItem!;
+
+    expect(perItem).toBeGreaterThan(0);
+    // Two items per request on two requests, all of them prompt positions.
+    expect(withMedia.result.serving!.kvBudgetTokens
+      - textOnly.result.serving!.kvBudgetTokens)
+      .toBe(2 * 2 * perItem);
+    expect(kvBytes(withMedia.result)).toBeGreaterThan(kvBytes(textOnly.result));
+    // Selecting text-only must ignore the media count entirely.
+    expect(run("text", 8).result.serving!.kvBudgetTokens)
+      .toBe(textOnly.result.serving!.kvBudgetTokens);
   });
 
   it("reserves KV from the run's own token budget, not a preset constant", () => {

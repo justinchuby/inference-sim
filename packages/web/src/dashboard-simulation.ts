@@ -533,11 +533,7 @@ function buildServingConfig(
   config: DashboardRunConfig,
 ): ServingSchedulerConfig {
   const requestCount = clampInteger(config.serving.requestCount, 1, 32);
-  const promptTokens = clampInteger(
-    config.serving.promptTokens,
-    16,
-    1_048_576,
-  );
+  const promptTokens = dashboardPromptTokens(config);
   const outputTokens = clampInteger(
     config.serving.outputTokens,
     1,
@@ -832,12 +828,30 @@ export function dashboardKvReservationBytes(
   return dashboardKvBudgetTokens(config) * bytesPerToken;
 }
 
+/**
+ * Decoder tokens each request's media expands into. A vision tower emits real
+ * prompt positions, so they cost prefill work and KV exactly like text does.
+ * Adapters that cross-attend instead of injecting tokens report zero.
+ */
+export function dashboardMediaTokens(config: DashboardRunConfig): number {
+  if (config.modality !== "multimodal") {
+    return 0;
+  }
+  const perItem = config.modelBinding?.mediaTokensPerItem ?? 0;
+  return perItem * clampInteger(config.mediaItemsPerRequest, 0, 64);
+}
+
+/** Prompt positions a request occupies, media included. */
+export function dashboardPromptTokens(config: DashboardRunConfig): number {
+  return clampInteger(config.serving.promptTokens, 16, 1_048_576)
+    + dashboardMediaTokens(config);
+}
+
 /** Token budget the serving scheduler is given for the whole run. */
 export function dashboardKvBudgetTokens(config: DashboardRunConfig): number {
   const requestCount = clampInteger(config.serving.requestCount, 1, 32);
-  const promptTokens = clampInteger(config.serving.promptTokens, 16, 1_048_576);
   const outputTokens = clampInteger(config.serving.outputTokens, 1, 32_768);
-  return requestCount * (promptTokens + outputTokens - 1);
+  return requestCount * (dashboardPromptTokens(config) + outputTokens - 1);
 }
 
 function distributeAllocationBytes(

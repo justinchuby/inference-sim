@@ -89,6 +89,12 @@ export interface DashboardModelBinding {
   readonly modelFormat?: DashboardModelFormat;
   readonly executionProfile: DashboardModelExecutionProfile;
   readonly pipelineExecution?: TopologyPipelineWork;
+  /**
+   * Decoder tokens one media item expands into. Present whenever the model
+   * declares media components, so a text-only run can still report what
+   * enabling media would cost.
+   */
+  readonly mediaTokensPerItem?: number;
   readonly executionCoverage: DashboardModelExecutionCoverage;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
@@ -211,6 +217,14 @@ export interface DashboardRunConfig {
     readonly trace?: SpeculativeTokenTrace;
   };
   readonly fault: DashboardFaultConfig;
+  /**
+   * Whether media components run. A multimodal checkpoint served without
+   * images is a real deployment, so the encoders and their token expansion
+   * are opt-in rather than implied by the model.
+   */
+  readonly modality: "text" | "multimodal";
+  /** Media items per request when `modality` is multimodal. */
+  readonly mediaItemsPerRequest: number;
   readonly serving: {
     readonly compareTopologies: boolean;
     readonly useExpertCache: boolean;
