@@ -11,12 +11,18 @@ does not claim hardware-accurate latency without calibration data.
 
 ## What You Can Model
 
-- Pick from 24 built-in model presets spanning 0.6B to 1T parameters and the
+- Pick from 30 built-in model presets spanning 0.6B to 1T parameters and the
   main architecture families: dense GQA, fine-grained and coarse MoE, DeepSeek
   multi-head latent attention, Gemma-style local/global sliding-window hybrids,
   and Qwen3.6-style gated linear-attention hybrids. Every preset is derived
   from its published architecture and checked against the published parameter
   count.
+- Nine of those presets are multimodal, covering the ways vision and audio
+  actually attach to a decoder: ViT towers with a merging projector, an
+  encoder-free stack that projects raw patches, a cross-attention adapter that
+  adds no decoder tokens at all, and an encoder-decoder audio model. Each one
+  reports its own encoder weights and how many decoder tokens a media item
+  costs.
 - Import local ONNX model packages directly in the browser, including external
   tensor data and onnx-genai inference metadata for multi-model pipelines.
 - Inspect model size, parameter count, weight/activation dtype, quantization

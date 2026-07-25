@@ -66,7 +66,11 @@ describe("model presets", () => {
           model.moe.numExperts * model.moe.expertBytesPerLayer
           + model.moe.sharedExpertBytesPerLayer
         );
-      const bytes = dense + experts + (model.embeddingBytes ?? 0);
+      const components = (model.components ?? []).reduce(
+        (sum, component) => sum + component.weightBytes,
+        0,
+      );
+      const bytes = dense + experts + components + (model.embeddingBytes ?? 0);
       expect(bytes / 2, preset).toBeCloseTo(model.totalParams, -3);
     }
   });
@@ -133,6 +137,74 @@ describe("model presets", () => {
     expect(routedBytes).toBe(expected);
     // Only the three dense layers carry a non-routed FFN.
     expect(model.layers.filter((layer) => layer.ffnBytes > 0)).toHaveLength(3);
+  });
+
+  it("describes multimodal components with exact, derived geometry", () => {
+    const multimodal = listModelPresets()
+      .map((preset) => [preset, buildModelProfile(preset)] as const)
+      .filter(([, model]) => model.components !== undefined);
+
+    expect(multimodal.length).toBeGreaterThanOrEqual(8);
+    for (const [preset, model] of multimodal) {
+      const components = model.components!;
+      expect(components.length, preset).toBeGreaterThan(0);
+      expect(new Set(components.map((c) => c.id)).size, preset)
+        .toBe(components.length);
+      for (const component of components) {
+        expect(component.params, `${preset}/${component.id}`)
+          .toBeGreaterThan(0);
+        expect(component.weightBytes, `${preset}/${component.id}`)
+          .toBe(component.params * 2);
+        if (component.tokensPerItem !== undefined) {
+          // A media item must expand into a whole number of decoder tokens.
+          expect(
+            Number.isSafeInteger(component.tokensPerItem),
+            `${preset}/${component.id} tokensPerItem`,
+          ).toBe(true);
+          expect(component.tokensPerItem, `${preset}/${component.id}`)
+            .toBeGreaterThanOrEqual(0);
+        }
+      }
+      // Components are extra weight on top of the decoder, never a substitute.
+      const decoderBytes = model.layers.reduce(
+        (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
+        0,
+      );
+      const componentBytes = components.reduce(
+        (sum, component) => sum + component.weightBytes,
+        0,
+      );
+      expect(componentBytes, preset).toBeLessThan(decoderBytes);
+    }
+  });
+
+  it("charges no decoder tokens for cross-attended vision features", () => {
+    // Llama-3.2-Vision cross-attends image features from eight decoder layers
+    // instead of injecting them into the sequence.
+    const model = buildModelProfile("llama-3.2-11b-vision");
+    const projector = model.components!.find(
+      (component) => component.role === "projector",
+    )!;
+    expect(projector.tokensPerItem).toBe(0);
+
+    // Only the cross-attending layers carry the extra attention weights.
+    const attentionBytes = model.layers.map((layer) => layer.attentionBytes);
+    const crossAttended = attentionBytes.filter(
+      (bytes) => bytes === Math.max(...attentionBytes),
+    );
+    expect(crossAttended).toHaveLength(8);
+  });
+
+  it("models an encoder-decoder audio stack", () => {
+    const model = buildModelProfile("whisper-large-v3");
+    const encoder = model.components!.find(
+      (component) => component.role === "audio_encoder",
+    )!;
+
+    expect(encoder.tokensPerItem).toBe(1500);
+    // Every decoder layer cross-attends, so all layers carry the same weights.
+    expect(new Set(model.layers.map((layer) => layer.attentionBytes)).size)
+      .toBe(1);
   });
 
   it("rejects unknown presets with the available list", () => {

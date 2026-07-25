@@ -129,9 +129,16 @@ function kvElementsPerToken(attention: AttentionGeometry): number {
   }
 }
 
-/** Gated (SwiGLU-style) feed-forward block: gate, up, and down projections. */
-function ffnParams(hiddenDim: number, intermediateSize: number): number {
-  return 3 * hiddenDim * intermediateSize;
+/**
+ * Feed-forward block. Gated (SwiGLU-style) blocks use gate, up, and down
+ * projections; classic transformer blocks use up and down only.
+ */
+function ffnParams(
+  hiddenDim: number,
+  intermediateSize: number,
+  gated = true,
+): number {
+  return (gated ? 3 : 2) * hiddenDim * intermediateSize;
 }
 
 // ============================================================
@@ -248,6 +255,16 @@ export interface ModelSpec {
   readonly attention: AttentionGeometry | ((layer: number) => AttentionGeometry);
   /** Dense FFN intermediate size; 0 for layers whose FFN is fully routed. */
   readonly intermediateSize: number | ((layer: number) => number);
+  /** False selects a classic two-matrix FFN instead of a gated one. */
+  readonly gatedFfn?: boolean;
+  /**
+   * Cross-attention added to a layer, for encoder-decoder stacks and for
+   * vision adapters that attend to encoder features instead of injecting
+   * tokens into the sequence.
+   */
+  readonly crossAttention?:
+    | AttentionGeometry
+    | ((layer: number) => AttentionGeometry | undefined);
   readonly moe?: MoESpec;
   readonly multimodal?: MultimodalSpec;
   readonly assumptions?: readonly string[];
@@ -282,6 +299,30 @@ function intermediateAt(spec: ModelSpec, layer: number): number {
   return typeof spec.intermediateSize === "function"
     ? spec.intermediateSize(layer)
     : spec.intermediateSize;
+}
+
+function crossAttentionAt(
+  spec: ModelSpec,
+  layer: number,
+): AttentionGeometry | undefined {
+  return typeof spec.crossAttention === "function"
+    ? spec.crossAttention(layer)
+    : spec.crossAttention;
+}
+
+/** Self-attention plus any cross-attention carried by the same layer. */
+function layerAttentionParams(spec: ModelSpec, layer: number): number {
+  const cross = crossAttentionAt(spec, layer);
+  return attentionParams(spec.hiddenDim, attentionAt(spec, layer))
+    + (cross === undefined ? 0 : attentionParams(spec.hiddenDim, cross));
+}
+
+function layerFfnParams(spec: ModelSpec, layer: number): number {
+  return ffnParams(
+    spec.hiddenDim,
+    intermediateAt(spec, layer),
+    spec.gatedFfn ?? true,
+  );
 }
 
 /** Attention geometry of the first full-attention layer, for reporting. */
@@ -332,8 +373,8 @@ function embeddingParams(spec: ModelSpec): number {
 export function derivedTotalParams(spec: ModelSpec): number {
   let total = embeddingParams(spec);
   for (let layer = 0; layer < spec.numLayers; layer++) {
-    total += attentionParams(spec.hiddenDim, attentionAt(spec, layer));
-    total += ffnParams(spec.hiddenDim, intermediateAt(spec, layer));
+    total += layerAttentionParams(spec, layer);
+    total += layerFfnParams(spec, layer);
   }
   if (spec.moe !== undefined) {
     total += spec.moe.moeLayers * expertParamsPerMoELayer(spec);
@@ -394,8 +435,8 @@ function buildProfile(
     const attention = attentionAt(spec, index);
     layers.push({
       index,
-      attentionBytes: attentionParams(spec.hiddenDim, attention) * bpp,
-      ffnBytes: ffnParams(spec.hiddenDim, intermediateAt(spec, index)) * bpp,
+      attentionBytes: layerAttentionParams(spec, index) * bpp,
+      ffnBytes: layerFfnParams(spec, index) * bpp,
       kvCachePerToken: kvElementsPerToken(attention) * kvBpp,
     });
   }
@@ -453,6 +494,60 @@ function buildProfile(
 }
 
 const UNIFORM: ExpertDistribution = { kind: "uniform" };
+
+const DYNAMIC_IMAGE_TOKENS =
+  "Image token count is dynamic; the quoted expansion is one 512x512 image."
+  + " Per-request tile counts are not modeled.";
+
+/**
+ * Qwen-style vision stack: a ViT whose patches are merged 2x2 and projected
+ * into the decoder width by a two-layer MLP.
+ */
+function qwenVisionComponents(
+  visionHiddenDim: number,
+  depth: number,
+  intermediateSize: number,
+  decoderHiddenDim: number,
+  gatedMlp = false,
+  patchSize = 16,
+  // Reference image edge, chosen as a multiple of patchSize * mergeSize so the
+  // quoted token count is exact.
+  referenceImagePx = 512,
+): MultimodalSpec {
+  const mergedDim = 4 * visionHiddenDim;
+  return {
+    components: [
+      {
+        id: "vision_encoder",
+        role: "vision_encoder",
+        phase: "prompt_only",
+        encoder: {
+          kind: "vit",
+          numLayers: depth,
+          hiddenDim: visionHiddenDim,
+          numHeads: 16,
+          intermediateSize,
+          gatedMlp,
+          patchSize,
+          temporalPatchSize: 2,
+          inChannels: 3,
+        },
+      },
+      {
+        id: "vision_merger",
+        role: "projector",
+        phase: "prompt_only",
+        projector: {
+          kind: "mlp",
+          inputDim: mergedDim,
+          hiddenDim: mergedDim,
+          outputDim: decoderHiddenDim,
+        },
+        tokensPerItem: (referenceImagePx / patchSize / 2) ** 2,
+      },
+    ],
+  };
+}
 
 /** True on the last layer of every `period`-layer hybrid attention group. */
 function isGlobalLayer(period: number) {
@@ -568,7 +663,28 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
       ? { kind: "gqa", numHeads: 16, numKVHeads: 1, headDim: 512 }
       : { kind: "gqa", numHeads: 16, numKVHeads: 8, headDim: 256 }),
     intermediateSize: 15360,
-    assumptions: [SLIDING_WINDOW_KV_UPPER_BOUND, TEXT_DECODER_ONLY],
+    multimodal: {
+      components: [{
+        id: "patch_embedder",
+        role: "projector",
+        phase: "prompt_only",
+        // Encoder free: raw 16x16 patches and audio samples are projected
+        // straight into the decoder embedding space.
+        projector: {
+          kind: "mlp",
+          inputDim: 16 * 16 * 3,
+          hiddenDim: 3840,
+          outputDim: 3840,
+        },
+        tokensPerItem: 280,
+      }],
+    },
+    assumptions: [
+      SLIDING_WINDOW_KV_UPPER_BOUND,
+      "This release is encoder free: image patches and audio samples are"
+        + " linearly projected instead of passing through a tower.",
+      "Every image costs a fixed 280 decoder tokens after 3x3 pooling.",
+    ],
   },
 
   "phi-4": {
@@ -602,10 +718,11 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
           convKernelDim: 4,
         }),
     intermediateSize: 17408,
+    multimodal: qwenVisionComponents(1152, 27, 4304, 5120),
     assumptions: [
       "Only the 16 full-attention layers cache KV; the 48 linear-attention"
         + " layers carry a constant-size recurrent state that is not modeled.",
-      TEXT_DECODER_ONLY,
+      DYNAMIC_IMAGE_TOKENS,
     ],
   },
 
@@ -643,6 +760,149 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     tiedEmbeddings: false,
     attention: { kind: "gqa", numHeads: 64, numKVHeads: 8, headDim: 128 },
     intermediateSize: 28672,
+  },
+
+  // ------------------------------------------------------------- multimodal
+  "qwen3-vl-4b": {
+    name: "Qwen3-VL-4B",
+    publishedTotalParams: 4.4e9,
+    numLayers: 36,
+    hiddenDim: 2560,
+    vocabSize: 151936,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 32, numKVHeads: 8, headDim: 128 },
+    intermediateSize: 9728,
+    multimodal: qwenVisionComponents(1024, 24, 4096, 2560),
+    assumptions: [DYNAMIC_IMAGE_TOKENS],
+  },
+
+  "qwen2.5-vl-7b": {
+    name: "Qwen2.5-VL-7B",
+    publishedTotalParams: 8.29e9,
+    numLayers: 28,
+    hiddenDim: 3584,
+    vocabSize: 152064,
+    tiedEmbeddings: false,
+    attention: { kind: "gqa", numHeads: 28, numKVHeads: 4, headDim: 128 },
+    intermediateSize: 18944,
+    // This tower uses a gated MLP and 14-pixel patches.
+    multimodal: qwenVisionComponents(1280, 32, 3420, 3584, true, 14, 448),
+    assumptions: [
+      "Image token count is dynamic; the quoted expansion assumes a 448x448"
+        + " image. Per-request tile counts are not modeled.",
+      "The tower's windowed attention is charged as full attention.",
+    ],
+  },
+
+  "qwen3-vl-8b": {
+    name: "Qwen3-VL-8B",
+    publishedTotalParams: 8.8e9,
+    numLayers: 36,
+    hiddenDim: 4096,
+    vocabSize: 151936,
+    tiedEmbeddings: false,
+    attention: { kind: "gqa", numHeads: 32, numKVHeads: 8, headDim: 128 },
+    intermediateSize: 12288,
+    multimodal: qwenVisionComponents(1152, 27, 4304, 4096),
+    assumptions: [DYNAMIC_IMAGE_TOKENS],
+  },
+
+  "llama-3.2-11b-vision": {
+    name: "Llama-3.2-11B-Vision",
+    publishedTotalParams: 10.6e9,
+    numLayers: 40,
+    hiddenDim: 4096,
+    vocabSize: 128256,
+    tiedEmbeddings: false,
+    attention: { kind: "gqa", numHeads: 32, numKVHeads: 8, headDim: 128 },
+    intermediateSize: 14336,
+    // Vision features are cross-attended by eight decoder layers instead of
+    // being injected into the token sequence, so they cost no prompt tokens.
+    crossAttention: (layer) => ((layer - 3) % 5 === 0 && layer <= 38
+      ? { kind: "gqa", numHeads: 32, numKVHeads: 8, headDim: 128 }
+      : undefined),
+    multimodal: {
+      components: [
+        {
+          id: "vision_encoder",
+          role: "vision_encoder",
+          phase: "prompt_only",
+          encoder: {
+            kind: "vit",
+            numLayers: 40,
+            hiddenDim: 1280,
+            numHeads: 16,
+            intermediateSize: 5120,
+            gatedMlp: false,
+            patchSize: 14,
+            temporalPatchSize: 1,
+            inChannels: 3,
+          },
+        },
+        {
+          id: "multi_modal_projector",
+          role: "projector",
+          phase: "prompt_only",
+          projector: {
+            kind: "mlp",
+            inputDim: 7680,
+            hiddenDim: 4096,
+            outputDim: 4096,
+          },
+          // Cross-attention consumes patches directly; nothing is appended to
+          // the decoder sequence.
+          tokensPerItem: 0,
+        },
+      ],
+    },
+    assumptions: [
+      "Vision features are cross-attended by eight decoder layers and add no"
+        + " decoder tokens or KV positions.",
+      "Cross-attention key and value projections are sized from the decoder"
+        + " width rather than the concatenated vision feature width.",
+      "Tile expansion up to four 560x560 tiles is not modeled.",
+    ],
+  },
+
+  "whisper-large-v3": {
+    name: "Whisper-large-v3",
+    publishedTotalParams: 1.55e9,
+    numLayers: 32,
+    hiddenDim: 1280,
+    vocabSize: 51866,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 20, numKVHeads: 20, headDim: 64 },
+    intermediateSize: 5120,
+    // Classic transformer decoder: ungated FFN, and every layer cross-attends
+    // to the audio encoder output.
+    gatedFfn: false,
+    crossAttention: { kind: "gqa", numHeads: 20, numKVHeads: 20, headDim: 64 },
+    multimodal: {
+      components: [{
+        id: "audio_encoder",
+        role: "audio_encoder",
+        phase: "prompt_only",
+        encoder: {
+          kind: "conv_transformer",
+          numLayers: 32,
+          hiddenDim: 1280,
+          numHeads: 20,
+          intermediateSize: 5120,
+          melBins: 128,
+          convKernelSize: 3,
+          convLayers: 2,
+        },
+        // A 30 second window is always 1500 encoder frames.
+        tokensPerItem: 1500,
+      }],
+    },
+    assumptions: [
+      "Encoder-decoder model: the encoder runs once per 30 second audio"
+        + " window and its output is cross-attended, not appended to the"
+        + " decoder sequence.",
+      "Cross-attention KV is computed once per window; it is charged here as"
+        + " per-layer weights only.",
+    ],
   },
 
   // --------------------------------------------------------------------- MoE
@@ -684,12 +944,35 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
       numExperts: 128,
       activeExpertsPerToken: 8,
       expertIntermediateSize: 704,
-      sharedExperts: 0,
-      sharedExpertIntermediateSize: 0,
+      sharedExperts: 1,
+      sharedExpertIntermediateSize: 2112,
       moeLayers: 30,
       activationDistribution: { kind: "zipf", s: 1.05 },
     },
-    assumptions: [SLIDING_WINDOW_KV_UPPER_BOUND, TEXT_DECODER_ONLY],
+    multimodal: {
+      components: [{
+        id: "vision_encoder",
+        role: "vision_encoder",
+        phase: "prompt_only",
+        encoder: {
+          kind: "vit",
+          numLayers: 27,
+          hiddenDim: 1152,
+          numHeads: 16,
+          intermediateSize: 4304,
+          gatedMlp: false,
+          patchSize: 16,
+          temporalPatchSize: 1,
+          inChannels: 3,
+        },
+        // Average pooling fixes the image at 280 soft tokens.
+        tokensPerItem: 280,
+      }],
+    },
+    assumptions: [
+      SLIDING_WINDOW_KV_UPPER_BOUND,
+      "Every image costs a fixed 280 decoder tokens after 3x3 pooling.",
+    ],
   },
 
   "qwen3-30b-a3b": {
@@ -710,6 +993,28 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
       moeLayers: 48,
       activationDistribution: { kind: "zipf", s: 1.05 },
     },
+  },
+
+  "qwen3-vl-30b-a3b": {
+    name: "Qwen3-VL-30B-A3B",
+    publishedTotalParams: 30.9e9,
+    numLayers: 48,
+    hiddenDim: 2048,
+    vocabSize: 151936,
+    tiedEmbeddings: false,
+    attention: { kind: "gqa", numHeads: 32, numKVHeads: 4, headDim: 128 },
+    intermediateSize: 0,
+    moe: {
+      numExperts: 128,
+      activeExpertsPerToken: 8,
+      expertIntermediateSize: 768,
+      sharedExperts: 0,
+      sharedExpertIntermediateSize: 0,
+      moeLayers: 48,
+      activationDistribution: { kind: "zipf", s: 1.05 },
+    },
+    multimodal: qwenVisionComponents(1152, 27, 4304, 2048),
+    assumptions: [DYNAMIC_IMAGE_TOKENS],
   },
 
   "qwen3.6-35b-a3b": {
@@ -739,12 +1044,13 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
       moeLayers: 40,
       activationDistribution: { kind: "zipf", s: 1.05 },
     },
+    multimodal: qwenVisionComponents(1152, 27, 4304, 2048),
     assumptions: [
       "Only the 10 full-attention layers cache KV; the 30 linear-attention"
         + " layers carry a constant-size recurrent state that is not modeled.",
       "Linear-attention head counts are inferred from the 27B sibling and are"
         + " not confirmed by the released configuration.",
-      TEXT_DECODER_ONLY,
+      DYNAMIC_IMAGE_TOKENS,
     ],
   },
 
