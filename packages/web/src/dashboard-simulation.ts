@@ -9,7 +9,10 @@ import {
   buildSpeculativeStateGroups,
   calculateScenarioMemoryLedger,
   compareTopologyServingWorkloads,
+  compileTopologyWorkloadPlan,
   defaultSpeculativeEligibility,
+  runSeededConcurrentNodeFailureCampaign,
+  targetOnlyTopologyProfile,
   expertCacheConfigForTopology,
   fitTopologyCostModel,
   parseSimulationScenario,
@@ -31,6 +34,7 @@ import {
 import type {
   DashboardArtifactOutput,
   DashboardResult,
+  DashboardFaultResult,
   DashboardRunConfig,
   WorkerRunProgressReporter,
 } from "./types.js";
@@ -214,6 +218,30 @@ export function simulateDashboardExecution(
         ...pipelineExecutionSummary([topology]),
       }),
       evidence: { kind: "pipeline", topology },
+    };
+  }
+  if (config.mode === "fault") {
+    reportProgress({ progress: 38, phase: "Compiling old-epoch plan" });
+    const fault = runNodeFaultCampaign(config, scenario, costModel);
+    reportProgress({ progress: 78, phase: "Summarizing fault evidence" });
+    return {
+      summary: attachCalibration({
+        scenario: scenarioSummary,
+        ...(modelSummary(config) === undefined
+          ? {}
+          : { model: modelSummary(config)! }),
+        mode: config.mode,
+        topology: summarizeTopology(fault.topology),
+        roofline: buildDashboardRoofline({
+          scenario,
+          model: config.modelBinding,
+          costModel,
+          topology: fault.topology,
+          mode: config.mode,
+        }),
+        fault: fault.dashboard,
+      }),
+      evidence: { kind: "fault", topology: fault.topology },
     };
   }
   reportProgress({ progress: 38, phase: "Simulating expert cache routes" });
@@ -916,6 +944,104 @@ function runSpeculative(
       finalTokenLength: result.finalTokenLength,
     },
   };
+}
+
+/**
+ * Injects a node fault into a small concurrent campaign so the workbench can
+ * show what a failed node actually does to work in flight. The plan is the
+ * plain target-only topology plan; the interesting behaviour is the fault
+ * semantics, not the workload shape.
+ */
+function runNodeFaultCampaign(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+  costModel: TopologyCostModel,
+): {
+  readonly dashboard: DashboardFaultResult;
+  readonly topology: TopologyWorkloadResult;
+} {
+  const outputTokens = clampInteger(config.serving.outputTokens, 1, 64);
+  const profile = targetOnlyTopologyProfile(outputTokens);
+  const plan = compileTopologyWorkloadPlan(scenario, profile, costModel);
+  const rankDevices = new Map(scenario.groups.flatMap((group) => (
+    group.orderedRanks.map((rank) => [rank.rankId, rank.deviceId] as const)
+  )));
+  const deviceNodes = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId] as const),
+  );
+  const nodeOf = (rankId: string) => (
+    deviceNodes.get(rankDevices.get(rankId) ?? "") ?? ""
+  );
+  const planNodes = [
+    ...new Set(planRankIds(plan).map(nodeOf).filter((node) => node !== "")),
+  ].sort(compareIds);
+  if (planNodes.length === 0) {
+    throw new Error(
+      `topology ${scenario.id} has no plan ranks to fail`,
+    );
+  }
+  const failedNodeId = planNodes.includes(config.fault.failedNodeId)
+    ? config.fault.failedNodeId
+    : planNodes[0]!;
+  const faultAtNs = clampInteger(config.fault.faultAtUs, 1, 100_000) * 1_000;
+  const quiesceTimeoutNs =
+    clampInteger(config.fault.quiesceTimeoutUs, 1, 1_000_000) * 1_000;
+  const executionCount = clampInteger(config.fault.executionCount, 1, 32);
+  const campaign = runSeededConcurrentNodeFailureCampaign(
+    scenario,
+    plan,
+    { executionCount, seed: clampInteger(config.seed, 0, 0xffff_ffff), arrivalWindowNs: 0 },
+    {
+      kind: "node_failure",
+      atNs: faultAtNs,
+      nodeId: failedNodeId,
+      reason: `${failedNodeId} heartbeat expired`,
+      quiesceTimeoutNs,
+    },
+  );
+  const retainedOperations = campaign.execution.trace.operations.length;
+  const plannedOperations = plan.steps.length * executionCount;
+  // What quiescence would have been if work that can never complete had been
+  // allowed to run to its planned finish.
+  const drainedAtNs = campaign.execution.trace.operations.reduce(
+    (maximum, { event }) => Math.max(maximum, event.finishNs),
+    faultAtNs,
+  );
+  const rankStates = campaign.execution.trace.terminals
+    .flatMap((terminal) => terminal.rankStates)
+    .map((state) => ({
+      rankId: state.rankId,
+      deviceId: rankDevices.get(state.rankId) ?? "",
+      nodeId: nodeOf(state.rankId),
+      status: state.status,
+      terminalAtNs: state.terminalAtNs,
+      onFailedNode: nodeOf(state.rankId) === failedNodeId,
+    }))
+    .filter((state, index, all) => (
+      all.findIndex((other) => other.rankId === state.rankId) === index
+    ))
+    .sort((left, right) => compareIds(left.rankId, right.rankId));
+  return {
+    dashboard: {
+      failedNodeId,
+      faultAtNs,
+      quiesceTimeoutNs,
+      abortDeadlineNs: faultAtNs + quiesceTimeoutNs,
+      quiescedAtNs: campaign.execution.completedAtNs,
+      drainedAtNs,
+      executionCount,
+      plannedOperations,
+      retainedOperations,
+      droppedOperations: Math.max(0, plannedOperations - retainedOperations),
+      replayAppliedEvents: campaign.replay.appliedEvents,
+      rankStates,
+    },
+    topology: simulateTopologyWorkload(scenario, profile, costModel),
+  };
+}
+
+function planRankIds(plan: { readonly steps: readonly { readonly participants: readonly string[] }[] }): string[] {
+  return [...new Set(plan.steps.flatMap((step) => step.participants))];
 }
 
 function runExpertCache(

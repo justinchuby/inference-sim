@@ -1290,6 +1290,7 @@ function retainedNodeFailureOperations(
   failedRanks: ReadonlySet<string>,
   fault: ConcurrentNodeFailure,
 ): ConcurrentPlanOperationEvent[] {
+  const localSequences = new Map<string, number>();
   return operations
     .filter(({ event }) => {
       if (event.submittedAtNs >= fault.atNs) {
@@ -1298,9 +1299,18 @@ function retainedNodeFailureOperations(
       return !touchesFailedNode(event, failedRanks)
         || event.startNs < fault.atNs;
     })
-    // Dropping work the failed node never ran leaves gaps, and the fault trace
-    // has its own dense global order.
-    .map((wrapper, globalSequence) => ({ ...wrapper, globalSequence }));
+    // Dropping work the failed node never ran leaves gaps. The fault trace is
+    // its own trace, so both the global order and each execution's local
+    // sequence are renumbered densely.
+    .map((wrapper, globalSequence) => {
+      const sourceSequence = localSequences.get(wrapper.event.executionId) ?? 0;
+      localSequences.set(wrapper.event.executionId, sourceSequence + 1);
+      return {
+        ...wrapper,
+        globalSequence,
+        event: { ...wrapper.event, sourceSequence },
+      };
+    });
 }
 
 /**

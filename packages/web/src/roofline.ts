@@ -13,6 +13,7 @@ import type {
   DashboardModelBinding,
   DashboardRooflineResult,
   RooflinePhase,
+  WorkloadMode,
 } from "./types.js";
 
 export const ROOFLINE_SUMMARY_REVISION = 2;
@@ -24,7 +25,7 @@ interface RooflineInput {
   readonly topology?: TopologyWorkloadResult;
   readonly serving?: TopologyServingResult;
   readonly speculative?: SpeculativeWorkloadResult;
-  readonly mode: "serving" | "pipeline" | "speculative" | "expert-cache";
+  readonly mode: WorkloadMode;
 }
 
 interface PointSeed {

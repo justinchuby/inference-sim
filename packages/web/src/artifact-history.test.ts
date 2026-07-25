@@ -49,6 +49,12 @@ function config(seed: number): DashboardRunConfig {
       warmSlots: 2,
       adaptivePrefetch: false,
     },
+    fault: {
+      failedNodeId: "",
+      faultAtUs: 50,
+      quiesceTimeoutUs: 250,
+      executionCount: 4,
+    },
   };
 }
 

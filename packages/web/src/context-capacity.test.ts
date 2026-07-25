@@ -39,6 +39,12 @@ const config: DashboardRunConfig = {
     warmSlots: 8,
     adaptivePrefetch: true,
   },
+  fault: {
+    failedNodeId: "",
+    faultAtUs: 50,
+    quiesceTimeoutUs: 250,
+    executionCount: 4,
+  },
 };
 
 describe("context capacity estimate", () => {

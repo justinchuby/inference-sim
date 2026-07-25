@@ -62,6 +62,19 @@ export default function ResultCharts({
             </section>
           )
         : null}
+      {result.fault
+        ? (
+            <section className="panel">
+              <SectionHeading
+                title="Rank outcomes"
+                detail={`${result.fault.failedNodeId} failed · quiesced ${
+                  formatDurationMs(result.fault.quiescedAtNs)
+                }`}
+              />
+              <FaultRankChart result={result} />
+            </section>
+          )
+        : null}
       <section className="panel">
         <SectionHeading
           title="Memory domains"
@@ -681,6 +694,113 @@ function formatGiB(bytes: number): string {
   if (giB >= 1) return `${giB.toFixed(1)} GiB`;
   const miB = bytes / 1024 ** 2;
   return miB >= 1 ? `${miB.toFixed(0)} MiB` : `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+const FAULT_STATUS_FILL = {
+  failed: "#dc2626",
+  aborted: "#f59e0b",
+  succeeded: "#16a34a",
+} as const;
+
+function formatDurationMs(ns: number): string {
+  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(2)} ms`;
+  if (ns >= 1_000) return `${(ns / 1_000).toFixed(1)} us`;
+  return `${ns} ns`;
+}
+
+/**
+ * When each rank stopped, against the fault instant and the abort deadline.
+ * Ranks on the failed node stop at the fault; survivors either drain their own
+ * work or are aborted when the coordinator closes the epoch.
+ */
+function FaultRankChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const fault = result.fault!;
+  const data = fault.rankStates.map((state) => ({
+    name: `${state.rankId}${state.onFailedNode ? " (failed node)" : ""}`,
+    terminalAtNs: state.terminalAtNs,
+    status: state.status,
+    nodeId: state.nodeId,
+  }));
+  const upperNs = Math.max(
+    fault.abortDeadlineNs,
+    fault.quiescedAtNs,
+    ...data.map((row) => row.terminalAtNs),
+  ) * 1.05;
+
+  return (
+    <div className="chart-frame">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical" margin={{ left: 8, right: 18 }}>
+          <CartesianGrid stroke="#e4e4e7" horizontal={false} />
+          <XAxis
+            type="number"
+            domain={[0, upperNs]}
+            tickFormatter={(value: number) => formatDurationMs(value)}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={132}
+            tick={{ fill: "#52525b", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ChartTooltip
+            contentStyle={chartTooltipStyle}
+            formatter={(value, _name, entry) => {
+              const row = entry?.payload as {
+                readonly status?: string;
+                readonly nodeId?: string;
+              } | undefined;
+              return [
+                `${formatDurationMs(Number(value))} · ${row?.status ?? ""}${
+                  row?.nodeId ? ` · ${row.nodeId}` : ""
+                }`,
+                "Terminal",
+              ];
+            }}
+          />
+          <ReferenceLine
+            x={fault.faultAtNs}
+            stroke="#dc2626"
+            strokeDasharray="4 3"
+            label={{
+              value: "fault",
+              position: "top",
+              fill: "#dc2626",
+              fontSize: 11,
+            }}
+          />
+          <ReferenceLine
+            x={fault.abortDeadlineNs}
+            stroke="#f59e0b"
+            strokeDasharray="4 3"
+            label={{
+              value: "abort deadline",
+              position: "top",
+              fill: "#b45309",
+              fontSize: 11,
+            }}
+          />
+          <Bar dataKey="terminalAtNs" name="Terminal">
+            {data.map((row) => (
+              <Cell
+                key={row.name}
+                fill={FAULT_STATUS_FILL[row.status]}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 function MemoryChart({

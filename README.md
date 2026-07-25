@@ -38,6 +38,10 @@ does not claim hardware-accurate latency without calibration data.
   controls. The workbench estimates the selected configuration's per-request
   and single-sequence context capacity from model KV geometry, model residency,
   placement, sharding, and user allocation limits.
+- Inject a node fault into a set of concurrent executions and watch what a
+  failed node actually does to work in flight: which operations it never ran,
+  which ranks failed, aborted, or drained on surviving nodes, and whether
+  quiescence came from survivors finishing or from the abort deadline.
 - Read replay-verified latency, TTFT/ITL, throughput, memory pressure, resource
   utilization, roofline, topology, and confidence/provenance evidence; export
   the complete deterministic result and import it later for verification.

@@ -243,6 +243,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       "speculative",
       "serving",
       "expertCache",
+      "fault",
     ], "artifact input");
     const scenarioName = requireEnum(
       config.scenarioName,
@@ -287,13 +288,14 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     }
     const mode = requireEnum(
       config.mode,
-      ["serving", "pipeline", "speculative", "expert-cache"] as const,
+      ["serving", "pipeline", "speculative", "expert-cache", "fault"] as const,
       "artifact input mode",
     );
     const seed = requireInteger(config.seed, 0, 0xffff_ffff, "artifact input seed");
     const speculative = parseSpeculativeConfig(config.speculative);
     const serving = parseServingConfig(config.serving);
     const expertCache = parseExpertCacheConfig(config.expertCache);
+    const fault = parseFaultConfig(config.fault);
     const modelBinding = config.modelBinding === undefined
       ? undefined
       : parseModelBinding(config.modelBinding);
@@ -322,6 +324,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       speculative,
       serving,
       expertCache,
+      fault,
       ...(calibration === undefined ? {} : { calibration }),
     };
   } catch (error) {
@@ -921,6 +924,34 @@ function parseServingConfig(
       8,
       512,
       "serving prefillChunkTokens",
+    ),
+  };
+}
+
+function parseFaultConfig(input: unknown): DashboardRunConfig["fault"] {
+  const config = requireRecord(input, "fault");
+  assertOnlyKeys(config, [
+    "failedNodeId",
+    "faultAtUs",
+    "quiesceTimeoutUs",
+    "executionCount",
+  ], "fault");
+  return {
+    failedNodeId: typeof config.failedNodeId === "string"
+      ? config.failedNodeId
+      : "",
+    faultAtUs: requireInteger(config.faultAtUs, 1, 100_000, "fault faultAtUs"),
+    quiesceTimeoutUs: requireInteger(
+      config.quiesceTimeoutUs,
+      1,
+      1_000_000,
+      "fault quiesceTimeoutUs",
+    ),
+    executionCount: requireInteger(
+      config.executionCount,
+      1,
+      32,
+      "fault executionCount",
     ),
   };
 }

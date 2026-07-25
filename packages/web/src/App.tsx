@@ -254,6 +254,12 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     warmSlots: 8,
     adaptivePrefetch: true,
   },
+  fault: {
+    failedNodeId: "",
+    faultAtUs: 50,
+    quiesceTimeoutUs: 250,
+    executionCount: 4,
+  },
 };
 
 const DEFAULT_ONNX_CONFIG: OnnxStaticBrowserConfig = {
@@ -2836,7 +2842,7 @@ function ConfigurationPanel({
             description="What this run measures. Serving is a full continuous-batching run and is where speculative decoding and the expert cache are switched on for a realistic workload. The study tabs isolate one mechanism instead: they answer how a proposer or a cache behaves on its own, not what a served deployment does."
           />
         </div>
-        <TabsList className="mb-4 w-full grid-cols-4">
+        <TabsList className="mb-4 w-full grid-cols-5">
           <TabsTrigger value="serving" aria-label="Continuous serving">
             Serving
           </TabsTrigger>
@@ -2855,6 +2861,9 @@ function ConfigurationPanel({
           />
           <TabsTrigger value="expert-cache" aria-label="Expert cache study">
             Cache study
+          </TabsTrigger>
+          <TabsTrigger value="fault" aria-label="Node fault study">
+            Faults
           </TabsTrigger>
         </TabsList>
         <TabsContent value="pipeline" className="space-y-4">
@@ -2915,7 +2924,7 @@ function ConfigurationPanel({
                 },
               })}
             >
-              <SelectTrigger>
+              <SelectTrigger aria-label="Decode mode">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -3375,6 +3384,84 @@ function ConfigurationPanel({
                   />
                 </>
               )}
+        </TabsContent>
+        <TabsContent value="fault" className="space-y-4">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+            <span>Node fault</span>
+            <ParameterHelp
+              label="Node fault"
+              description="Kills one node partway through a set of concurrent executions. A failed node stops accepting and stops executing at the fault instant, so work it had only queued never runs and work it had started never finishes. Work confined to surviving nodes keeps draining until the coordinator closes the epoch at the abort deadline."
+            />
+          </div>
+          <Field
+            label="Failed node"
+            description="Only nodes that participate in the compiled plan can be failed; failing a node with no plan ranks would not be observable."
+          >
+            <Select
+              value={config.fault.failedNodeId === "" ? "auto" : config.fault.failedNodeId}
+              disabled={disabled}
+              onValueChange={(failedNodeId) => onChange({
+                ...config,
+                fault: {
+                  ...config.fault,
+                  failedNodeId: failedNodeId === "auto" ? "" : failedNodeId,
+                },
+              })}
+            >
+              <SelectTrigger aria-label="Failed node">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">First plan node</SelectItem>
+                {[...new Set(
+                  (selectedScenario?.devices ?? []).map((device) => device.nodeId),
+                )].sort().map((nodeId) => (
+                  <SelectItem key={nodeId} value={nodeId}>{nodeId}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <SliderField
+            label="Executions"
+            description="Concurrent old-epoch executions admitted before the fault. They share execution lanes, so later ones are still queued when the node dies."
+            value={config.fault.executionCount}
+            minimum={1}
+            maximum={16}
+            step={1}
+            disabled={disabled}
+            onChange={(executionCount) => onChange({
+              ...config,
+              fault: { ...config.fault, executionCount },
+            })}
+          />
+          <SliderField
+            label="Fault at"
+            description="When the node dies, measured from admission. Everything must already be admitted, so this is bounded well below the run length."
+            value={config.fault.faultAtUs}
+            minimum={1}
+            maximum={1_000}
+            step={1}
+            disabled={disabled}
+            suffix=" us"
+            onChange={(faultAtUs) => onChange({
+              ...config,
+              fault: { ...config.fault, faultAtUs },
+            })}
+          />
+          <SliderField
+            label="Quiesce timeout"
+            description="How long surviving ranks keep draining before the coordinator closes the topology epoch. Quiescence is whichever comes first: surviving work finishing, or this deadline."
+            value={config.fault.quiesceTimeoutUs}
+            minimum={1}
+            maximum={5_000}
+            step={1}
+            disabled={disabled}
+            suffix=" us"
+            onChange={(quiesceTimeoutUs) => onChange({
+              ...config,
+              fault: { ...config.fault, quiesceTimeoutUs },
+            })}
+          />
         </TabsContent>
         <TabsContent value="expert-cache" className="space-y-4">
           <label className="block">
@@ -4022,7 +4109,9 @@ function Results({
       ? servingMetrics(result)
       : result.mode === "pipeline"
         ? pipelineMetrics(result)
-        : expertMetrics(result);
+        : result.mode === "fault"
+          ? faultMetrics(result)
+          : expertMetrics(result);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
@@ -5199,13 +5288,24 @@ function Field({
   readonly description?: string;
   readonly children: React.ReactNode;
 }): React.JSX.Element {
+  // The help button is interactive, so keeping it inside the <label> would
+  // strip the control's accessible name. Label and help sit side by side and
+  // the control is named explicitly instead.
+  if (description !== undefined) {
+    return (
+      <div className="mb-4">
+        <span className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-zinc-600">
+          {label}
+          <ParameterHelp label={label} description={description} />
+        </span>
+        {children}
+      </div>
+    );
+  }
   return (
     <label className="mb-4 block">
       <span className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-zinc-600">
         {label}
-        {description === undefined
-          ? null
-          : <ParameterHelp label={label} description={description} />}
       </span>
       {children}
     </label>
@@ -5452,6 +5552,52 @@ function speculativeMetrics(result: DashboardResult) {
       value: formatRate(topology.tokensPerSecond),
       detail:
         `${metrics.acceptedAdditionalTokens}/${metrics.proposedAdditionalTokens} additional drafts accepted`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
+    },
+  ];
+}
+
+function faultMetrics(result: DashboardResult) {
+  const fault = result.fault!;
+  const failedRanks = fault.rankStates.filter(
+    (state) => state.status === "failed",
+  ).length;
+  const abortedRanks = fault.rankStates.filter(
+    (state) => state.status === "aborted",
+  ).length;
+  const succeededRanks = fault.rankStates.filter(
+    (state) => state.status === "succeeded",
+  ).length;
+  const boundedByDeadline = fault.quiescedAtNs >= fault.abortDeadlineNs;
+  return [
+    {
+      label: "Quiesced at",
+      value: formatDuration(fault.quiescedAtNs),
+      detail: boundedByDeadline
+        ? `abort deadline · ${formatDuration(fault.drainedAtNs)} if uncapped`
+        : `survivors drained before the ${formatDuration(fault.abortDeadlineNs)} deadline`,
+      icon: <Clock3 className="size-4 text-amber-700" />,
+    },
+    {
+      label: "Rank outcomes",
+      value: `${failedRanks} failed · ${abortedRanks} aborted`,
+      detail: succeededRanks > 0
+        ? `${succeededRanks} succeeded on surviving nodes`
+        : `every rank shared work with ${fault.failedNodeId}`,
+      icon: <Gauge className="size-4 text-sky-700" />,
+    },
+    {
+      label: "Work the node never ran",
+      value: fault.droppedOperations.toLocaleString(),
+      detail: `${fault.retainedOperations.toLocaleString()} of ${
+        fault.plannedOperations.toLocaleString()
+      } planned operations retained`,
+      icon: <Database className="size-4 text-rose-700" />,
+    },
+    {
+      label: "Replay",
+      value: `${fault.replayAppliedEvents.toLocaleString()} events`,
+      detail: `${fault.executionCount} executions · independently re-derived`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
   ];

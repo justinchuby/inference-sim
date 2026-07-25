@@ -55,6 +55,12 @@ const base: DashboardRunConfig = {
     warmSlots: 6,
     adaptivePrefetch: true,
   },
+  fault: {
+    failedNodeId: "",
+    faultAtUs: 50,
+    quiesceTimeoutUs: 250,
+    executionCount: 4,
+  },
 };
 
 describe("simulateDashboard", () => {
@@ -478,6 +484,82 @@ describe("simulateDashboard", () => {
     expect(result.topology.metrics.committedTokens).toBe(
       base.speculative.outputTokens,
     );
+  });
+
+  it("stops the failed node at the fault and bounds quiescence by the deadline", () => {
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "multi-node",
+      mode: "fault",
+      modelBinding: createBuiltinModelBinding("llama-3-8b"),
+      fault: {
+        failedNodeId: "node1",
+        faultAtUs: 1,
+        quiesceTimeoutUs: 50,
+        executionCount: 4,
+      },
+    });
+    const fault = result.fault!;
+
+    expect(fault.failedNodeId).toBe("node1");
+    expect(fault.abortDeadlineNs).toBe(fault.faultAtNs + fault.quiesceTimeoutNs);
+    expect(fault.quiescedAtNs).toBeLessThanOrEqual(fault.abortDeadlineNs);
+    expect(fault.quiescedAtNs).toBeGreaterThanOrEqual(fault.faultAtNs);
+    // Queued work on the dead node never runs, so operations are dropped.
+    expect(fault.droppedOperations).toBeGreaterThan(0);
+    expect(fault.retainedOperations + fault.droppedOperations)
+      .toBe(fault.plannedOperations);
+    // Every rank on the failed node fails exactly at the fault instant.
+    const failedNodeRanks = fault.rankStates.filter(
+      (state) => state.onFailedNode,
+    );
+    expect(failedNodeRanks.length).toBeGreaterThan(0);
+    for (const state of failedNodeRanks) {
+      expect(state.status).toBe("failed");
+      expect(state.terminalAtNs).toBe(fault.faultAtNs);
+    }
+    expect(fault.replayAppliedEvents).toBeGreaterThan(0);
+  });
+
+  it("caps quiescence when survivors would drain past the abort deadline", () => {
+    const run = (quiesceTimeoutUs: number) => simulateDashboard({
+      ...base,
+      scenarioName: "multi-node",
+      mode: "fault",
+      modelBinding: createBuiltinModelBinding("llama-3-8b"),
+      fault: {
+        failedNodeId: "node1",
+        faultAtUs: 1,
+        quiesceTimeoutUs,
+        executionCount: 4,
+      },
+    }).fault!;
+
+    const tight = run(1);
+    const loose = run(5_000);
+
+    expect(tight.quiescedAtNs).toBe(tight.abortDeadlineNs);
+    expect(tight.drainedAtNs).toBeGreaterThan(tight.quiescedAtNs);
+    // A deadline beyond the drain point stops being the binding constraint.
+    expect(loose.quiescedAtNs).toBeLessThan(loose.abortDeadlineNs);
+  });
+
+  it("falls back to a node that participates in the compiled plan", () => {
+    const fault = simulateDashboard({
+      ...base,
+      scenarioName: "multi-node",
+      mode: "fault",
+      modelBinding: createBuiltinModelBinding("llama-3-8b"),
+      fault: {
+        failedNodeId: "node-that-does-not-exist",
+        faultAtUs: 1,
+        quiesceTimeoutUs: 50,
+        executionCount: 2,
+      },
+    }).fault!;
+
+    expect(fault.failedNodeId).not.toBe("node-that-does-not-exist");
+    expect(fault.rankStates.some((state) => state.onFailedNode)).toBe(true);
   });
 
   it("reserves KV from the run's own token budget, not a preset constant", () => {

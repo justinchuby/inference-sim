@@ -41,7 +41,42 @@ export type WorkloadMode =
   | "serving"
   | "pipeline"
   | "speculative"
-  | "expert-cache";
+  | "expert-cache"
+  | "fault";
+
+export interface DashboardFaultConfig {
+  /** Empty selects the first node that participates in the compiled plan. */
+  readonly failedNodeId: string;
+  readonly faultAtUs: number;
+  /** Abort deadline for surviving ranks, relative to the fault. */
+  readonly quiesceTimeoutUs: number;
+  readonly executionCount: number;
+}
+
+export interface DashboardFaultRankState {
+  readonly rankId: string;
+  readonly deviceId: string;
+  readonly nodeId: string;
+  readonly status: "succeeded" | "failed" | "aborted";
+  readonly terminalAtNs: number;
+  readonly onFailedNode: boolean;
+}
+
+export interface DashboardFaultResult {
+  readonly failedNodeId: string;
+  readonly faultAtNs: number;
+  readonly quiesceTimeoutNs: number;
+  readonly abortDeadlineNs: number;
+  readonly quiescedAtNs: number;
+  /** Quiescence the trace would have reported without the abort deadline. */
+  readonly drainedAtNs: number;
+  readonly executionCount: number;
+  readonly plannedOperations: number;
+  readonly retainedOperations: number;
+  readonly droppedOperations: number;
+  readonly replayAppliedEvents: number;
+  readonly rankStates: readonly DashboardFaultRankState[];
+}
 
 export interface DashboardModelBinding {
   readonly source: "builtin_model" | "local_model_package";
@@ -175,6 +210,7 @@ export interface DashboardRunConfig {
     readonly firstPositionAcceptance: number;
     readonly trace?: SpeculativeTokenTrace;
   };
+  readonly fault: DashboardFaultConfig;
   readonly serving: {
     readonly compareTopologies: boolean;
     readonly useExpertCache: boolean;
@@ -219,6 +255,7 @@ export interface DashboardResult {
     readonly ssdStreaming: boolean;
   };
   readonly mode: WorkloadMode;
+  readonly fault?: DashboardFaultResult;
   readonly durationMs: number;
   readonly calibration?: {
     readonly datasetId: string;
@@ -322,6 +359,10 @@ export interface DashboardResult {
 export type DashboardCoreEvidence =
   | {
       readonly kind: "pipeline";
+      readonly topology: TopologyWorkloadResult;
+    }
+  | {
+      readonly kind: "fault";
       readonly topology: TopologyWorkloadResult;
     }
   | {
