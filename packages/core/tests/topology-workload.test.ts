@@ -562,7 +562,7 @@ describe("topology-aware workload execution", () => {
       maxAdditionalTokens: 2,
       acceptance: {
         kind: "replay",
-        acceptedDraftTokens: [2, 1, 2],
+        acceptedAdditionalTokens: [2, 1, 2],
       },
       stateGroups: buildSpeculativeStateGroups("mtp", 32, 2),
     });
@@ -1000,7 +1000,7 @@ describe("topology-aware workload execution", () => {
       maxAdditionalTokens: 2,
       acceptance: {
         kind: "replay",
-        acceptedDraftTokens: [2, 2, 1],
+        acceptedAdditionalTokens: [2, 2, 1],
       },
       stateGroups: buildSpeculativeStateGroups("mtp", 32, 2),
     });

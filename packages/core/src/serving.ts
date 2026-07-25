@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   DiscreteEventSimulator,
   type ScheduledEvent,
@@ -46,7 +47,7 @@ export interface ServingSchedulerConfig {
 export type ServingSpeculativeAcceptanceModel =
   | {
       readonly kind: "replay";
-      readonly acceptedDraftTokensByRequest: Readonly<
+      readonly acceptedAdditionalTokensByRequest: Readonly<
         Record<string, readonly number[]>
       >;
     }
@@ -895,6 +896,13 @@ function selectServingBatch(
       request.spec.outputTokens - request.outputEmitted;
     const availableKv =
       config.maxKvTokens - currentKvTokens - reservedKv;
+    // Deadlock freedom: only grant KV to a request that could still run to
+    // completion out of the currently free pool. Every grant then keeps the
+    // pool in a state where at least one resident request can finish and
+    // release its blocks, so residents can never strand KV against each other.
+    if (remainingKvNeed(request) > availableKv) {
+      continue;
+    }
     const maxTargetTokenWidth = Math.min(tokenBudget, availableKv);
     if (remainingOutput <= 0 || maxTargetTokenWidth <= 0) {
       continue;
@@ -933,6 +941,9 @@ function selectServingBatch(
     }
     const remainingPrompt = request.spec.promptTokens - request.promptProcessed;
     const availableKv = config.maxKvTokens - currentKvTokens - reservedKv;
+    if (remainingKvNeed(request) > availableKv) {
+      continue;
+    }
     const tokens = Math.min(
       remainingPrompt,
       config.prefillChunkTokens,
@@ -967,6 +978,23 @@ function selectServingBatch(
   };
 }
 
+/**
+ * Peak KV tokens a request will ever hold: its whole prompt plus every decode
+ * token it still has to commit. The first output token is emitted when prefill
+ * completes and is not separately charged to the KV pool.
+ */
+function peakKvTokens(request: MutableRequest): number {
+  return request.spec.promptTokens + request.spec.outputTokens - 1;
+}
+
+/**
+ * KV tokens the request must still acquire before it can complete and release
+ * its blocks. For a decoding request this equals its remaining output tokens.
+ */
+function remainingKvNeed(request: MutableRequest): number {
+  return peakKvTokens(request) - request.kvTokens;
+}
+
 function validateServingConfig(config: ServingSchedulerConfig): void {
   if (config.requests.length === 0) {
     throw new ServingProtocolError("serving workload requires requests");
@@ -989,7 +1017,7 @@ function validateServingConfig(config: ServingSchedulerConfig): void {
       for (const request of config.requests) {
         if (
           config.speculative.acceptance
-            .acceptedDraftTokensByRequest[request.id] === undefined
+            .acceptedAdditionalTokensByRequest[request.id] === undefined
         ) {
           throw new ServingProtocolError(
             `speculative acceptance replay lacks request ${request.id}`,
@@ -999,7 +1027,7 @@ function validateServingConfig(config: ServingSchedulerConfig): void {
       for (
         const requestId
         of Object.keys(
-          config.speculative.acceptance.acceptedDraftTokensByRequest,
+          config.speculative.acceptance.acceptedAdditionalTokensByRequest,
         )
       ) {
         if (!requestIds.has(requestId)) {
@@ -1056,7 +1084,7 @@ function sortedRequests(
   return [...requests].sort((left, right) => (
     left.arrivalNs - right.arrivalNs
     || (right.priority ?? 0) - (left.priority ?? 0)
-    || left.id.localeCompare(right.id)
+    ||compareIds(left.id, right.id)
   ));
 }
 
@@ -1109,8 +1137,8 @@ function acceptanceForRequest(
   }
   return {
     kind: "replay",
-    acceptedDraftTokens:
-      acceptance.acceptedDraftTokensByRequest[requestId] ?? [],
+    acceptedAdditionalTokens:
+      acceptance.acceptedAdditionalTokensByRequest[requestId] ?? [],
   };
 }
 
@@ -1207,7 +1235,7 @@ function compareMutableRequests(
   return (
     (right.spec.priority ?? 0) - (left.spec.priority ?? 0)
     || left.spec.arrivalNs - right.spec.arrivalNs
-    || left.spec.id.localeCompare(right.spec.id)
+    ||compareIds(left.spec.id, right.spec.id)
   );
 }
 

@@ -599,6 +599,7 @@ describe("concurrent FrozenPlan execution", () => {
     const fault = {
       kind: "node_failure" as const,
       atNs: 1,
+      quiesceTimeoutNs: 50_000,
       nodeId: "node1",
       reason: "node1 heartbeat expired",
     };
@@ -632,6 +633,45 @@ describe("concurrent FrozenPlan execution", () => {
       (execution) => execution.status === "failed",
     )).toBe(true);
 
+    // A failed node stops executing at the fault instant: nothing it had only
+    // queued may still run, and work it had started never finishes.
+    const rankDevices = new Map(scenario.groups.flatMap((group) => (
+      group.orderedRanks.map((rank) => [rank.rankId, rank.deviceId] as const)
+    )));
+    const deviceNodes = new Map(
+      scenario.devices.map((device) => [device.id, device.nodeId] as const),
+    );
+    const onFailedNode = (participants: readonly string[]) => (
+      participants.some((rankId) => (
+        deviceNodes.get(rankDevices.get(rankId) ?? "") === "node1"
+      ))
+    );
+    expect(result.trace.operations.some(({ event }) => (
+      onFailedNode(event.participants)
+    ))).toBe(true);
+    expect(result.trace.operations.every(({ event }) => (
+      !onFailedNode(event.participants) || event.startNs < fault.atNs
+    ))).toBe(true);
+    // Surviving nodes keep draining work they had already queued.
+    expect(result.trace.operations.some(({ event }) => (
+      !onFailedNode(event.participants) && event.startNs >= fault.atNs
+    ))).toBe(true);
+    // The fault trace carries its own dense global order.
+    expect(result.trace.operations.map(
+      (operation) => operation.globalSequence,
+    )).toEqual(result.trace.operations.map((_, index) => index));
+    // Quiescence is the abort deadline, not the planned finish of work that
+    // can never complete.
+    const abortDeadlineNs = fault.atNs + fault.quiesceTimeoutNs;
+    expect(result.trace.terminals.every(
+      (terminal) => terminal.timestampNs <= abortDeadlineNs,
+    )).toBe(true);
+    expect(result.completedAtNs).toBe(abortDeadlineNs);
+    // A surviving rank cannot succeed through a collective with a dead rank.
+    expect(result.trace.terminals.flatMap(
+      (terminal) => terminal.rankStates,
+    ).every((state) => state.status !== "succeeded")).toBe(true);
+
     const operations = result.trace.operations.slice(0, -1);
     expect(() => replayConcurrentPlanTrace(
       scenario,
@@ -657,6 +697,7 @@ describe("concurrent FrozenPlan execution", () => {
       {
         kind: "node_failure",
         atNs: 1,
+        quiesceTimeoutNs: 50_000,
         nodeId: "node1",
         reason: "node1 failed",
       },
@@ -674,6 +715,7 @@ describe("concurrent FrozenPlan execution", () => {
       {
         kind: "node_failure",
         atNs: baseline.completedAtNs + 1,
+        quiesceTimeoutNs: 50_000,
         nodeId: "node1",
         reason: "late node failure",
       },

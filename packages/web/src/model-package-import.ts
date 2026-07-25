@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import {
   parseInferenceMetadata,
   type InferenceMetadataSummary,
@@ -63,7 +64,7 @@ export async function inspectBrowserModelPackage(
   const metadata = parseInferenceMetadata(metadataValue);
   const discoveredOnnxEntries = [...files.entries()]
     .filter(([path]) => path.toLowerCase().endsWith(".onnx"))
-    .sort(([left], [right]) => left.localeCompare(right));
+    .sort(([left], [right]) => compareIds(left, right));
 
   const componentsByFile = new Map<string, string[]>();
   for (const component of metadata.components) {

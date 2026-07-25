@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   simulateServingWorkload,
   type ServingBatchWork,
@@ -670,7 +671,7 @@ export function simulateTopologyServingWorkload(
     })
     .sort((left, right) => (
       right.utilization - left.utilization
-      || left.resourceId.localeCompare(right.resourceId)
+      ||compareIds(left.resourceId, right.resourceId)
     ));
   const confidence = orderedBatches[0]?.topology.confidence
     ?? costModel.confidence;
@@ -981,7 +982,7 @@ export function compareTopologyServingWorkloads(
     ))
     .sort((left, right) => (
       left.metrics.totalDurationNs - right.metrics.totalDurationNs
-      || left.scenarioId.localeCompare(right.scenarioId)
+      ||compareIds(left.scenarioId, right.scenarioId)
     ));
   const fastestDurationNs = results[0].metrics.totalDurationNs;
   return {

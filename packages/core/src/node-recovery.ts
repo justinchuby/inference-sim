@@ -18,6 +18,8 @@ export interface NodeFailoverRequest {
   readonly failedNodeId: string;
   readonly faultAtNs: number;
   readonly reason: string;
+  /** Abort deadline for surviving ranks, relative to `faultAtNs`. */
+  readonly quiesceTimeoutNs: number;
   readonly recoveryScenario: SimulationScenario;
   readonly replannedPlan: FrozenPlan;
 }
@@ -61,6 +63,7 @@ export function runNodeFailoverCampaign(
       atNs: request.faultAtNs,
       nodeId: request.failedNodeId,
       reason: request.reason,
+      quiesceTimeoutNs: request.quiesceTimeoutNs,
     },
   });
   if (
@@ -202,6 +205,8 @@ function validateNodeFailoverRequest(
     || request.faultAtNs < 0
     || typeof request.reason !== "string"
     || request.reason.length === 0
+    || !Number.isSafeInteger(request.quiesceTimeoutNs)
+    || request.quiesceTimeoutNs <= 0
   ) {
     throw new FrozenPlanExecutionError(
       "node failover fault time and reason are invalid",

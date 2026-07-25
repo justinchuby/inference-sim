@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import type {
   DashboardArtifactDownload,
   DashboardResult,
@@ -178,7 +179,7 @@ async function listEntries(
     .sort((left, right) => (
       right.lastOpenedAtMs - left.lastOpenedAtMs
       || right.savedAtMs - left.savedAtMs
-      || left.fingerprint.localeCompare(right.fingerprint)
+      ||compareIds(left.fingerprint, right.fingerprint)
     ))
     .map(({ blob: _blob, ...entry }) => entry);
 }
@@ -230,7 +231,7 @@ function compareOldestFirst(
 ): number {
   return left.lastOpenedAtMs - right.lastOpenedAtMs
     || left.savedAtMs - right.savedAtMs
-    || left.fingerprint.localeCompare(right.fingerprint);
+    ||compareIds(left.fingerprint, right.fingerprint);
 }
 
 function validateLimits(limits: ArtifactHistoryLimits): void {

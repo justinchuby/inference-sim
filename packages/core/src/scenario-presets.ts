@@ -320,17 +320,19 @@ function buildUnifiedComputer(
     devices: [cpu, gpu, npu],
     placements: [
       placement("target", gpu.id, ["attention", "ffn"], [
+        // Sized against the allocatable extent, not the physical capacity:
+        // the memory ledger charges reservations against the resource limit.
         allocation(
           "target-weights",
           unifiedDomainId,
-          Math.min(60 * GiB, config.capacityBytes / 2),
+          Math.min(60 * GiB, config.resourceLimitBytes / 2),
           "unified",
           "weights",
         ),
         allocation(
           "target-kv",
           unifiedDomainId,
-          Math.min(16 * GiB, config.capacityBytes / 8),
+          Math.min(16 * GiB, config.resourceLimitBytes / 8),
           "unified",
           "kv",
         ),

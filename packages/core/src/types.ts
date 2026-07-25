@@ -48,10 +48,42 @@ export interface ModelProfile {
   name: string;
   architecture: ModelArchitecture;
   totalParams: number;
+  /**
+   * Token embedding plus untied output-projection weight bytes. These are not
+   * part of any `layers` entry and dominate residency for small models.
+   */
+  embeddingBytes?: number;
   quantization: Quantization;
   layers: LayerProfile[];
   moe?: MoEProfile;
+  /**
+   * Non-decoder components of a multimodal package, such as a vision tower and
+   * its projector. The decoder itself is described by `layers` and is not
+   * repeated here.
+   */
+  components?: readonly ModelComponentProfile[];
   provenance: ModelProfileProvenance;
+}
+
+export type ModelComponentPhase =
+  | "prompt_only"
+  | "every_step"
+  | "final_only"
+  | "on_demand";
+
+export interface ModelComponentProfile {
+  readonly id: string;
+  /** Reported role, for example `vision_encoder` or `projector`. */
+  readonly role: string;
+  /** When the component runs relative to decoding. */
+  readonly phase: ModelComponentPhase;
+  readonly params: number;
+  readonly weightBytes: number;
+  /**
+   * Decoder tokens one media item expands into. The simulator charges this as
+   * prompt work; per-request tile counts are not modeled.
+   */
+  readonly tokensPerItem?: number;
 }
 
 export interface ModelProfileProvenance {

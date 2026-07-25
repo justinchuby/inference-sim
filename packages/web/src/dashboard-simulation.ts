@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import {
   DEFAULT_TOPOLOGY_COST_MODEL,
   SCENARIO_PRESET_NAMES,
@@ -784,8 +785,7 @@ function distributeAllocationBytes(
   if (totalBytes === undefined || allocations.length === 0) {
     return;
   }
-  const ordered = [...allocations].sort((left, right) => (
-    left.physicalAllocationId.localeCompare(right.physicalAllocationId)
+  const ordered = [...allocations].sort((left, right) => (compareIds(left.physicalAllocationId, right.physicalAllocationId)
   ));
   const declaredTotal = ordered.reduce(
     (sum, allocation) => sum + allocation.bytes,
@@ -1013,7 +1013,7 @@ function summarizeTopology(
     ]
       .sort((left, right) => (
         right.utilization - left.utilization
-        || left.resourceId.localeCompare(right.resourceId)
+        ||compareIds(left.resourceId, right.resourceId)
       ))
       .slice(0, 8),
   };

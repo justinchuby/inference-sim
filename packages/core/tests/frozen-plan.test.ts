@@ -554,15 +554,19 @@ describe("FrozenPlan validation and execution", () => {
       injectFault: {
         kind: "node_failure",
         atNs: 5,
+        quiesceTimeoutNs: 50,
         nodeId: "node0",
         reason: "node heartbeat expired",
       },
     });
 
     expect(result.status).toBe("failed");
+    // Every rank sits on the failed node, so nothing drains: the in-flight
+    // operations are truncated at the fault instead of reaching their planned
+    // finish at 20ns.
     expect(result.trace.terminal).toMatchObject({
       failureAtNs: 5,
-      timestampNs: 20,
+      timestampNs: 5,
       unsubmittedStepIds: [2, 3],
       fault: {
         kind: "node_failure",

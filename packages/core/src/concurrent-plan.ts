@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
@@ -537,8 +538,11 @@ export function executeConcurrentNodeFailure(
       }`,
     );
   }
-  const operations = baseline.trace.operations.filter(
-    ({ event }) => event.submittedAtNs < fault.atNs,
+  const failedRanks = failedNodeRanks(scenario, fault);
+  const operations = retainedNodeFailureOperations(
+    baseline.trace.operations,
+    failedRanks,
+    fault,
   );
   const terminals: PlanTerminalEvent[] = [];
   const executions = ordered.map((request): FrozenPlanExecutionResult => {
@@ -1035,7 +1039,7 @@ function validateConcurrentRequests(
   const ordered = [...requests].sort((left, right) => (
     left.arrivalNs - right.arrivalNs
     || left.admissionOrder - right.admissionOrder
-    || left.plan.executionId.localeCompare(right.plan.executionId)
+    ||compareIds(left.plan.executionId, right.plan.executionId)
   ));
   for (let index = 0; index < ordered.length; index++) {
     if (ordered[index].admissionOrder !== index) {
@@ -1161,9 +1165,7 @@ function compareReadyCandidates(
     - right.state.request.admissionOrder
     || (left.state.planOrder.get(left.stepId) ?? 0)
       - (right.state.planOrder.get(right.stepId) ?? 0)
-    || left.state.request.plan.executionId.localeCompare(
-      right.state.request.plan.executionId,
-    );
+    ||compareIds(left.state.request.plan.executionId, right.state.request.plan.executionId,);
 }
 
 function compareArbitration(
@@ -1233,7 +1235,7 @@ function successfulTerminal(
       status: "succeeded",
       terminalAtNs,
     }))
-    .sort((left, right) => left.rankId.localeCompare(right.rankId));
+    .sort((left, right) => compareIds(left.rankId, right.rankId));
   return {
     contractRevision: PLAN_CONTRACT_REVISION,
     executionId: plan.executionId,
@@ -1249,6 +1251,71 @@ function successfulTerminal(
   };
 }
 
+/**
+ * Ranks whose device lives on the failed node. They stop executing at the
+ * fault instant; nothing they had merely queued can still run.
+ */
+function failedNodeRanks(
+  scenario: SimulationScenario,
+  fault: ConcurrentNodeFailure,
+): ReadonlySet<string> {
+  const rankDevices = buildRankDeviceMap(scenario.groups);
+  const deviceNodes = new Map(
+    scenario.devices.map((device) => [device.id, device.nodeId]),
+  );
+  return new Set(
+    [...rankDevices.keys()].filter((rankId) => (
+      deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
+    )),
+  );
+}
+
+function touchesFailedNode(
+  event: PlanTraceEvent,
+  failedRanks: ReadonlySet<string>,
+): boolean {
+  return event.participants.some((rankId) => failedRanks.has(rankId));
+}
+
+/**
+ * Operations that survive the fault.
+ *
+ * Submission alone is not enough: a queued operation on the failed node never
+ * reaches the device, and an operation that spans the failed node cannot
+ * complete even if it had already started. Work confined to surviving nodes
+ * keeps draining, which is what `AbortFreezesSubmission` allows.
+ */
+function retainedNodeFailureOperations(
+  operations: readonly ConcurrentPlanOperationEvent[],
+  failedRanks: ReadonlySet<string>,
+  fault: ConcurrentNodeFailure,
+): ConcurrentPlanOperationEvent[] {
+  return operations
+    .filter(({ event }) => {
+      if (event.submittedAtNs >= fault.atNs) {
+        return false;
+      }
+      return !touchesFailedNode(event, failedRanks)
+        || event.startNs < fault.atNs;
+    })
+    // Dropping work the failed node never ran leaves gaps, and the fault trace
+    // has its own dense global order.
+    .map((wrapper, globalSequence) => ({ ...wrapper, globalSequence }));
+}
+
+/**
+ * Time an operation actually stops contributing work. An operation that spans
+ * the failed node is truncated at the fault: it was in flight, but the device
+ * disappeared before it could finish.
+ */
+function effectiveFinishNs(
+  event: PlanTraceEvent,
+  failedRanks: ReadonlySet<string>,
+  fault: ConcurrentNodeFailure,
+): number {
+  return touchesFailedNode(event, failedRanks) ? fault.atNs : event.finishNs;
+}
+
 function validateConcurrentNodeFailure(
   scenario: SimulationScenario,
   requests: readonly ConcurrentPlanRequest[],
@@ -1262,10 +1329,13 @@ function validateConcurrentNodeFailure(
     || fault.nodeId.length === 0
     || typeof fault.reason !== "string"
     || fault.reason.length === 0
+    || !Number.isSafeInteger(fault.quiesceTimeoutNs)
+    || fault.quiesceTimeoutNs <= 0
     || !scenario.devices.some((device) => device.nodeId === fault.nodeId)
   ) {
     throw new FrozenPlanExecutionError(
-      "concurrent node fault must identify a known node, positive safe time, and non-empty reason",
+      "concurrent node fault must identify a known node, positive safe time,"
+        + " positive quiesce timeout, and non-empty reason",
     );
   }
   const rankDevices = buildRankDeviceMap(scenario.groups);
@@ -1299,26 +1369,37 @@ function nodeFailureTerminal(
   const unsubmittedStepIds = plan.steps
     .filter((step) => !submittedStepIds.has(step.id))
     .map((step) => step.id);
-  const quiescedAtNs = operations.reduce(
-    (maximum, event) => Math.max(maximum, event.finishNs),
+  const failedRanks = failedNodeRanks(scenario, fault);
+  // Surviving work drains, but the coordinator aborts the epoch after the
+  // quiesce timeout, so quiescence is whichever comes first.
+  const abortDeadlineNs = checkedAdd(
+    fault.atNs,
+    fault.quiesceTimeoutNs,
+    "node fault abort deadline",
+  );
+  const drainedAtNs = operations.reduce(
+    (maximum, event) => Math.max(
+      maximum,
+      effectiveFinishNs(event, failedRanks, fault),
+    ),
     fault.atNs,
   );
+  const quiescedAtNs = Math.min(drainedAtNs, abortDeadlineNs);
   const rankCompletions = new Map<string, number>();
+  const rankTouchedFailedNode = new Set<string>();
   for (const event of operations) {
+    const finishNs = effectiveFinishNs(event, failedRanks, fault);
+    const spansFailedNode = touchesFailedNode(event, failedRanks);
     for (const rankId of event.participants) {
       rankCompletions.set(
         rankId,
-        Math.max(rankCompletions.get(rankId) ?? 0, event.finishNs),
+        Math.max(rankCompletions.get(rankId) ?? 0, finishNs),
       );
+      if (spansFailedNode) {
+        rankTouchedFailedNode.add(rankId);
+      }
     }
   }
-  const rankDevices = buildRankDeviceMap(scenario.groups);
-  const deviceNodes = new Map(
-    scenario.devices.map((device) => [device.id, device.nodeId]),
-  );
-  const failedRanks = new Set(planRanks(plan).filter((rankId) => (
-    deviceNodes.get(rankDevices.get(rankId) ?? "") === fault.nodeId
-  )));
   const rankStates = planRanks(plan).map((rankId): RankTerminalState => {
     const rankStepIds = plan.steps
       .filter((step) => step.participants.includes(rankId))
@@ -1333,7 +1414,9 @@ function nodeFailureTerminal(
     if (failedRanks.has(rankId)) {
       return { rankId, status: "failed", terminalAtNs: fault.atNs };
     }
-    if (allStepsSubmitted) {
+    // A surviving rank can only finish on its own work. Anything it shares
+    // with the failed node cannot complete, however far the plan had gone.
+    if (allStepsSubmitted && !rankTouchedFailedNode.has(rankId)) {
       return { rankId, status: "succeeded", terminalAtNs: completedAtNs };
     }
     return { rankId, status: "aborted", terminalAtNs: quiescedAtNs };
@@ -1370,6 +1453,14 @@ function replayConcurrentNodeFailureTerminals(
   if (trace.operations.some(({ event }) => event.submittedAtNs >= fault.atNs)) {
     throw new PlanReplayError(
       "concurrent operation was submitted at or after node fault",
+    );
+  }
+  const failedRanks = failedNodeRanks(scenario, fault);
+  if (trace.operations.some(({ event }) => (
+    touchesFailedNode(event, failedRanks) && event.startNs >= fault.atNs
+  ))) {
+    throw new PlanReplayError(
+      "concurrent operation started on the failed node at or after node fault",
     );
   }
   const expectedTerminals: PlanTerminalEvent[] = [];
@@ -1417,7 +1508,13 @@ function replayConcurrentNodeFailureTerminals(
           readyAtNs = Math.max(readyAtNs, priorFinal);
         }
       }
-      if (readyAtNs < fault.atNs) {
+      // A step that spans the failed node may be omitted even when it was
+      // ready: the device stops accepting work at the fault instant. Only
+      // survivor-local steps must still appear.
+      const spansFailedNode = step.participants.some(
+        (rankId) => failedRanks.has(rankId),
+      );
+      if (readyAtNs < fault.atNs && !spansFailedNode) {
         throw new PlanReplayError(
           `${request.plan.executionId}/${step.id} was ready before node fault but omitted`,
         );
@@ -1811,7 +1908,7 @@ function compareTerminals(
     left.timestampNs - right.timestampNs
     || (admissionOrder.get(left.executionId) ?? 0)
       - (admissionOrder.get(right.executionId) ?? 0)
-    || left.executionId.localeCompare(right.executionId)
+    ||compareIds(left.executionId, right.executionId)
   );
 }
 

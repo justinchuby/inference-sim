@@ -440,7 +440,7 @@ export function simulateSpeculativeTokenTrace(
     },
     acceptance: {
       kind: "replay",
-      acceptedDraftTokens: acceptedAdditionalTokens,
+      acceptedAdditionalTokens,
     },
     maxIterations: Math.max(1, trace.iterations.length),
     stateGroups: buildSpeculativeStateGroups(

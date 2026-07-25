@@ -159,6 +159,14 @@ const BUILTIN_WEIGHT_DTYPES = [
   "int1",
 ] as const satisfies readonly QuantType[];
 
+const BUILTIN_KV_CACHE_DTYPES = [
+  "fp16",
+  "bf16",
+  "fp8",
+  "int8",
+  "int4",
+] as const satisfies readonly QuantType[];
+
 const COMPUTER_SCENARIOS: ReadonlyArray<{
   readonly value: DashboardRunConfig["scenarioName"];
   readonly label: string;
@@ -648,17 +656,28 @@ export function App(): React.JSX.Element {
   const selectBuiltinModel = useCallback((
     preset: DashboardModelPreset,
     weightDtype?: QuantType,
+    kvCacheDtype?: QuantType,
   ) => {
     const currentWeightDtype = config.modelBinding?.source === "builtin_model"
       ? config.modelBinding.modelFormat?.weightDtypes[0]
       : undefined;
+    const currentKvCacheDtype = config.modelBinding?.source === "builtin_model"
+      ? config.modelBinding.modelFormat?.kvCacheDtype
+      : undefined;
     const selectedWeightDtype = weightDtype
       ?? BUILTIN_WEIGHT_DTYPES.find((dtype) => dtype === currentWeightDtype)
+      ?? "fp16";
+    const selectedKvCacheDtype = kvCacheDtype
+      ?? BUILTIN_KV_CACHE_DTYPES.find((dtype) => dtype === currentKvCacheDtype)
       ?? "fp16";
     const { trace: _trace, ...speculative } = config.speculative;
     changeConfig({
       ...config,
-      modelBinding: createBuiltinModelBinding(preset, selectedWeightDtype),
+      modelBinding: createBuiltinModelBinding(
+        preset,
+        selectedWeightDtype,
+        selectedKvCacheDtype,
+      ),
       mode: "serving",
       speculative: {
         ...speculative,
@@ -2148,6 +2167,7 @@ function ConfigurationPanel({
   readonly onBuiltinModel: (
     preset: DashboardModelPreset,
     weightDtype?: QuantType,
+    kvCacheDtype?: QuantType,
   ) => void;
   readonly customScenario: ScenarioSelection;
   readonly disabled: boolean;
@@ -2233,6 +2253,11 @@ function ConfigurationPanel({
   const selectedWeightDtype = config.modelBinding?.source === "builtin_model"
     ? BUILTIN_WEIGHT_DTYPES.find(
         (dtype) => dtype === config.modelBinding?.modelFormat?.weightDtypes[0],
+      ) ?? "fp16"
+    : undefined;
+  const selectedKvCacheDtype = config.modelBinding?.source === "builtin_model"
+    ? BUILTIN_KV_CACHE_DTYPES.find(
+        (dtype) => dtype === config.modelBinding?.modelFormat?.kvCacheDtype,
       ) ?? "fp16"
     : undefined;
   return (
@@ -2339,6 +2364,38 @@ function ConfigurationPanel({
                     </SelectTrigger>
                     <SelectContent>
                       {BUILTIN_WEIGHT_DTYPES.map((dtype) => (
+                        <SelectItem key={dtype} value={dtype}>
+                          {formatDtype(dtype)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
+          {selectedKvCacheDtype === undefined
+            ? null
+            : (
+                <label className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-zinc-600">
+                  <span className="shrink-0 font-medium">KV cache format</span>
+                  <Select
+                    value={selectedKvCacheDtype}
+                    disabled={disabled || modelPackage.importing}
+                    onValueChange={(value) => {
+                      onBuiltinModel(
+                        selectedModelValue as DashboardModelPreset,
+                        selectedWeightDtype,
+                        value as QuantType,
+                      );
+                    }}
+                  >
+                    <SelectTrigger
+                      aria-label="KV cache format"
+                      className="h-8 w-32"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {BUILTIN_KV_CACHE_DTYPES.map((dtype) => (
                         <SelectItem key={dtype} value={dtype}>
                           {formatDtype(dtype)}
                         </SelectItem>

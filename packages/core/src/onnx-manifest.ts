@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   canonicalJsonFingerprint,
   canonicalJsonStringify,
@@ -349,9 +350,8 @@ function parseGraph(value: unknown): OnnxModelManifestUnsigned["graph"] {
       ),
     };
   });
-  const sorted = [...operators].sort((left, right) => (
-    left.domain.localeCompare(right.domain)
-    || left.opType.localeCompare(right.opType)
+  const sorted = [...operators].sort((left, right) => (compareIds(left.domain, right.domain)
+    ||compareIds(left.opType, right.opType)
   ));
   if (JSON.stringify(operators) !== JSON.stringify(sorted)) {
     throw new OnnxModelManifestError(

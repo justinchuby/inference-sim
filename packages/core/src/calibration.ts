@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import type {
   ConfidenceClass,
   SimDeviceKind,
@@ -796,7 +797,7 @@ function fitTransportCurves(dataset: CalibrationDataset): {
   const curves: TransportCalibrationCurve[] = [];
   const diagnostics: TransportCalibrationFitDiagnostic[] = [];
   for (const [identity, unsorted] of [...grouped.entries()].sort(
-    ([left], [right]) => left.localeCompare(right),
+    ([left], [right]) => compareIds(left, right),
   )) {
     const observations = [...unsorted].sort(
       (left, right) => left.bytes - right.bytes,
@@ -931,7 +932,7 @@ function fingerprintDataset(dataset: CalibrationDataset): string {
         )),
         regime: observation.regime,
       }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
+      .sort((left, right) => compareIds(left.id, right.id)),
     transportObservations: [...dataset.transportObservations]
       .map((observation) => ({
         id: observation.id,
@@ -947,7 +948,7 @@ function fingerprintDataset(dataset: CalibrationDataset): string {
         )),
         regime: observation.regime,
       }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
+      .sort((left, right) => compareIds(left.id, right.id)),
   });
   let hash = 0x811c9dc5;
   for (let index = 0; index < canonical.length; index++) {

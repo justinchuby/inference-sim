@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import { canonicalJsonFingerprint } from "./result-artifact.js";
 import { analyzeStatic } from "./static-analysis.js";
 import type {
@@ -205,7 +206,7 @@ export function searchStaticConfigurations(
   accepted.sort((left, right) => (
     Number(right.feasible) - Number(left.feasible)
     || right.score - left.score
-    || left.candidateId.localeCompare(right.candidateId)
+    ||compareIds(left.candidateId, right.candidateId)
   ));
   const candidates = accepted.slice(0, request.topK).map(
     (candidate, index): StaticSearchCandidate => ({
@@ -221,8 +222,7 @@ export function searchStaticConfigurations(
     eligibleCandidateCount: accepted.length,
     returnedCandidateCount: candidates.length,
     rejectionCounts: Object.fromEntries(
-      [...rejectionCounts.entries()].sort(([left], [right]) => (
-        left.localeCompare(right)
+      [...rejectionCounts.entries()].sort(([left], [right]) => (compareIds(left, right)
       )),
     ),
     candidates,

@@ -92,7 +92,7 @@ describe("topology editor boundary", () => {
       ...preset,
       memoryDomains: preset.memoryDomains.map((domain) => (
         domain.id === gpuDomain.id
-          ? { ...domain, resourceLimitBytes: 24 * 1024 ** 3 }
+          ? { ...domain, resourceLimitBytes: 64 * 1024 ** 3 }
           : domain
       )),
       execution: {
@@ -104,8 +104,29 @@ describe("topology editor boundary", () => {
       (domain) => domain.id === gpuDomain.id,
     )!;
     expect(constrained.capacityBytes).toBe(gpuDomain.capacityBytes);
-    expect(constrained.resourceLimitBytes).toBe(24 * 1024 ** 3);
+    expect(constrained.resourceLimitBytes).toBe(64 * 1024 ** 3);
+    expect(constrained.resourceLimitBytes)
+      .toBeLessThan(constrained.capacityBytes);
     expect(edited.execution.features.ssdStreaming).toBe(false);
+  });
+
+  it("rejects a resource limit below the domain's own reservations", () => {
+    // The memory ledger charges reservations against the resource limit, so a
+    // limit under the reserved extent must fail instead of yielding a negative
+    // free extent.
+    const preset = buildScenarioPreset("single-gpu-cpu");
+    const gpuDomain = preset.memoryDomains.find(
+      (domain) => domain.kind === "device",
+    )!;
+
+    expect(() => finalizeEditedTopology({
+      ...preset,
+      memoryDomains: preset.memoryDomains.map((domain) => (
+        domain.id === gpuDomain.id
+          ? { ...domain, resourceLimitBytes: 24 * 1024 ** 3 }
+          : domain
+      )),
+    })).toThrow(/exceed resource limit/);
   });
 
   it("rejects invalid edits through the shared scenario parser", () => {

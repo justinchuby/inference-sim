@@ -533,6 +533,11 @@ export async function runCli(
                 "fault_at_ns",
                 "node_failover",
               ),
+              quiesceTimeoutNs: requireNumber(
+                failover,
+                "quiesce_timeout_ns",
+                "node_failover",
+              ),
               reason: optionalString(
                 failover,
                 "reason",
@@ -585,6 +590,11 @@ export async function runCli(
                   failure,
                   "reason",
                   "node heartbeat expired",
+                  "node_failure",
+                ),
+                quiesceTimeoutNs: requireNumber(
+                  failure,
+                  "quiesce_timeout_ns",
                   "node_failure",
                 ),
               },
@@ -1389,10 +1399,10 @@ function parseServingAcceptance(
   if (kind === "replay") {
     return {
       kind,
-      acceptedDraftTokensByRequest: Object.fromEntries(
+      acceptedAdditionalTokensByRequest: Object.fromEntries(
         Object.entries(requireRecord(
-          config.accepted_draft_tokens_by_request,
-          `${context}.accepted_draft_tokens_by_request`,
+          config.accepted_additional_tokens_by_request,
+          `${context}.accepted_additional_tokens_by_request`,
         )).map(([requestId, values]) => [
           requestId,
           requireNumberArray(
@@ -1611,7 +1621,9 @@ function summarizeConcurrentNodeFailure(
     assumptions: [
       "all campaign executions must be admitted before the node-fault timestamp",
       "the node fault atomically closes new submission for every old-epoch execution",
-      "only the shared global schedule prefix submitted before the fault may quiesce",
+      "work confined to surviving nodes keeps draining after the fault",
+      "the failed node stops executing at the fault: queued work never runs and in-flight work never finishes",
+      "quiescence is whichever comes first, surviving work draining or the abort deadline at at_ns + quiesce_timeout_ns",
     ],
     completedAtNs: result.execution.completedAtNs,
     executionCount: result.execution.executions.length,
@@ -1767,9 +1779,9 @@ function parseAcceptance(
   if (kind === "replay") {
     return {
       kind,
-      acceptedDraftTokens: requireNumberArray(
+      acceptedAdditionalTokens: requireNumberArray(
         config,
-        "accepted_draft_tokens",
+        "accepted_additional_tokens",
         "speculative.acceptance",
       ),
     };

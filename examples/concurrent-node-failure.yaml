@@ -6,6 +6,9 @@ concurrent_campaign:
 node_failure:
   node_id: node1
   at_ns: 1
+  # Abort deadline for surviving ranks, relative to at_ns. Quiescence is
+  # whichever comes first: survivor work draining, or this timeout.
+  quiesce_timeout_ns: 50000
   reason: node1 heartbeat expired
 
 target_only:

@@ -109,17 +109,21 @@ export class DiscreteEventSimulator<E> {
         break;
       }
 
+      // Every dequeue is bounded work, so cancelled events count against the
+      // budget too. Otherwise a large cancellation backlog can burn unbounded
+      // runtime while `processedEvents` never advances.
+      if (processedEvents + skippedCancelledEvents >= maxEvents) {
+        throw new SimulationError(
+          `simulation exceeded maximum event count ${maxEvents} at ${this.currentTimeNs}ns`,
+        );
+      }
+
       if (this.cancelledIds.has(next.id)) {
         const cancelled = this.pop();
         this.pendingIds.delete(cancelled.id);
         this.cancelledIds.delete(cancelled.id);
         skippedCancelledEvents++;
         continue;
-      }
-      if (processedEvents >= maxEvents) {
-        throw new SimulationError(
-          `simulation exceeded maximum event count ${maxEvents} at ${this.currentTimeNs}ns`,
-        );
       }
 
       const event = this.pop();

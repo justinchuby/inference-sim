@@ -33,7 +33,8 @@ function bytesPerElement(quant: QuantType): number {
 }
 
 function sumLayerWeights(model: ModelProfile): number {
-  return model.layers.reduce((sum, l) => sum + l.attentionBytes + l.ffnBytes, 0);
+  return model.layers.reduce((sum, l) => sum + l.attentionBytes + l.ffnBytes, 0)
+    + (model.embeddingBytes ?? 0);
 }
 
 function totalExpertWeights(model: ModelProfile): number {

@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   PROTOCOL_CONTRACT_REVISION,
   type HostAllocationSnapshot,
@@ -376,16 +377,15 @@ function assertReplayInvariants(state: ReplayState): void {
 
 function snapshot(state: ReplayState): HostGovernorSnapshot {
   const reclaimableBytesByDevice = Object.fromEntries(
-    [...state.reclaimableBytes.entries()].sort(([left], [right]) =>
-      left.localeCompare(right)
+    [...state.reclaimableBytes.entries()].sort(([left], [right]) => compareIds(left, right)
     ),
   );
   const tickets: PressureTicketSnapshot[] = [...state.tickets.values()]
     .map((ticket) => ({ ...ticket }))
-    .sort((left, right) => left.requestId.localeCompare(right.requestId));
+    .sort((left, right) => compareIds(left.requestId, right.requestId));
   const allocations: HostAllocationSnapshot[] = [...state.allocations.values()]
     .map((allocation) => ({ ...allocation }))
-    .sort((left, right) => left.allocationId.localeCompare(right.allocationId));
+    .sort((left, right) => compareIds(left.allocationId, right.allocationId));
 
   return {
     capacityBytes: state.capacityBytes,

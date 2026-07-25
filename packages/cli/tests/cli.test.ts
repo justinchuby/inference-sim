@@ -476,7 +476,7 @@ speculative:
   max_additional_tokens: 2
   acceptance:
     kind: replay
-    accepted_draft_tokens: [2, 1]
+    accepted_additional_tokens: [2, 1]
   paged_kv:
     page_size_tokens: 4
     bytes_per_token: 128
@@ -736,7 +736,7 @@ serving:
     max_additional_tokens: 2
     acceptance:
       kind: replay
-      accepted_draft_tokens_by_request:
+      accepted_additional_tokens_by_request:
         a: [2]
         b: [0, 1]
   requests:
@@ -1150,6 +1150,7 @@ target_only:
 node_failover:
   failed_node_id: node1
   fault_at_ns: 1
+  quiesce_timeout_ns: 50000
   reason: node1 heartbeat expired
 target_only:
   token_count: 2
@@ -1208,6 +1209,7 @@ concurrent_campaign:
 node_failure:
   node_id: node1
   at_ns: 1
+  quiesce_timeout_ns: 50000
   reason: node1 heartbeat expired
 target_only:
   token_count: 2
@@ -1240,6 +1242,7 @@ target_only:
       kind: "node_failure",
       nodeId: "node1",
       atNs: 1,
+      quiesceTimeoutNs: 50_000,
       reason: "node1 heartbeat expired",
     });
     expect(output.terminalsPreview).toHaveLength(8);

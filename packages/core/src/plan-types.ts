@@ -146,6 +146,13 @@ export type PlanFault =
       readonly atNs: number;
       readonly nodeId: string;
       readonly reason: string;
+      /**
+       * Abort deadline relative to `atNs`. A failed node stops executing
+       * immediately, but surviving ranks only learn about it when the
+       * coordinator aborts, so quiescence is bounded by this window rather
+       * than by the planned finish time of work that can never complete.
+       */
+      readonly quiesceTimeoutNs: number;
     }
   | {
       readonly kind: "device_failure";

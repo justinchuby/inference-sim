@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   PROTOCOL_CONTRACT_REVISION,
   type HostAllocationSnapshot,
@@ -294,16 +295,15 @@ export class HostGovernorSimulator {
 
   snapshot(): HostGovernorSnapshot {
     const reclaimableBytesByDevice = Object.fromEntries(
-      [...this.reclaimableBytes.entries()].sort(([left], [right]) =>
-        left.localeCompare(right)
+      [...this.reclaimableBytes.entries()].sort(([left], [right]) => compareIds(left, right)
       ),
     );
     const tickets: PressureTicketSnapshot[] = [...this.tickets.values()]
       .map((ticket) => ({ ...ticket }))
-      .sort((left, right) => left.requestId.localeCompare(right.requestId));
+      .sort((left, right) => compareIds(left.requestId, right.requestId));
     const allocations: HostAllocationSnapshot[] = [...this.allocations.values()]
       .map((allocation) => ({ ...allocation }))
-      .sort((left, right) => left.allocationId.localeCompare(right.allocationId));
+      .sort((left, right) => compareIds(left.allocationId, right.allocationId));
     return {
       capacityBytes: this.capacityBytes,
       fixedChargeBytes: this.fixedChargeBytes,

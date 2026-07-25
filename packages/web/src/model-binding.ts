@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import {
   buildModelProfile,
   resolveOnnxModelProfile,
@@ -14,12 +15,32 @@ import type {
   DashboardModelFormat,
 } from "./types.js";
 
+/** Built-in presets offered by the workbench, ordered by parameter count. */
 export const DASHBOARD_MODEL_PRESETS = [
+  "qwen3-0.6b",
+  "llama-3.2-1b",
+  "phi-4-mini",
+  "qwen3-4b",
+  "mistral-7b",
   "llama-3-8b",
+  "qwen3-8b",
+  "gemma-4-12b",
+  "phi-4",
+  "gpt-oss-20b",
+  "qwen3.6-27b",
+  "gemma-4-26b-a4b",
+  "qwen3-30b-a3b",
+  "gemma-4-31b",
+  "qwen3-32b",
+  "qwen3.6-35b-a3b",
+  "mixtral-8x7b",
   "llama-3-70b",
+  "gpt-oss-120b",
   "mixtral-8x22b",
-  "deepseek-v2",
   "qwen-3-235b",
+  "deepseek-v2",
+  "deepseek-v3",
+  "kimi-k2",
 ] as const;
 
 export type DashboardModelPreset = typeof DASHBOARD_MODEL_PRESETS[number];
@@ -39,15 +60,21 @@ export function createBuiltinModelBinding(
 ): DashboardModelBinding {
   const model = buildModelProfile(preset, weightDtype, kvCacheDtype);
   const fingerprint = `builtin:${preset}:${weightDtype}:${kvCacheDtype}`;
-  const moeLimitations = model.moe === undefined
-    ? []
-    : ["model_moe_routing_not_bound_to_expert_workload"];
+  const pipelineExecution = builtinPipelineExecution(model, preset);
+  const moeLimitations = [
+    ...(model.moe === undefined
+      ? []
+      : ["model_moe_routing_not_bound_to_expert_workload"]),
+    ...(pipelineExecution === undefined
+      ? []
+      : ["vision_request_tile_expansion_not_modeled"]),
+  ];
   return {
     source: "builtin_model",
     displayName: model.name,
     modelFingerprints: [fingerprint],
     targetModelFingerprint: fingerprint,
-    componentCount: 1,
+    componentCount: 1 + (model.components?.length ?? 0),
     totalParameters: model.totalParams,
     weightBytes: totalModelWeightBytes(model),
     modelFormat: {
@@ -59,14 +86,75 @@ export function createBuiltinModelBinding(
       runtimeDtypesDefaulted: false,
     },
     executionProfile: executionProfile(model, preset),
+    ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
     executionCoverage: {
       fidelity: moeLimitations.length === 0 ? "complete" : "partial",
       scope: "full_model",
-      modeledComponentIds: [preset],
+      modeledComponentIds: [
+        preset,
+        ...(model.components ?? []).map((component) => component.id),
+      ].sort(),
       unmodeledComponentIds: [],
       limitations: moeLimitations,
     },
     speculativeFamilies: ["prompt_lookup"],
+  };
+}
+
+/**
+ * Pipeline work for a built-in multimodal preset. The decoder stays the
+ * autoregressive target, so `replacesTarget` is false: encoders run once per
+ * request during prefill and the decoder runs every step.
+ */
+function builtinPipelineExecution(
+  model: ModelProfile,
+  preset: string,
+): TopologyPipelineWork | undefined {
+  const components = model.components;
+  if (components === undefined || components.length === 0) {
+    return undefined;
+  }
+  const decoderBytes = model.layers.reduce(
+    (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
+    0,
+  ) + (model.moe === undefined
+    ? 0
+    : model.architecture.numLayers * (
+      model.moe.numExperts * model.moe.expertBytesPerLayer
+      + model.moe.sharedExpertBytesPerLayer
+    ))
+    + (model.embeddingBytes ?? 0);
+  return {
+    strategyKind: "autoregressive",
+    replacesTarget: false,
+    components: [
+      ...components.map((component, index) => ({
+        id: component.id,
+        role: component.role,
+        phase: component.phase,
+        strategyKind: "single_pass",
+        invocationMultiplier: 1,
+        weightBytes: component.weightBytes,
+        isPrimary: false,
+        order: index,
+      })),
+      {
+        id: preset,
+        role: "decoder",
+        phase: "every_step" as const,
+        strategyKind: "autoregressive",
+        invocationMultiplier: 1,
+        weightBytes: decoderBytes,
+        isPrimary: true,
+        order: components.length,
+      },
+    ],
+    edges: components.map((component, index) => ({
+      fromComponent: component.id,
+      toComponent: index === components.length - 1
+        ? preset
+        : components[index + 1]!.id,
+    })),
   };
 }
 
@@ -152,7 +240,7 @@ function importedModelFormat(
   }
   const weightDtypes = [...bytesByDtype.entries()]
     .sort((left, right) => (
-      right[1] - left[1] || left[0].localeCompare(right[0])
+      right[1] - left[1] ||compareIds(left[0], right[0])
     ))
     .map(([dtype]) => dtype);
   const knownQuantizations = [...quantizations].filter(
@@ -560,7 +648,7 @@ function totalModelWeightBytes(model: ModelProfile): number {
       model.moe.numExperts * model.moe.expertBytesPerLayer
       + model.moe.sharedExpertBytesPerLayer
     );
-  return dense + experts;
+  return dense + experts + (model.embeddingBytes ?? 0);
 }
 
 function bytesPerElement(

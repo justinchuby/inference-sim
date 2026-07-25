@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 export type SpeculativeStateOwner = "target" | "proposer";
 
 export type SpeculativeStateRole =
@@ -159,7 +160,7 @@ export class SpeculativeTransactionSimulator {
   snapshot(): readonly SpeculativeStateGroupSnapshot[] {
     return [...this.groups.values()]
       .map(({ rollbackProtection: _rollbackProtection, ...group }) => ({ ...group }))
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareIds(left.id, right.id));
   }
 
   runIteration(input: SpeculativeIterationInput): SpeculativeIterationResult {

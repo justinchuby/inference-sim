@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import type {
   NetworkResourceSpec,
   SimulationScenario,
@@ -135,13 +136,13 @@ export function buildTopologyGraph(
   for (const nodeId of nodeIds) {
     const devices = scenario.devices
       .filter((device) => device.nodeId === nodeId)
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareIds(left.id, right.id));
     const domains = scenario.memoryDomains
       .filter((domain) => domain.nodeId === nodeId)
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareIds(left.id, right.id));
     const networkResources = (scenario.networkResources ?? [])
       .filter((resource) => resource.nodeId === nodeId)
-      .sort((left, right) => left.id.localeCompare(right.id));
+      .sort((left, right) => compareIds(left.id, right.id));
     const columns = Math.max(
       devices.length,
       domains.length,
@@ -279,7 +280,7 @@ export function buildTopologyGraph(
 
   const fabrics = (scenario.networkResources ?? [])
     .filter((resource) => resource.nodeId === undefined)
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareIds(left.id, right.id));
   const totalWidth = Math.max(groupOffset - GROUP_GAP - GROUP_X, NODE_WIDTH);
   fabrics.forEach((resource, index) => {
     const position = {

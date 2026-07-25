@@ -7,6 +7,7 @@ import {
   createOnnxModelManifest,
   parseInferenceMetadata,
   simulateTopologyServingWorkload,
+  listModelPresets,
   simulateTopologyWorkload,
   topologyProfileFromPipeline,
 } from "@inference-sim/core";
@@ -16,11 +17,45 @@ import {
   summarizeModelPackage,
 } from "./model-metrics.js";
 import {
+  DASHBOARD_MODEL_PRESETS,
   createBuiltinModelBinding,
   createImportedModelBinding,
 } from "./model-binding.js";
 
 describe("model UI metrics", () => {
+  it("binds KV cache dtype independently of the weight dtype", () => {
+    const fp16 = createBuiltinModelBinding("qwen3-0.6b", "fp16", "fp16");
+    const fp8Kv = createBuiltinModelBinding("qwen3-0.6b", "fp16", "fp8");
+    const int4Weights = createBuiltinModelBinding("qwen3-0.6b", "int4", "fp16");
+
+    const fp16KvBytes = fp16.executionProfile.kvCacheBytesPerToken!;
+
+    expect(fp16.modelFormat?.kvCacheDtype).toBe("fp16");
+    expect(fp8Kv.modelFormat?.kvCacheDtype).toBe("fp8");
+    expect(fp8Kv.executionProfile.kvCacheBytesPerToken).toBe(fp16KvBytes / 2);
+    // Weight quantization must not move the KV cache figure, and vice versa.
+    expect(int4Weights.executionProfile.kvCacheBytesPerToken)
+      .toBe(fp16KvBytes);
+    expect(fp8Kv.weightBytes).toBe(fp16.weightBytes);
+    expect(fp8Kv.modelFingerprints).not.toEqual(fp16.modelFingerprints);
+  });
+
+  it("offers every built-in preset and binds each one", () => {
+    expect([...DASHBOARD_MODEL_PRESETS].sort())
+      .toEqual([...listModelPresets()].sort());
+
+    const bindings = DASHBOARD_MODEL_PRESETS.map((preset) =>
+      createBuiltinModelBinding(preset));
+    for (const binding of bindings) {
+      expect(binding.totalParameters).toBeGreaterThan(0);
+      expect(binding.weightBytes).toBeGreaterThan(0);
+      expect(binding.executionProfile.kvCacheBytesPerToken).toBeGreaterThan(0);
+      expect(binding.executionProfile.forwardFlopsPerToken).toBeGreaterThan(0);
+    }
+    expect(new Set(bindings.map((binding) => binding.displayName)).size)
+      .toBe(bindings.length);
+  });
+
   it("binds weight dtype to storage cost and experiment identity", () => {
     const fp16 = createBuiltinModelBinding("llama-3-8b", "fp16");
     const int4 = createBuiltinModelBinding("llama-3-8b", "int4");

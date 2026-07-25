@@ -167,7 +167,7 @@ describe("continuous serving scheduler", () => {
         maxAdditionalTokens: 1,
         acceptance: {
           kind: "replay",
-          acceptedDraftTokensByRequest: {
+          acceptedAdditionalTokensByRequest: {
             a: [0],
             b: [0],
             priority: [0],
@@ -194,7 +194,7 @@ describe("continuous serving scheduler", () => {
         maxAdditionalTokens: 2,
         acceptance: {
           kind: "replay",
-          acceptedDraftTokensByRequest: {
+          acceptedAdditionalTokensByRequest: {
             bonus: [2],
             mixed: [0, 1],
           },
@@ -255,7 +255,7 @@ describe("continuous serving scheduler", () => {
         maxAdditionalTokens: 2,
         acceptance: {
           kind: "replay",
-          acceptedDraftTokensByRequest: { request: [1, 0] },
+          acceptedAdditionalTokensByRequest: { request: [1, 0] },
         },
       },
     };
@@ -288,5 +288,54 @@ describe("continuous serving scheduler", () => {
 
     expect(() => replayServingTrace(speculative, mutated, duration))
       .toThrow("violates scheduler decision");
+  });
+
+  it("never admits prefill that would strand KV between requests", () => {
+    // Two requests each peak at 6 KV tokens (5 prompt + 1 uncharged prefill
+    // token + 1 decode token) against a 10-token pool. Admitting both prompts
+    // fills the pool and leaves neither able to decode.
+    const contended: ServingSchedulerConfig = {
+      requests: [
+        { id: "a", arrivalNs: 0, promptTokens: 5, outputTokens: 2 },
+        { id: "b", arrivalNs: 0, promptTokens: 5, outputTokens: 2 },
+      ],
+      maxBatchSize: 2,
+      maxBatchTokens: 16,
+      prefillChunkTokens: 8,
+      maxKvTokens: 10,
+    };
+    const result = simulateServingWorkload(contended, duration);
+
+    expect(result.metrics.requests).toBe(2);
+    expect(result.metrics.outputTokens).toBe(4);
+    expect(result.metrics.kvHighWaterTokens).toBeLessThanOrEqual(10);
+    expect(result.replay.completedRequests).toBe(2);
+    expect(result.replay.finalKvTokens).toBe(0);
+    const firstBatch = result.trace.find((event) => event.kind === "batch_start");
+    if (firstBatch?.kind !== "batch_start") {
+      throw new Error("missing batch");
+    }
+    expect(firstBatch.batch.prefill).toHaveLength(1);
+  });
+
+  it("serializes admission when every request needs most of the KV pool", () => {
+    const contended: ServingSchedulerConfig = {
+      requests: Array.from({ length: 6 }, (_, index) => ({
+        id: `r${index}`,
+        arrivalNs: 0,
+        promptTokens: 12,
+        outputTokens: 5,
+      })),
+      maxBatchSize: 4,
+      maxBatchTokens: 32,
+      prefillChunkTokens: 4,
+      maxKvTokens: 40,
+    };
+    const result = simulateServingWorkload(contended, duration);
+
+    expect(result.metrics.requests).toBe(6);
+    expect(result.metrics.outputTokens).toBe(30);
+    expect(result.metrics.kvHighWaterTokens).toBeLessThanOrEqual(40);
+    expect(result.replay.finalKvTokens).toBe(0);
   });
 });

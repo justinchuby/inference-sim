@@ -11,6 +11,12 @@ does not claim hardware-accurate latency without calibration data.
 
 ## What You Can Model
 
+- Pick from 24 built-in model presets spanning 0.6B to 1T parameters and the
+  main architecture families: dense GQA, fine-grained and coarse MoE, DeepSeek
+  multi-head latent attention, Gemma-style local/global sliding-window hybrids,
+  and Qwen3.6-style gated linear-attention hybrids. Every preset is derived
+  from its published architecture and checked against the published parameter
+  count.
 - Import local ONNX model packages directly in the browser, including external
   tensor data and onnx-genai inference metadata for multi-model pipelines.
 - Inspect model size, parameter count, weight/activation dtype, quantization
@@ -142,6 +148,17 @@ Use `pnpm sim --help` for the complete command list.
   Custom scenarios pass the same strict validation used for embedded plans.
 - `compare` and `serving-compare` retain the six fixed topology families so
   a custom target cannot silently change the comparison population.
+
+### Formal Models
+
+Protocol-level state machines live in the onnx-genai repository under
+`specs/tla`. `KvAdmission.tla` models the continuous-batching KV pool and
+exhaustively checks that the admission rule implemented in
+`packages/core/src/serving.ts` keeps the pool deadlock-free.
+`NodeFailure.tla` models node-fault quiescence and checks that a failed node
+stops executing at the fault instant while surviving work still drains within
+an explicit abort deadline. Both ship with a negative model that must violate
+the property when the rule is removed, so a model cannot be silently weakened.
 
 ### Design Documentation
 

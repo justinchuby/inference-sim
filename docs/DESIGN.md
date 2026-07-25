@@ -332,11 +332,43 @@ size guard.
 
 A concurrent node fault requires every target execution to have been admitted
 and still be active before the fault timestamp. The fault atomically closes
-submission for the entire old epoch. Only the one shared global schedule prefix
-submitted strictly before fault observation may quiesce; every participating
-execution receives a node-derived failed/aborted rank terminal. Replay checks
-the global prefix, rejects any operation submitted at or after the fault, and
-rejects any dependency- and communicator-ready operation omitted before it.
+submission for the entire old epoch.
+
+A fault is not a global time cut, because submission and execution are not the
+same event. Work is partitioned by node:
+
+- Operations confined to surviving nodes and submitted strictly before the
+  fault keep draining. Abort freezes new submission, not local completion.
+- Operations spanning the failed node are retained only if they had already
+  started. The device stops accepting and stops executing at the fault instant,
+  so anything it had merely queued never reaches it.
+- A retained operation spanning the failed node is truncated at the fault. It
+  was in flight, but the device disappeared before it could finish, so it never
+  contributes a completion time.
+
+Filtering on submission time alone is not sufficient: operations share
+execution lanes, so an operation submitted before the fault can start long
+after it, and a failed node would appear to execute work for the rest of the
+schedule.
+
+Quiescence is therefore bounded by an explicit abort deadline. `node_failure`
+carries `quiesceTimeoutNs`, and the epoch quiesces at whichever comes first:
+surviving work draining, or the coordinator closing the epoch at
+`atNs + quiesceTimeoutNs`. A surviving rank succeeds only when its work either
+completed before the fault or never shared an operation with the failed node;
+otherwise it aborts at quiescence. Every participating execution receives a
+node-derived failed/aborted rank terminal, and the fault trace carries its own
+dense global order because dropped operations leave gaps in the baseline one.
+
+Replay checks the global prefix, rejects any operation submitted at or after
+the fault, rejects any operation that started on the failed node at or after
+the fault, and rejects any dependency- and communicator-ready survivor-local
+operation omitted before it. These semantics are modeled and exhaustively
+checked as `FailedNodeStopsAtFault`, `NoCompletionAfterFailure`,
+`SurvivorWorkIsNotDiscarded`, and `QuiescenceBoundedByDeadline` in
+`NodeFailure.tla` in the onnx-genai `specs/tla` directory, together with a
+negative model that must violate the first invariant when the failed node is
+allowed to keep running queued work.
 
 ### 8.5 Node Failover and Replan
 
@@ -744,13 +776,30 @@ counts, and priority. The scheduler is deterministic and decode-first:
    selection;
 2. active decode sequences reserve one token each in priority/arrival/id order;
 3. remaining sequence and token slots admit chunked prefill;
-4. every batch reserves transient KV growth before it starts; and
-5. completed requests release their full live KV extent atomically.
+4. every batch reserves transient KV growth before it starts;
+5. KV is granted to a request only when the request's outstanding KV need still
+   fits in the currently free pool; and
+6. completed requests release their full live KV extent atomically.
 
 The final prefill chunk emits the first output token from its logits without
 adding that token to KV. Each later decode step processes the previous output
 token, appends one KV position, and emits the next token. A request therefore
 peaks at `prompt_tokens + output_tokens - 1` KV positions.
+
+Rule 5 is the KV admission guard and is what makes the pool deadlock-free.
+Requests grow their KV extent monotonically and release it only at completion,
+so a scheduler that admits purely on free capacity can fill the pool with
+prefill extents that leave no resident request able to decode, complete, and
+release. Granting only to a request whose whole remaining need fits in the free
+pool keeps the pool in a state where at least one resident request can always
+be driven to completion, which restores enough capacity for the rest. The rule
+is stated over need and free extent alone, so it is independent of grant size
+and of the order in which the scheduler visits requests. It is modeled and
+exhaustively checked as `ProgressPossible` in `KvAdmission.tla` in the
+onnx-genai `specs/tla` directory, together with a negative model that must
+violate the invariant when the guard is removed. A request whose peak exceeds
+the whole pool is rejected at configuration time rather than admitted and
+stalled.
 
 Arrivals may occur while a non-preemptive batch is running and become eligible
 at the next dispatch. A lossless trace records arrivals, exact batch

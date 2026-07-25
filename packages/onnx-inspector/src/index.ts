@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import { fromBinary } from "@bufbuild/protobuf";
 import {
   ModelProtoSchema,
@@ -83,9 +84,8 @@ export async function inspectOnnxModelBytes({
         count,
       };
     })
-    .sort((left, right) => (
-      left.domain.localeCompare(right.domain)
-      || left.opType.localeCompare(right.opType)
+    .sort((left, right) => (compareIds(left.domain, right.domain)
+      ||compareIds(left.opType, right.opType)
     ));
   const architecture = normalizeArchitectureEvidence(metadata);
   const missingFields = [

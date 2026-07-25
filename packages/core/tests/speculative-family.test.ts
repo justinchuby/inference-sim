@@ -129,7 +129,7 @@ describe("speculative family contracts", () => {
         capacityTokens: 2,
         rollbackProtection: { kind: "non_destructive_tail" },
       }],
-      acceptance: { kind: "replay", acceptedDraftTokens: [0] },
+      acceptance: { kind: "replay", acceptedAdditionalTokens: [0] },
     })).toThrow("requires proposer sidecar_kv");
   });
 

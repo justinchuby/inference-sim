@@ -26,7 +26,19 @@ export type {
 } from "./types.js";
 
 export { GPU_PRESETS, buildTopology, listPresets } from "./presets.js";
-export { MODEL_PRESETS, buildModelProfile, listModelPresets } from "./models.js";
+export { compareIds } from "./ordering.js";
+export {
+  MODEL_PRESETS,
+  MODEL_SPECS,
+  buildModelProfile,
+  derivedTotalParams,
+  listModelPresets,
+  type AttentionGeometry,
+  type GqaAttention,
+  type LinearAttention,
+  type MlaAttention,
+  type ModelSpec,
+} from "./models.js";
 export { analyzeStatic } from "./static-analysis.js";
 export {
   searchStaticConfigurations,

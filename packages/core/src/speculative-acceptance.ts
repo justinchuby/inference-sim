@@ -1,7 +1,15 @@
 export type SpeculativeAcceptanceModel =
   | {
       readonly kind: "replay";
-      readonly acceptedDraftTokens: readonly number[];
+      /**
+       * Accepted proposal-local tokens per iteration. For MTP, EAGLE-3, and
+       * shared-KV the guaranteed target token is never subject to acceptance
+       * and is not part of this count, so each entry must lie in
+       * `[0, proposedAdditionalTokens]` for that iteration. Total accepted
+       * draft tokens are reported separately as `acceptedDraftTokens`, which
+       * additionally includes the guaranteed target token.
+       */
+      readonly acceptedAdditionalTokens: readonly number[];
     }
   | {
       readonly kind: "conditional_empirical";
@@ -43,7 +51,7 @@ export class SpeculativeAcceptanceCursor {
       return 0;
     }
     if (this.model.kind === "replay") {
-      const accepted = this.model.acceptedDraftTokens[iteration];
+      const accepted = this.model.acceptedAdditionalTokens[iteration];
       if (accepted === undefined) {
         throw new SpeculativeAcceptanceError(
           `acceptance replay ended before iteration ${iteration}`,

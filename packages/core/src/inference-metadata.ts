@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import type { SpeculativeProposerFamily } from "./speculative-workload.js";
 
 export interface InferencePipelineComponent {
@@ -249,7 +250,7 @@ function parseComponents(
         ),
       };
     })
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareIds(left.id, right.id));
 }
 
 function parseEdges(

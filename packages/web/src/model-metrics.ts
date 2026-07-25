@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import {
   resolveOnnxModelProfile,
   type HardwareTopology,
@@ -168,7 +169,7 @@ function summarizeComponent(
     topOperators: [...model.manifest.graph.operators]
       .sort((left, right) => (
         right.count - left.count
-        || left.opType.localeCompare(right.opType)
+        ||compareIds(left.opType, right.opType)
       ))
       .slice(0, 3)
       .map((operator) => `${operator.opType} ${operator.count}`),

@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   SCENARIO_SCHEMA_VERSION,
   type AllocationClass,
@@ -711,11 +712,15 @@ export function validateScenario(
 
   for (const [domainId, bytes] of chargedBytes) {
     const domain = domains.get(domainId);
-    if (domain && bytes > domain.capacityBytes) {
+    // The memory ledger enforces the resource-manager limit, not the physical
+    // extent, so validation has to use the same bound or it can approve a
+    // scenario that the ledger reports as over-committed.
+    if (domain && bytes > domain.resourceLimitBytes) {
       add(
         "domain_over_capacity",
         `memoryDomains.${domainId}`,
-        `reservations ${bytes} exceed capacity ${domain.capacityBytes}`,
+        `reservations ${bytes} exceed resource limit ${domain.resourceLimitBytes}`
+          + ` (physical capacity ${domain.capacityBytes})`,
       );
     }
   }
@@ -726,6 +731,7 @@ export function validateScenario(
       index,
       domains,
       scenario.links,
+      scenario.networkResources ?? [],
       allocationReservations,
       add,
     );
@@ -1214,6 +1220,7 @@ function validateTransfer(
   index: number,
   domains: ReadonlyMap<string, MemoryDomainSpec>,
   links: readonly SimLinkSpec[],
+  networkResources: readonly NetworkResourceSpec[],
   allocations: ReadonlyMap<
     string,
     AllocationReservation
@@ -1236,8 +1243,10 @@ function validateTransfer(
       `unknown domain ${transfer.targetDomainId}`,
     );
   }
+  // Route selection must see the same shared NIC/switch resources the runtime
+  // sees, or validation can approve staging for a path the runtime never takes.
   const transferPath = findTransferPath(
-    { memoryDomains: [...domains.values()], links },
+    { memoryDomains: [...domains.values()], networkResources, links },
     transfer,
   );
   if (!transferPath) {
@@ -1528,5 +1537,5 @@ export function calculateScenarioMemoryLedger(
         freeBytes: capacityBytes - reservedBytes,
       };
     })
-    .sort((left, right) => left.domainId.localeCompare(right.domainId));
+    .sort((left, right) => compareIds(left.domainId, right.domainId));
 }

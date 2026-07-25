@@ -33,6 +33,7 @@ function failoverFixture() {
       failedNodeId: "node1",
       faultAtNs: 1,
       reason: "node1 heartbeat expired",
+      quiesceTimeoutNs: 50_000,
       recoveryScenario,
       replannedPlan,
     },

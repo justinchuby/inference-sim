@@ -482,15 +482,24 @@ describe("simulateDashboard", () => {
 
   it("uses resource-manager limits instead of physical capacity", () => {
     const preset = buildScenarioPreset("cpu-only");
+    // The host domain keeps 128 GiB of physical capacity but only 17 GiB of
+    // allocatable extent. Expert caches are dropped so the scenario's own
+    // reservations still fit inside that limit.
     const customScenario = {
       ...preset,
       id: "cpu-limited",
       family: "custom" as const,
       memoryDomains: preset.memoryDomains.map((domain) => (
         domain.kind === "host"
-          ? { ...domain, resourceLimitBytes: 16 * 1024 ** 3 }
+          ? { ...domain, resourceLimitBytes: 17 * 1024 ** 3 }
           : domain
       )),
+      placements: preset.placements.map((placement) => ({
+        ...placement,
+        allocations: placement.allocations.filter(
+          (allocation) => allocation.purpose !== "cache",
+        ),
+      })),
     };
     expect(() => simulateDashboard({
       ...base,
@@ -546,6 +555,16 @@ describe("simulateDashboard", () => {
           ? { ...domain, resourceLimitBytes: 1024 ** 3 }
           : domain
       )),
+      // The backing reservation is trimmed to the new SSD limit so the
+      // scenario itself is valid and the expert-backing demand is what fails.
+      placements: preset.placements.map((placement) => ({
+        ...placement,
+        allocations: placement.allocations.map((allocation) => (
+          allocation.purpose === "backing"
+            ? { ...allocation, bytes: 1024 ** 3 }
+            : allocation
+        )),
+      })),
     };
     expect(() => simulateDashboard({
       ...base,

@@ -1,3 +1,4 @@
+import { compareIds } from "@inference-sim/core";
 import type { SimulationScenario } from "@inference-sim/core";
 import type { DashboardRunConfig } from "./types.js";
 
@@ -108,7 +109,7 @@ export function estimateContextCapacity(
     };
   }).sort((left, right) => (
     left.tokenSlots - right.tokenSlots
-    || left.domainId.localeCompare(right.domainId)
+    ||compareIds(left.domainId, right.domainId)
   ));
   const bottleneck = capacities[0]!;
   const totalKvTokenSlots = Math.max(0, bottleneck.tokenSlots);

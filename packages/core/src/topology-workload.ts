@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
@@ -798,7 +799,7 @@ export function compareTopologyWorkloads(
     )
   )).sort((left, right) => (
     left.metrics.totalDurationNs - right.metrics.totalDurationNs
-    || left.scenarioId.localeCompare(right.scenarioId)
+    ||compareIds(left.scenarioId, right.scenarioId)
   ));
   const fastest = results[0].metrics.totalDurationNs;
   return results.map((result, index) => ({
@@ -915,7 +916,7 @@ class WorkloadPlanCompiler {
     const lastColdTerminalByNode = new Map<string, number>();
     for (const [targetDomainId, targetPlacements] of [
       ...placementsByTarget.entries(),
-    ].sort(([left], [right]) => left.localeCompare(right))) {
+    ].sort(([left], [right]) => compareIds(left, right))) {
       const target = this.scenario.memoryDomains.find(
         (domain) => domain.id === targetDomainId,
       );
@@ -3662,7 +3663,7 @@ function resourceUtilization(
         : busyNs / (totalDurationNs * resource.lanes),
     };
   }).filter((resource) => resource.busyNs > 0)
-    .sort((left, right) => left.resourceId.localeCompare(right.resourceId));
+    .sort((left, right) => compareIds(left.resourceId, right.resourceId));
 }
 
 function unique(values: readonly string[]): string[] {

@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
@@ -351,7 +352,7 @@ export function executeFrozenPlan(
     }
   };
 
-  const activateFault = (injectedFault: PlanFault): void => {
+    const activateFault = (injectedFault: PlanFault): void => {
     terminalInjection = {
       status: injectedFault.kind === "topology_epoch_change"
         ? "aborted"
@@ -410,10 +411,14 @@ export function executeFrozenPlan(
     submitReady(simulation.nowNs);
   }, { maxEvents: scenario.execution.maxEvents });
 
-  const operationQuiescenceNs = Math.max(
-    0,
-    ...trace.map((event) => event.finishNs),
-  );
+  const operationQuiescenceNs =
+    terminalInjection?.fault?.kind === "node_failure"
+      ? nodeFailureQuiescenceNs(
+          trace,
+          terminalInjection.fault,
+          terminalInjection.failedRankIds,
+        )
+      : Math.max(0, ...trace.map((event) => event.finishNs));
   const completedAtNs = terminalInjection
     ? Math.max(operationQuiescenceNs, terminalInjection.failureAtNs)
     : operationQuiescenceNs;
@@ -694,6 +699,9 @@ export function runPlanFaultCampaign(
           atNs: eventMidpoint(event),
           nodeId,
           reason: `campaign node failure ${nodeId}`,
+          // One operation duration is enough for surviving ranks to observe
+          // the abort in a synthetic campaign.
+          quiesceTimeoutNs: Math.max(1, event.finishNs - event.startNs),
         },
       });
     }
@@ -1397,6 +1405,35 @@ function resourceIdsFor(
   }
 }
 
+/**
+ * Quiescence after a node fault. An operation spanning the failed node is
+ * truncated at the fault: it was in flight, but the device disappeared before
+ * it could finish. Surviving work drains until the coordinator closes the
+ * epoch at the abort deadline, whichever comes first.
+ */
+function nodeFailureQuiescenceNs(
+  trace: readonly PlanTraceEvent[],
+  fault: Extract<PlanFault, { readonly kind: "node_failure" }>,
+  failedRankIds: readonly string[],
+): number {
+  const failedRanks = new Set(failedRankIds);
+  const drainedAtNs = trace.reduce(
+    (maximum, event) => Math.max(
+      maximum,
+      event.participants.some((rankId) => failedRanks.has(rankId))
+        ? fault.atNs
+        : event.finishNs,
+    ),
+    fault.atNs,
+  );
+  const abortDeadlineNs = checkedTimeAdd(
+    fault.atNs,
+    fault.quiesceTimeoutNs,
+    "node fault abort deadline",
+  );
+  return Math.min(drainedAtNs, abortDeadlineNs);
+}
+
 function validatePlanFault(
   scenario: SimulationScenario,
   plan: FrozenPlan,
@@ -1420,6 +1457,14 @@ function validatePlanFault(
       ) {
         throw new FrozenPlanExecutionError(
           `fault references unknown node ${fault.nodeId}`,
+        );
+      }
+      if (
+        !Number.isSafeInteger(fault.quiesceTimeoutNs)
+        || fault.quiesceTimeoutNs <= 0
+      ) {
+        throw new FrozenPlanExecutionError(
+          "node fault quiesce timeout must be a positive safe integer",
         );
       }
       const rankDevices = buildRankDeviceMap(scenario.groups);
@@ -1761,7 +1806,7 @@ function validateAndReplayTerminal(
     replayFail(`unknown terminal status ${String(terminal.status)}`);
   }
 
-  const operationQuiescence = Math.max(
+  let operationQuiescence = Math.max(
     0,
     ...operations.map((event) => event.finishNs),
   );
@@ -1846,6 +1891,13 @@ function validateAndReplayTerminal(
         operations,
         terminal.fault,
       );
+      if (terminal.fault.kind === "node_failure") {
+        operationQuiescence = nodeFailureQuiescenceNs(
+          operations,
+          terminal.fault,
+          failedRankIds,
+        );
+      }
     } else {
       if (terminal.beforeStepId === undefined) {
         replayFail("legacy terminal does not identify the next plan step");
@@ -2027,7 +2079,7 @@ function sortedRankCompletions(
 ): RankCompletion[] {
   return [...values.entries()]
     .map(([rankId, completedAtNs]) => ({ rankId, completedAtNs }))
-    .sort((left, right) => left.rankId.localeCompare(right.rankId));
+    .sort((left, right) => compareIds(left.rankId, right.rankId));
 }
 
 function successfulRankCompletions(
@@ -2039,7 +2091,7 @@ function successfulRankCompletions(
       rankId: state.rankId,
       completedAtNs: state.terminalAtNs,
     }))
-    .sort((left, right) => left.rankId.localeCompare(right.rankId));
+    .sort((left, right) => compareIds(left.rankId, right.rankId));
 }
 
 function validateDuration(

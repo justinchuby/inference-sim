@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import { DiscreteEventSimulator } from "./event-loop.js";
 
 export const EXPERT_CACHE_CONTRACT_REVISION = 5;
@@ -740,6 +741,12 @@ export class ExpertCacheSimulator {
     const expert = this.requireExpert(expertId);
     const sourceTier: "warm" | "cold" =
       targetTier === "hot" && this.warm.has(expertId) ? "warm" : "cold";
+    if (sourceTier === "warm") {
+      // Serving a warm-to-hot load is a warm-tier access. Without this the
+      // warm entry keeps its stale clock and can be evicted ahead of experts
+      // that have not been touched for longer.
+      this.touch(this.warm, expertId);
+    }
     const latencyNs = sourceTier === "warm"
       ? this.config.warmToHotLatencyNs
       : targetTier === "hot"
@@ -1138,7 +1145,7 @@ export function replayExpertCacheTrace(
                 === event.partitionId
             ))
             .sort((left, right) => (
-              left[1] - right[1] || left[0].localeCompare(right[0])
+              left[1] - right[1] ||compareIds(left[0], right[0])
             ))[0]?.[0];
           if (event.expertId !== expectedVictim) {
             replayFail(
@@ -1198,6 +1205,10 @@ export function replayExpertCacheTrace(
           }
           pending.set(event.load.loadId, structuredClone(event.load));
           pendingByTarget.set(pendingKey, event.load.loadId);
+          if (event.load.sourceTier === "warm") {
+            // Serving a warm-to-hot load is a warm-tier access.
+            warm.set(event.load.expertId, ++accessClock);
+          }
           if (event.load.targetTier === "hot") {
             hotReservedBytes += event.load.bytes;
             const partitionId = requirePartitionId(
@@ -1526,7 +1537,7 @@ function buildSnapshot(input: {
     pendingLoads: [...input.pending.values()]
       .sort((left, right) => (
         left.completesAtNs - right.completesAtNs
-        || left.loadId.localeCompare(right.loadId)
+        ||compareIds(left.loadId, right.loadId)
       ))
       .map((load) => structuredClone(load)),
     metrics: {
@@ -1557,7 +1568,7 @@ function chooseVictims(
   }
   const candidates = [...resident.entries()]
     .filter(([id]) => !protectedIds.has(id))
-    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]));
+    .sort((left, right) => left[1] - right[1] ||compareIds(left[0], right[0]));
   const victims: string[] = [];
   for (const [id] of candidates) {
     victims.push(id);
@@ -1589,7 +1600,7 @@ function selectAdaptivePrefetchExperts(input: {
     .sort((left, right) => (
       right[1].count - left[1].count
       || right[1].lastTokenIndex - left[1].lastTokenIndex
-      || left[0].localeCompare(right[0])
+      ||compareIds(left[0], right[0])
     ));
   const selected: string[] = [];
   const incomingBytesByPartition = new Map<string, number>();
@@ -1624,8 +1635,7 @@ function selectWithoutReplacement(
   topK: number,
   rng: DeterministicRng,
 ): ExpertSpec[] {
-  const candidates = [...experts].sort((left, right) =>
-    left.id.localeCompare(right.id)
+  const candidates = [...experts].sort((left, right) => compareIds(left.id, right.id)
   );
   const selected: ExpertSpec[] = [];
   for (let count = 0; count < topK; count++) {
@@ -1954,7 +1964,7 @@ function residentBytes(
 
 function sortedResidentIds(resident: ReadonlyMap<string, number>): string[] {
   return [...resident.entries()]
-    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+    .sort((left, right) => left[1] - right[1] ||compareIds(left[0], right[0]))
     .map(([id]) => id);
 }
 

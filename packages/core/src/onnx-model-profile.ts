@@ -1,3 +1,4 @@
+import { compareIds } from "./ordering.js";
 import {
   parseOnnxModelManifest,
   type OnnxModelManifest,
@@ -164,7 +165,7 @@ function dominantWeightQuantization(
     );
   }
   const dominant = [...bytesByType.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0];
+    .sort((left, right) => right[1] - left[1] ||compareIds(left[0], right[0]))[0];
   if (dominant === undefined) {
     throw new Error("ONNX model has no rank-2-or-higher initializer with a simulatable weight dtype");
   }

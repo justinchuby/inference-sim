@@ -58,7 +58,7 @@ function replayConfig(): SpeculativeWorkloadConfig {
     stateGroups,
     acceptance: {
       kind: "replay",
-      acceptedDraftTokens: [0, 2, 3],
+      acceptedAdditionalTokens: [0, 2, 3],
     },
   };
 }
@@ -138,7 +138,7 @@ describe("simulateSpeculativeWorkload", () => {
       },
       acceptance: {
         kind: "replay",
-        acceptedDraftTokens: [0, 2],
+        acceptedAdditionalTokens: [0, 2],
       },
     });
 
@@ -214,7 +214,7 @@ describe("simulateSpeculativeWorkload", () => {
       ...replayConfig(),
       acceptance: {
         kind: "replay",
-        acceptedDraftTokens: [5],
+        acceptedAdditionalTokens: [5],
       },
     })).toThrowError(
       "iteration 0 accepted 5 of 4 drafts",
@@ -227,7 +227,7 @@ describe("simulateSpeculativeWorkload", () => {
       maxAdditionalTokens: 5,
       acceptance: {
         kind: "replay",
-        acceptedDraftTokens: [0],
+        acceptedAdditionalTokens: [0],
       },
     })).toThrowError(
       "target-csa rollback horizon 6 exceeds snapshot bound 5",
