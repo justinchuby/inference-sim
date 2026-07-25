@@ -103,8 +103,9 @@ body {
   font-size: 12px;
 }
 
+/* A floor, not a cap: the workload list wraps onto a second row. */
 .configuration-panel [role="tablist"] {
-  height: 32px;
+  min-height: 32px;
 }
 
 .recharts-surface {

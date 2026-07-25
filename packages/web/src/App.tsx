@@ -149,6 +149,7 @@ import type {
   WorkloadMode,
 } from "./types.js";
 import { finalizeEditedTopology } from "./topology-editor.js";
+import { cn } from "./lib/utils.js";
 
 const BUILTIN_WEIGHT_DTYPES = [
   "fp16",
@@ -2839,31 +2840,48 @@ function ConfigurationPanel({
           <span>Workload</span>
           <ParameterHelp
             label="Workload"
-            description="What this run measures. Serving is a full continuous-batching run and is where speculative decoding and the expert cache are switched on for a realistic workload. The study tabs isolate one mechanism instead: they answer how a proposer or a cache behaves on its own, not what a served deployment does."
+            description="What this run measures. The top row runs whole plans across the topology: continuous serving, a component pipeline, or a node fault. The bottom row isolates one mechanism instead, answering how a proposer or an expert cache behaves on its own rather than what a served deployment does. Speculative decoding and the expert cache are switched on inside Serving for a realistic workload."
           />
         </div>
-        <TabsList className="mb-4 w-full grid-cols-5">
-          <TabsTrigger value="serving" aria-label="Continuous serving">
+        {/* Two rows, split by what the run covers: whole-topology runs on
+            top, single-mechanism studies below. Five cells on one row do not
+            fit the panel, and an arbitrary wrap would hide the distinction. */}
+        <TabsList className="mb-4 h-auto w-full grid-cols-6 gap-1 [&>*]:h-7 [&_[role=tab]]:whitespace-nowrap">
+          <TabsTrigger
+            value="serving"
+            aria-label="Continuous serving"
+            className="col-span-2"
+          >
             Serving
           </TabsTrigger>
           <ModeTab
             value="pipeline"
             label="Pipeline"
+            className="col-span-2"
             available={pipelineAvailable}
             unavailableReason={pipelineUnavailableReason}
           />
+          <TabsTrigger
+            value="fault"
+            aria-label="Node fault study"
+            className="col-span-2"
+          >
+            Faults
+          </TabsTrigger>
           <ModeTab
             value="speculative"
             label="Spec study"
             accessibleLabel="Speculative study"
+            className="col-span-3"
             available={speculativeAvailable}
             unavailableReason={speculativeUnavailableReason}
           />
-          <TabsTrigger value="expert-cache" aria-label="Expert cache study">
+          <TabsTrigger
+            value="expert-cache"
+            aria-label="Expert cache study"
+            className="col-span-3"
+          >
             Cache study
-          </TabsTrigger>
-          <TabsTrigger value="fault" aria-label="Node fault study">
-            Faults
           </TabsTrigger>
         </TabsList>
         <TabsContent value="pipeline" className="space-y-4">
@@ -5441,18 +5459,24 @@ function ModeTab({
   value,
   label,
   accessibleLabel = label,
+  className,
   available,
   unavailableReason,
 }: {
   readonly value: WorkloadMode;
   readonly label: string;
   readonly accessibleLabel?: string;
+  readonly className?: string;
   readonly available: boolean;
   readonly unavailableReason: string;
 }): React.JSX.Element {
   if (available) {
     return (
-      <TabsTrigger value={value} aria-label={accessibleLabel}>
+      <TabsTrigger
+        value={value}
+        aria-label={accessibleLabel}
+        className={className}
+      >
         {label}
       </TabsTrigger>
     );
@@ -5461,7 +5485,10 @@ function ModeTab({
     <Tooltip>
       <TooltipTrigger asChild>
         <span
-          className="grid h-full cursor-help rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600"
+          className={cn(
+            "grid cursor-help rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600",
+            className,
+          )}
           tabIndex={0}
           aria-label={`${accessibleLabel} unavailable`}
         >
