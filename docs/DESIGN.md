@@ -203,6 +203,57 @@ Required campaigns include:
 - notification saturation and requester-as-reclaim-victim; and
 - checked-arithmetic and duplicate-identity failures.
 
+### 7.4 Multi-Model Co-Residency
+
+A personal machine is often asked to serve several models at once: a chat
+model, a small autocomplete model, an embedding model, an image model behind a
+button. This is not the pressure protocol applied twice. The unit of contention
+is a whole model, and the question is which models can be held simultaneously.
+
+A model's residency footprint is its weights plus its preallocated KV arena,
+`weightBytes + kvBytesPerToken * maxKvTokens`, because runtimes reserve the
+arena at load rather than growing it per request. Footprints therefore depend
+on configured context length, and raising context can move a working pair of
+models into thrashing without changing either model.
+
+Two regimes follow, and the interesting output is which one a configuration is
+in:
+
+- **Co-resident.** Every model fits at once. Loads happen once, and the only
+  remaining cost is compute contention.
+- **Swapping.** Models are evicted to make room. Eviction discards the KV
+  arena, so an evicted request's completed prefill is recomputed on reload.
+  Cost appears as reload bandwidth, recomputed prefill, and queueing delay.
+
+`fitsWithoutSwapping` is defined as zero evictions, not as one load per model,
+because a model can be loaded once and never evicted while still having been
+made to wait.
+
+Three scheduling rules are load-bearing and each was established by a trace
+that failed without it:
+
+- **The transfer lane is offered before the compute lane.** Compute and
+  transfer proceed concurrently, so a load can hide behind another model's
+  batch. A model that is mid-batch is not evictable; offering compute first
+  lets whichever model is already resident keep starting batches and hold the
+  device indefinitely.
+- **A model is evicted only after it has retired a request since it was
+  loaded.** Gating on having run a batch is insufficient, because a batch may
+  be pure prefill that the eviction then discards, which livelocks. Gating on a
+  retired request bounds total residencies by total requests.
+- **Pending tenants are ordered least-recently-used.** Ordering by arrival
+  starves the second model completely once the first has a queue.
+
+Admission fails closed: every footprint must fit the device alone, and pinned
+bytes plus the largest unpinned footprint must fit, so a configuration that can
+never make some model resident is rejected rather than simulated.
+
+The trace carries per-request prefill and decode slices rather than batch
+totals, because a replay checker cannot reconstruct discarded KV state from
+totals alone. `CoResidency.tla` in the onnx-genai specs checks capacity,
+progress, pinning, and the retire-before-evict rule, with a negative model that
+drops the guard and must violate it.
+
 ## 8. Distributed Execution
 
 ### 8.1 Frozen Plan
