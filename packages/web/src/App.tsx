@@ -21,6 +21,7 @@ import {
   CheckCircle2,
   CircleHelp,
   Clock3,
+  ChevronDown,
   Cpu,
   Database,
   Download,
@@ -218,6 +219,12 @@ const SPECULATIVE_FAMILIES: ReadonlyArray<{
   { value: "eagle3", label: "EAGLE-3" },
   { value: "shared_kv", label: "Shared KV" },
   { value: "self_speculative", label: "Self speculative (design)" },
+];
+
+const ADVANCED_WORKLOAD_MODES: readonly WorkloadMode[] = [
+  "fault",
+  "speculative",
+  "expert-cache",
 ];
 
 const DEFAULT_CONFIG: DashboardRunConfig = {
@@ -2263,6 +2270,11 @@ function ConfigurationPanel({
       ? undefined
       : estimateContextCapacity(config, selectedScenario)
   ), [config, selectedScenario]);
+  const modeIsAdvanced = ADVANCED_WORKLOAD_MODES.includes(config.mode);
+  const [advancedModesOpen, setAdvancedModesOpen] = useState(modeIsAdvanced);
+  // An advanced mode always shows its own tab, otherwise selecting one through
+  // an imported artifact would leave the strip with no selected tab at all.
+  const showAdvancedModes = advancedModesOpen || modeIsAdvanced;
   const setMode = (mode: WorkloadMode) => {
     const selectedFamily = speculativeOptions.find(
       (family) => family.value === config.speculative.family,
@@ -2967,57 +2979,90 @@ function ConfigurationPanel({
           <span>Workload</span>
           <ParameterHelp
             label="Workload"
-            description="What this run measures. The top row runs whole plans across the topology: continuous serving, a component pipeline, or a node fault. The bottom row isolates one mechanism instead, answering how a proposer or an expert cache behaves on its own rather than what a served deployment does. Speculative decoding and the expert cache are switched on inside Serving for a realistic workload."
+            description="What this run measures. The everyday runs serve a deployment: one model continuously, several models sharing a device, or a component pipeline. The advanced runs answer a narrower question and are not what a deployment does, so they stay folded away: injecting a node fault, or isolating a proposer or an expert cache. Speculative decoding and the expert cache are switched on inside Serving for a realistic workload."
           />
         </div>
-        {/* Two rows, split by what the run covers: whole-topology runs on
-            top, single-mechanism studies below. Five cells on one row do not
-            fit the panel, and an arbitrary wrap would hide the distinction. */}
-        <TabsList className="mb-4 h-auto w-full grid-cols-8 gap-1 [&>*]:h-7 [&_[role=tab]]:whitespace-nowrap">
+        {/* Deployment runs stay visible; fault injection and single-mechanism
+            studies are folded away, because offering them beside Serving reads
+            as an everyday choice. The advanced cells stay inside this one
+            TabsList so the strip remains a single tablist for keyboard
+            navigation, and the section opens itself whenever the current mode
+            lives in it, so an imported artifact never selects a hidden tab. */}
+        <TabsList className="mb-2 h-auto w-full grid-cols-6 gap-1 [&>*]:h-7 [&_[role=tab]]:whitespace-nowrap">
           <TabsTrigger
             value="serving"
             aria-label="Continuous serving"
-            className="col-span-2"
+            className="col-span-3"
           >
             Serving
           </TabsTrigger>
           <TabsTrigger
             value="co-residency"
             aria-label="Co-residency"
-            className="col-span-4"
+            className="col-span-3"
           >
             Several models
           </TabsTrigger>
           <ModeTab
             value="pipeline"
             label="Pipeline"
-            className="col-span-3"
+            className="col-span-6"
             available={pipelineAvailable}
             unavailableReason={pipelineUnavailableReason}
           />
-          <TabsTrigger
-            value="fault"
-            aria-label="Node fault study"
-            className="col-span-3"
-          >
-            Faults
-          </TabsTrigger>
-          <ModeTab
-            value="speculative"
-            label="Spec study"
-            accessibleLabel="Speculative study"
-            className="col-span-4"
-            available={speculativeAvailable}
-            unavailableReason={speculativeUnavailableReason}
-          />
-          <TabsTrigger
-            value="expert-cache"
-            aria-label="Expert cache study"
-            className="col-span-4"
-          >
-            Cache study
-          </TabsTrigger>
+          {showAdvancedModes
+            ? (
+                <>
+                  <TabsTrigger
+                    value="fault"
+                    aria-label="Node fault study"
+                    className="col-span-3"
+                  >
+                    Faults
+                  </TabsTrigger>
+                  <ModeTab
+                    value="speculative"
+                    label="Spec study"
+                    accessibleLabel="Speculative study"
+                    className="col-span-3"
+                    available={speculativeAvailable}
+                    unavailableReason={speculativeUnavailableReason}
+                  />
+                  <TabsTrigger
+                    value="expert-cache"
+                    aria-label="Expert cache study"
+                    className="col-span-6"
+                  >
+                    Cache study
+                  </TabsTrigger>
+                </>
+              )
+            : null}
         </TabsList>
+        <button
+          type="button"
+          className="mb-4 flex w-full items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 disabled:cursor-not-allowed disabled:opacity-60"
+          aria-expanded={showAdvancedModes}
+          disabled={modeIsAdvanced}
+          title={modeIsAdvanced
+            ? "An advanced workload is selected."
+            : undefined}
+          onClick={() => setAdvancedModesOpen(!advancedModesOpen)}
+        >
+          <ChevronDown
+            className={cn(
+              "size-3.5 transition-transform",
+              // The control sits below the cells it reveals, so open points
+              // back up at them rather than down at nothing.
+              showAdvancedModes ? "rotate-180" : "-rotate-90",
+            )}
+          />
+          {modeIsAdvanced
+            ? "Advanced scenario selected"
+            : showAdvancedModes
+              ? "Hide advanced scenarios"
+              : "Advanced scenarios"}
+        </button>
         <TabsContent value="pipeline" className="space-y-4">
           <SliderField
             label="Invocations"
