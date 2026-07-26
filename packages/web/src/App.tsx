@@ -2307,19 +2307,46 @@ function ConfigurationPanel({
 
         <div className="mb-4 border-y border-zinc-200 py-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-zinc-700">
-              Model
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+              {config.mode === "co-residency" ? "Models" : "Model"}
+              {config.mode === "co-residency"
+                ? (
+                    <ParameterHelp
+                      label="Co-residency"
+                      description="Serving more than one model from one device is bound by residency rather than compute. Each model holds its weights plus a preallocated KV arena for as long as it is resident. If the working set fits, everything stays loaded and the models only delay each other's batches. If it does not, the device evicts and reloads, and an eviction discards the KV arena so partial work is prefilled again."
+                    />
+                  )
+                : null}
             </span>
-            <Badge variant={config.modelBinding ? "success" : "danger"}>
-              {modelPackage.importing
-                ? "analyzing"
-                : config.modelBinding?.source === "local_model_package"
-                  ? "local ONNX"
-                  : config.modelBinding
-                    ? "built-in"
-                    : "synthetic"}
+            <Badge
+              variant={config.mode === "co-residency"
+                ? "neutral"
+                : config.modelBinding
+                  ? "success"
+                  : "danger"}
+            >
+              {config.mode === "co-residency"
+                ? `${config.coResidency.models.length} loaded together`
+                : modelPackage.importing
+                  ? "analyzing"
+                  : config.modelBinding?.source === "local_model_package"
+                    ? "local ONNX"
+                    : config.modelBinding
+                      ? "built-in"
+                      : "synthetic"}
             </Badge>
           </div>
+          {config.mode === "co-residency"
+            ? (
+                <CoResidencyRoster
+                  config={config}
+                  scenario={selectedScenario}
+                  disabled={disabled}
+                  onChange={onChange}
+                />
+              )
+            : (
+              <>
           <input
             ref={modelFilesInput}
             type="file"
@@ -2595,6 +2622,8 @@ function ConfigurationPanel({
                 </div>
               )
             : null}
+              </>
+            )}
         </div>
 
         {config.mode === "serving" && config.serving.compareTopologies
@@ -3514,159 +3543,16 @@ function ConfigurationPanel({
         </TabsContent>
         <TabsContent value="co-residency" className="space-y-4">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
-            <span>Models on this device</span>
+            <span>Traffic to each model</span>
             <ParameterHelp
               label="Co-residency"
               description="Serving more than one model from one device is bound by residency rather than compute. Each model holds its weights plus a preallocated KV arena for as long as it is resident. If the working set fits, everything stays loaded and the models only delay each other's batches. If it does not, the device evicts and reloads, and an eviction discards the KV arena so partial work is prefilled again."
             />
           </div>
-          {config.coResidency.models.map((model, index) => (
-            <div
-              key={`${model.preset}-${index}`}
-              className="rounded border border-zinc-200 p-2"
-            >
-              <div className="mb-1.5 flex items-center gap-1.5">
-                <Select
-                  value={model.preset}
-                  disabled={disabled}
-                  onValueChange={(preset) => onChange(withCoResidencyModel(
-                    config,
-                    index,
-                    { preset },
-                  ))}
-                >
-                  <SelectTrigger
-                    aria-label={`Model ${index + 1}`}
-                    className="h-8 min-w-0 flex-1 text-xs [&>span]:truncate"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DASHBOARD_MODEL_PRESETS.map((preset) => (
-                      <SelectItem key={preset} value={preset}>
-                        {createBuiltinModelBinding(preset).displayName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={model.weightDtype}
-                  disabled={disabled}
-                  onValueChange={(weightDtype) => onChange(withCoResidencyModel(
-                    config,
-                    index,
-                    { weightDtype: weightDtype as QuantType },
-                  ))}
-                >
-                  <SelectTrigger
-                    aria-label={`Model ${index + 1} weight format`}
-                    className="h-8 w-20 shrink-0 text-xs"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {BUILTIN_WEIGHT_DTYPES.map((dtype) => (
-                      <SelectItem key={dtype} value={dtype}>
-                        {formatDtype(dtype)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {config.coResidency.models.length > 1
-                  ? (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="icon-sm"
-                        className="shrink-0"
-                        aria-label={`Remove model ${index + 1}`}
-                        disabled={disabled}
-                        onClick={() => onChange({
-                          ...config,
-                          coResidency: {
-                            ...config.coResidency,
-                            models: config.coResidency.models.filter(
-                              (_, candidate) => candidate !== index,
-                            ),
-                          },
-                        })}
-                      >
-                        <X className="size-4" />
-                      </Button>
-                    )
-                  : null}
-              </div>
-              <SliderField
-                label="Context"
-                description="KV arena this model reserves while resident. It is held whether or not a request is using all of it, so it counts against the device for the whole residency."
-                value={model.contextTokens}
-                minimum={1_024}
-                maximum={131_072}
-                step={1_024}
-                disabled={disabled}
-                suffix=" tok"
-                onChange={(contextTokens) => onChange(withCoResidencyModel(
-                  config,
-                  index,
-                  { contextTokens },
-                ))}
-              />
-              <div className="mt-1.5 flex items-center justify-between gap-3">
-                <label
-                  className="flex items-center gap-1 text-[11px] font-medium text-zinc-600"
-                  htmlFor={`co-residency-pinned-${index}`}
-                >
-                  Keep loaded
-                  <ParameterHelp
-                    label="Keep loaded"
-                    description="A pinned model is never evicted, so it never pays a reload. Pinning more than the device can hold is rejected, as is pinning so much that another model could never be made resident."
-                  />
-                </label>
-                <Switch
-                  id={`co-residency-pinned-${index}`}
-                  checked={model.pinned}
-                  disabled={disabled}
-                  onCheckedChange={(pinned) => onChange(withCoResidencyModel(
-                    config,
-                    index,
-                    { pinned },
-                  ))}
-                />
-              </div>
-              <div className="mt-1 text-[11px] text-zinc-500">
-                {formatBytes(coResidencyFootprintBytes(model))} resident
-              </div>
-            </div>
-          ))}
-          {config.coResidency.models.length < 4
-            ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="w-full"
-                  disabled={disabled}
-                  onClick={() => onChange({
-                    ...config,
-                    coResidency: {
-                      ...config.coResidency,
-                      models: [
-                        ...config.coResidency.models,
-                        {
-                          preset: "qwen3-0.6b",
-                          weightDtype: "fp16" as QuantType,
-                          contextTokens: 4_096,
-                          pinned: false,
-                          requestCount: 2,
-                        },
-                      ],
-                    },
-                  })}
-                >
-                  Add a model
-                </Button>
-              )
-            : null}
+          <p className="text-[11px] leading-4 text-zinc-500">
+            Every model receives this same stream. Choose which models share
+            the device in the Models section above.
+          </p>
           <SliderField
             label="Request gap"
             description="Time between one model's requests. Streams are offset from each other, so a shorter gap makes the models contend for the device more often."
@@ -3705,12 +3591,6 @@ function ConfigurationPanel({
               coResidency: { ...config.coResidency, outputTokens },
             })}
           />
-          <div className="border-t border-zinc-200 pt-3 text-[11px] text-zinc-600">
-            {formatBytes(coResidencyWorkingSetBytes(config))} working set
-            {selectedScenario === undefined
-              ? null
-              : ` of ${formatBytes(coResidencyDeviceBytes(selectedScenario))} allocatable`}
-          </div>
         </TabsContent>
         <TabsContent value="fault" className="space-y-4">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
@@ -4446,21 +4326,38 @@ function Results({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
         <div className="min-w-0">
           <h1 className="truncate text-base font-bold">
-            {result.model?.name ?? "Synthetic expert-cache workload"}
+            {result.mode === "co-residency"
+              ? result.coResidency!.metrics.tenants
+                  .map((tenant) => tenant.displayName)
+                  .join(" + ")
+              : result.model?.name ?? "Synthetic expert-cache workload"}
           </h1>
           <div className="mt-1 text-xs text-zinc-500">
-            {result.model
+            {result.mode === "co-residency"
               ? (
                   <>
-                    {formatLargeCount(result.model.totalParameters)} params ·{" "}
-                    {formatBytes(result.model.weightBytes)} weights ·{" "}
-                    {result.scenario.id}
+                    {result.coResidency!.metrics.tenants.length} models sharing
+                    one device ·{" "}
+                    {formatBytes(
+                      result.coResidency!.metrics.tenants.reduce(
+                        (sum, tenant) => sum + tenant.residencyFootprintBytes,
+                        0,
+                      ),
+                    )} working set · {result.scenario.id}
                   </>
                 )
-              : `${result.scenario.id} · no model timing bound`}
+              : result.model
+                ? (
+                    <>
+                      {formatLargeCount(result.model.totalParameters)} params ·{" "}
+                      {formatBytes(result.model.weightBytes)} weights ·{" "}
+                      {result.scenario.id}
+                    </>
+                  )
+                : `${result.scenario.id} · no model timing bound`}
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-400">
-            {result.model?.modelFormat
+            {result.mode !== "co-residency" && result.model?.modelFormat
               ? (
                   <>
                     {formatModelFormat(result.model.modelFormat)}
@@ -5763,6 +5660,179 @@ function ParameterHelp({
         {description}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function CoResidencyRoster({
+  config,
+  scenario,
+  disabled,
+  onChange,
+}: {
+  readonly config: DashboardRunConfig;
+  readonly scenario: SimulationScenario | undefined;
+  readonly disabled: boolean;
+  readonly onChange: (config: DashboardRunConfig) => void;
+}) {
+  return (
+    <div className="space-y-2">
+          {config.coResidency.models.map((model, index) => (
+            <div
+              key={`${model.preset}-${index}`}
+              className="rounded border border-zinc-200 p-2"
+            >
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <Select
+                  value={model.preset}
+                  disabled={disabled}
+                  onValueChange={(preset) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { preset },
+                  ))}
+                >
+                  <SelectTrigger
+                    aria-label={`Model ${index + 1}`}
+                    className="h-8 min-w-0 flex-1 text-xs [&>span]:truncate"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DASHBOARD_MODEL_PRESETS.map((preset) => (
+                      <SelectItem key={preset} value={preset}>
+                        {createBuiltinModelBinding(preset).displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {config.coResidency.models.length > 1
+                  ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon-sm"
+                        className="shrink-0"
+                        aria-label={`Remove model ${index + 1}`}
+                        disabled={disabled}
+                        onClick={() => onChange({
+                          ...config,
+                          coResidency: {
+                            ...config.coResidency,
+                            models: config.coResidency.models.filter(
+                              (_, candidate) => candidate !== index,
+                            ),
+                          },
+                        })}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    )
+                  : null}
+              </div>
+              <label className="mb-1.5 flex items-center justify-between gap-3 text-[11px] text-zinc-600">
+                <span className="shrink-0 font-medium">Weight format</span>
+                <Select
+                  value={model.weightDtype}
+                  disabled={disabled}
+                  onValueChange={(weightDtype) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { weightDtype: weightDtype as QuantType },
+                  ))}
+                >
+                  <SelectTrigger
+                    aria-label={`Model ${index + 1} weight format`}
+                    className="h-8 w-24 shrink-0 text-xs"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BUILTIN_WEIGHT_DTYPES.map((dtype) => (
+                      <SelectItem key={dtype} value={dtype}>
+                        {formatDtype(dtype)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <SliderField
+                label="Context"
+                description="KV arena this model reserves while resident. It is held whether or not a request is using all of it, so it counts against the device for the whole residency."
+                value={model.contextTokens}
+                minimum={1_024}
+                maximum={131_072}
+                step={1_024}
+                disabled={disabled}
+                suffix=" tok"
+                onChange={(contextTokens) => onChange(withCoResidencyModel(
+                  config,
+                  index,
+                  { contextTokens },
+                ))}
+              />
+              <div className="mt-1.5 flex items-center justify-between gap-3">
+                <label
+                  className="flex items-center gap-1 text-[11px] font-medium text-zinc-600"
+                  htmlFor={`co-residency-pinned-${index}`}
+                >
+                  Keep loaded
+                  <ParameterHelp
+                    label="Keep loaded"
+                    description="A pinned model is never evicted, so it never pays a reload. Pinning more than the device can hold is rejected, as is pinning so much that another model could never be made resident."
+                  />
+                </label>
+                <Switch
+                  id={`co-residency-pinned-${index}`}
+                  checked={model.pinned}
+                  disabled={disabled}
+                  onCheckedChange={(pinned) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { pinned },
+                  ))}
+                />
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                {formatBytes(coResidencyFootprintBytes(model))} resident
+              </div>
+            </div>
+          ))}
+          {config.coResidency.models.length < 4
+            ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  disabled={disabled}
+                  onClick={() => onChange({
+                    ...config,
+                    coResidency: {
+                      ...config.coResidency,
+                      models: [
+                        ...config.coResidency.models,
+                        {
+                          preset: "qwen3-0.6b",
+                          weightDtype: "fp16" as QuantType,
+                          contextTokens: 4_096,
+                          pinned: false,
+                          requestCount: 2,
+                        },
+                      ],
+                    },
+                  })}
+                >
+                  Add a model
+                </Button>
+              )
+            : null}
+      <div className="text-[11px] text-zinc-600">
+        {formatBytes(coResidencyWorkingSetBytes(config))} working set
+        {scenario === undefined
+          ? null
+          : ` of ${formatBytes(coResidencyDeviceBytes(scenario))} allocatable`}
+      </div>
+    </div>
   );
 }
 

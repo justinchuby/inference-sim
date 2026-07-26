@@ -1198,4 +1198,27 @@ describe("simulateDashboard", () => {
       },
     })).toThrow("outside calibrated range 1..128");
   });
+  it("reports the co-residency roster rather than the single-model binding", () => {
+    // The sidebar shows one model selector in every other mode, so a
+    // co-residency run must not silently inherit or be steered by it.
+    const withLlama = simulateDashboard({
+      ...base,
+      scenarioName: "rtx-4090-desktop",
+      mode: "co-residency",
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "fp16"),
+    });
+    const withoutBinding = simulateDashboard({
+      ...base,
+      scenarioName: "rtx-4090-desktop",
+      mode: "co-residency",
+      modelBinding: undefined,
+    });
+
+    expect(withLlama.coResidency?.metrics.tenants.map(
+      (tenant) => tenant.displayName,
+    )).toStrictEqual(["Qwen3-0.6B", "Qwen3-8B"]);
+    expect(withLlama.coResidency?.metrics).toStrictEqual(
+      withoutBinding.coResidency?.metrics,
+    );
+  });
 });
