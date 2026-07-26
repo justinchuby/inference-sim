@@ -24,11 +24,13 @@ does not claim hardware-accurate latency without calibration data.
   text-only or media per run: a multimodal checkpoint served without images
   keeps its encoders resident but idle, while selecting media runs them and
   charges each item's decoder tokens to the prompt.
-- Three of the presets generate images rather than tokens. An MMDiT denoiser is
-  not autoregressive, so it caches no KV and runs once per denoising step,
-  twice under classifier-free guidance, between the text towers that condition
-  it and the latent decoder that ends the run. UNet-era models are not modeled;
-  their geometry does not reduce to a layer stack.
+- Five of the presets generate images rather than tokens, covering both
+  denoiser families. A denoiser is not autoregressive: it caches no KV and runs
+  once per denoising step, twice under classifier-free guidance, between the
+  text towers that condition it and the latent decoder that ends the run.
+  MMDiT stacks are uniform, while a UNet changes width and attention depth per
+  resolution stage, so each stage is described and reported separately rather
+  than averaged into one hidden size.
 - Import local ONNX model packages directly in the browser, including external
   tensor data and onnx-genai inference metadata for multi-model pipelines.
 - Inspect model size, parameter count, weight/activation dtype, quantization

@@ -18,6 +18,8 @@ import type {
 
 /** Built-in presets offered by the workbench, ordered by parameter count. */
 export const DASHBOARD_MODEL_PRESETS = [
+  "stable-diffusion-1.5",
+  "stable-diffusion-xl",
   "stable-diffusion-3.5-large",
   "flux-1-schnell",
   "flux-1-dev",

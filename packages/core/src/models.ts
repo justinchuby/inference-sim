@@ -180,7 +180,20 @@ export interface ProjectorSpec {
   readonly outputDim: number;
 }
 
-export type EncoderSpec = VisionEncoderSpec | AudioEncoderSpec;
+/** Convolutional latent decoder, as used by a diffusion VAE. */
+export interface LatentDecoderSpec {
+  readonly kind: "conv_decoder";
+  readonly latentChannels: number;
+  readonly outputChannels: number;
+  /** Channel width per resolution level, finest first. */
+  readonly blockOutChannels: readonly number[];
+  readonly layersPerBlock: number;
+}
+
+export type EncoderSpec =
+  | VisionEncoderSpec
+  | AudioEncoderSpec
+  | LatentDecoderSpec;
 
 function encoderLayerParams(
   hiddenDim: number,
@@ -209,6 +222,24 @@ function encoderParams(spec: EncoderSpec): number {
         spec.intermediateSize,
         spec.gatedMlp,
       );
+    }
+    case "conv_decoder": {
+      const widths = [...spec.blockOutChannels].reverse();
+      const widest = widths[0]!;
+      let total = 9 * spec.latentChannels * widest;
+      // Middle block: two residual blocks around one self-attention.
+      total += 2 * residualBlockParams(widest, widest, 0) + 4 * widest * widest;
+      let previous = widest;
+      for (const [index, width] of widths.entries()) {
+        for (let block = 0; block <= spec.layersPerBlock; block++) {
+          total += residualBlockParams(previous, width, 0);
+          previous = width;
+        }
+        if (index < widths.length - 1) {
+          total += 9 * width * width; // upsample convolution
+        }
+      }
+      return total + 9 * widths.at(-1)! * spec.outputChannels;
     }
     case "conv_transformer": {
       // Two strided convolutions map mel frames to the model width.
@@ -269,23 +300,207 @@ function mmditBlockAttentionParams(
   return block.stream === "dual" ? 8 * square : 4 * square;
 }
 
-interface DiffusionSpec {
-  readonly dualBlocks: number;
-  readonly singleBlocks: number;
-  readonly mlpRatio: number;
-  readonly dualModulationChunks: number;
-  readonly singleModulationChunks: number;
+interface DiffusionCommonSpec {
   /** VAE spatial downsample factor. */
   readonly vaeFactor: number;
-  /** Denoiser patch size over the latent. */
-  readonly patchSize: number;
   readonly defaultResolutionPx: number;
   readonly denoisingSteps: number;
   /** Classifier-free guidance doubles the denoiser batch. */
   readonly classifierFreeGuidance: boolean;
 }
 
-function diffusionBlockAt(spec: DiffusionSpec, layer: number): MmditBlockSpec {
+/** Uniform transformer denoiser over a patchified latent. */
+interface MmditDenoiserSpec extends DiffusionCommonSpec {
+  readonly kind: "mmdit";
+  readonly dualBlocks: number;
+  readonly singleBlocks: number;
+  readonly mlpRatio: number;
+  readonly dualModulationChunks: number;
+  readonly singleModulationChunks: number;
+  /** Denoiser patch size over the latent. */
+  readonly patchSize: number;
+}
+
+/**
+ * Convolutional encoder/decoder denoiser. Unlike a transformer stack its width
+ * and attention depth change per resolution stage, so each stage is described
+ * separately and becomes its own layer entry.
+ */
+interface UnetDenoiserSpec extends DiffusionCommonSpec {
+  readonly kind: "unet";
+  /** Channel width at each resolution stage, finest first. */
+  readonly blockOutChannels: readonly number[];
+  /** Transformer depth inside each stage's attention block. */
+  readonly transformerLayersPerBlock: readonly number[];
+  readonly crossAttentionDim: number;
+  /** Residual blocks per stage on the down path; the up path adds one. */
+  readonly resnetLayersPerBlock: number;
+  /** Whether each down-path stage carries a spatial transformer. */
+  readonly downBlockAttention: readonly boolean[];
+  /** Same for the up path, ordered coarsest first as the model runs it. */
+  readonly upBlockAttention: readonly boolean[];
+  readonly latentChannels: number;
+  readonly timeEmbedDim: number;
+  /** Extra conditioning projected into the time embedding, if any. */
+  readonly additionalEmbedDim?: number;
+}
+
+type DiffusionSpec = MmditDenoiserSpec | UnetDenoiserSpec;
+
+/** One resolution stage of a UNet, flattened into a layer entry. */
+interface UnetStage {
+  readonly label: string;
+  readonly width: number;
+  readonly attentionParams: number;
+  readonly residualParams: number;
+}
+
+function residualBlockParams(
+  inChannels: number,
+  outChannels: number,
+  timeEmbedDim: number,
+): number {
+  // Two 3x3 convolutions, the time-embedding projection, and a 1x1 shortcut
+  // whenever the block changes width.
+  return 9 * inChannels * outChannels
+    + 9 * outChannels * outChannels
+    + timeEmbedDim * outChannels
+    + (inChannels === outChannels ? 0 : inChannels * outChannels);
+}
+
+/** Attention weights of a spatial transformer: self-attention plus cross. */
+function spatialTransformerAttentionParams(
+  width: number,
+  crossAttentionDim: number,
+  depth: number,
+): number {
+  const square = width * width;
+  const selfAttention = 4 * square;
+  const crossAttention = 2 * square + 2 * width * crossAttentionDim;
+  return depth * (selfAttention + crossAttention);
+}
+
+/** Everything else in a spatial transformer: the gated FFN and 1x1 projections. */
+function spatialTransformerResidualParams(width: number, depth: number): number {
+  const square = width * width;
+  // GEGLU expands to 4x through a doubled gate projection, then projects back.
+  return 2 * square + depth * 12 * square;
+}
+
+/**
+ * Flattens a UNet into ordered stages: down path, middle, then up path. Each
+ * stage keeps its own width, which is exactly what a uniform layer stack
+ * cannot express.
+ */
+function unetStages(spec: UnetDenoiserSpec): UnetStage[] {
+  const {
+    blockOutChannels: widths,
+    transformerLayersPerBlock: depths,
+    crossAttentionDim,
+    resnetLayersPerBlock,
+    downBlockAttention,
+    upBlockAttention,
+    timeEmbedDim,
+  } = spec;
+  const stages: UnetStage[] = [];
+  const last = widths.length - 1;
+
+  let previous = widths[0]!;
+  for (const [index, width] of widths.entries()) {
+    let attention = 0;
+    let residual = 0;
+    for (let block = 0; block < resnetLayersPerBlock; block++) {
+      residual += residualBlockParams(
+        block === 0 ? previous : width,
+        width,
+        timeEmbedDim,
+      );
+      if (downBlockAttention[index]) {
+        attention += spatialTransformerAttentionParams(
+          width,
+          crossAttentionDim,
+          depths[index]!,
+        );
+        residual += spatialTransformerResidualParams(width, depths[index]!);
+      }
+    }
+    previous = width;
+    if (index < last) {
+      residual += 9 * width * width; // strided downsample
+    }
+    stages.push({
+      label: `down-${index}`,
+      width,
+      attentionParams: attention,
+      residualParams: residual,
+    });
+  }
+
+  const bottom = widths[last]!;
+  stages.push({
+    label: "mid",
+    width: bottom,
+    attentionParams: spatialTransformerAttentionParams(
+      bottom,
+      crossAttentionDim,
+      depths[last]!,
+    ),
+    residualParams: 2 * residualBlockParams(bottom, bottom, timeEmbedDim)
+      + spatialTransformerResidualParams(bottom, depths[last]!),
+  });
+
+  const upWidths = [...widths].reverse();
+  const upDepths = [...depths].reverse();
+  for (const [index, width] of upWidths.entries()) {
+    let attention = 0;
+    let residual = 0;
+    // The up path takes one extra block to consume the skip connection, and
+    // every block concatenates a skip of the same width.
+    const coarser = upWidths[Math.min(index + 1, upWidths.length - 1)]!;
+    for (let block = 0; block <= resnetLayersPerBlock; block++) {
+      const skipWidth = block < resnetLayersPerBlock ? width : coarser;
+      residual += residualBlockParams(width + skipWidth, width, timeEmbedDim);
+      if (upBlockAttention[index]) {
+        attention += spatialTransformerAttentionParams(
+          width,
+          crossAttentionDim,
+          upDepths[index]!,
+        );
+        residual += spatialTransformerResidualParams(width, upDepths[index]!);
+      }
+    }
+    if (index < upWidths.length - 1) {
+      residual += 9 * width * width; // upsample convolution
+    }
+    stages.push({
+      label: `up-${index}`,
+      width,
+      attentionParams: attention,
+      residualParams: residual,
+    });
+  }
+  return stages;
+}
+
+/** Stem weights that sit outside the resolution stages. */
+function unetStemParams(spec: UnetDenoiserSpec): number {
+  const first = spec.blockOutChannels[0]!;
+  const timeEmbedding = first * spec.timeEmbedDim
+    + spec.timeEmbedDim * spec.timeEmbedDim;
+  const additional = spec.additionalEmbedDim === undefined
+    ? 0
+    : spec.additionalEmbedDim * spec.timeEmbedDim
+      + spec.timeEmbedDim * spec.timeEmbedDim;
+  return 9 * spec.latentChannels * first
+    + 9 * first * spec.latentChannels
+    + timeEmbedding
+    + additional;
+}
+
+function diffusionBlockAt(
+  spec: MmditDenoiserSpec,
+  layer: number,
+): MmditBlockSpec {
   return layer < spec.dualBlocks
     ? {
         stream: "dual",
@@ -299,10 +514,26 @@ function diffusionBlockAt(spec: DiffusionSpec, layer: number): MmditBlockSpec {
       };
 }
 
-/** Latent tokens the denoiser attends over at the default resolution. */
+/** Latent positions the denoiser attends over at the default resolution. */
 export function diffusionLatentTokens(spec: DiffusionSpec): number {
-  const side = spec.defaultResolutionPx / spec.vaeFactor / spec.patchSize;
+  const latentSide = spec.defaultResolutionPx / spec.vaeFactor;
+  if (spec.kind === "mmdit") {
+    const side = latentSide / spec.patchSize;
+    return Math.round(side * side);
+  }
+  // A UNet attends at several resolutions. Report the finest one that carries
+  // attention, which is the largest and dominates the cost.
+  const firstAttentionStage = spec.downBlockAttention.indexOf(true);
+  const stride = 2 ** (firstAttentionStage < 0 ? 0 : firstAttentionStage);
+  const side = latentSide / stride;
   return Math.round(side * side);
+}
+
+/** Layer entries a spec produces; a UNet derives them from its stages. */
+export function specLayerCount(spec: ModelSpec): number {
+  return spec.diffusion?.kind === "unet"
+    ? unetStages(spec.diffusion).length
+    : spec.numLayers ?? 0;
 }
 
 // ============================================================
@@ -324,7 +555,8 @@ export interface ModelSpec {
   readonly name: string;
   /** Published parameter count, used only to validate the derived geometry. */
   readonly publishedTotalParams: number;
-  readonly numLayers: number;
+  /** Omitted by stacks that derive their layer count, such as a UNet. */
+  readonly numLayers?: number;
   readonly hiddenDim: number;
   readonly vocabSize: number;
   readonly tiedEmbeddings: boolean;
@@ -359,6 +591,8 @@ interface MultimodalComponentSpec {
   readonly phase: ModelComponentPhase;
   readonly encoder?: EncoderSpec;
   readonly projector?: ProjectorSpec;
+  /** Token embedding table of a text tower, as vocabulary times width. */
+  readonly tokenEmbedding?: { readonly vocabSize: number; readonly width: number };
   /** Decoder tokens one media item expands into after any token merging. */
   readonly tokensPerItem?: number;
 }
@@ -369,7 +603,10 @@ interface MultimodalSpec {
 
 function componentParams(spec: MultimodalComponentSpec): number {
   return (spec.encoder === undefined ? 0 : encoderParams(spec.encoder))
-    + (spec.projector === undefined ? 0 : projectorParams(spec.projector));
+    + (spec.projector === undefined ? 0 : projectorParams(spec.projector))
+    + (spec.tokenEmbedding === undefined
+      ? 0
+      : spec.tokenEmbedding.vocabSize * spec.tokenEmbedding.width);
 }
 
 function attentionAt(spec: ModelSpec, layer: number): AttentionGeometry {
@@ -395,6 +632,9 @@ function crossAttentionAt(
 
 /** Self-attention plus any cross-attention carried by the same layer. */
 function layerAttentionParams(spec: ModelSpec, layer: number): number {
+  if (spec.diffusion?.kind === "unet") {
+    return unetStages(spec.diffusion)[layer]!.attentionParams;
+  }
   if (spec.diffusion !== undefined) {
     return mmditBlockAttentionParams(
       spec.hiddenDim,
@@ -407,6 +647,12 @@ function layerAttentionParams(spec: ModelSpec, layer: number): number {
 }
 
 function layerFfnParams(spec: ModelSpec, layer: number): number {
+  if (spec.diffusion?.kind === "unet") {
+    const stages = unetStages(spec.diffusion);
+    // The stem is not a stage, so it rides along with the first one.
+    return stages[layer]!.residualParams
+      + (layer === 0 ? unetStemParams(spec.diffusion) : 0);
+  }
   if (spec.diffusion !== undefined) {
     const block = diffusionBlockAt(spec.diffusion, layer);
     return mmditBlockParams(spec.hiddenDim, block)
@@ -421,7 +667,7 @@ function layerFfnParams(spec: ModelSpec, layer: number): number {
 
 /** Attention geometry of the first full-attention layer, for reporting. */
 function representativeAttention(spec: ModelSpec): AttentionGeometry {
-  for (let layer = 0; layer < spec.numLayers; layer++) {
+  for (let layer = 0; layer < specLayerCount(spec); layer++) {
     const attention = attentionAt(spec, layer);
     if (attention.kind !== "linear") {
       return attention;
@@ -466,7 +712,7 @@ function embeddingParams(spec: ModelSpec): number {
  */
 export function derivedTotalParams(spec: ModelSpec): number {
   let total = embeddingParams(spec);
-  for (let layer = 0; layer < spec.numLayers; layer++) {
+  for (let layer = 0; layer < specLayerCount(spec); layer++) {
     total += layerAttentionParams(spec, layer);
     total += layerFfnParams(spec, layer);
   }
@@ -536,7 +782,7 @@ function buildProfile(
   const bpp = bytesPerParam(weightQuant);
   const kvBpp = bytesPerParam(kvQuant);
   const layers: LayerProfile[] = [];
-  for (let index = 0; index < spec.numLayers; index++) {
+  for (let index = 0; index < specLayerCount(spec); index++) {
     const attention = attentionAt(spec, index);
     layers.push({
       index,
@@ -558,13 +804,13 @@ function buildProfile(
       kind: spec.diffusion !== undefined
         ? "diffusion"
         : spec.moe === undefined ? "dense" : "moe",
-      numLayers: spec.numLayers,
+      numLayers: specLayerCount(spec),
       hiddenDim: spec.hiddenDim,
       numHeads,
       numKVHeads,
       vocabSize: spec.vocabSize,
       intermediateSize: spec.moe === undefined
-        ? intermediateAt(spec, spec.numLayers - 1)
+        ? intermediateAt(spec, specLayerCount(spec) - 1)
         : spec.moe.expertIntermediateSize,
     },
     totalParams,
@@ -589,7 +835,7 @@ function buildProfile(
   // MoE consumers apply expert bytes uniformly across every layer. Scale the
   // per-layer figure by the routed-layer fraction so the aggregate stays exact
   // for stacks whose first layers are dense.
-  const moeLayerFraction = spec.moe.moeLayers / spec.numLayers;
+  const moeLayerFraction = spec.moe.moeLayers / specLayerCount(spec);
   return {
     ...profile,
     moe: {
@@ -698,6 +944,7 @@ const CLIP_L_ENCODER: MultimodalComponentSpec = {
     temporalPatchSize: 0,
     inChannels: 0,
   },
+  tokenEmbedding: { vocabSize: 49408, width: 768 },
 };
 
 /** T5 v1.1 XXL encoder, gated-GELU. */
@@ -716,6 +963,7 @@ const T5_XXL_ENCODER: MultimodalComponentSpec = {
     temporalPatchSize: 0,
     inChannels: 0,
   },
+  tokenEmbedding: { vocabSize: 32128, width: 4096 },
 };
 
 const OPENCLIP_BIGG_ENCODER: MultimodalComponentSpec = {
@@ -733,24 +981,24 @@ const OPENCLIP_BIGG_ENCODER: MultimodalComponentSpec = {
     temporalPatchSize: 0,
     inChannels: 0,
   },
+  tokenEmbedding: { vocabSize: 49408, width: 1280 },
 };
 
-/** Latent decoder, run once at the end of a generation. */
+/**
+ * Latent decoder, run once at the end of a generation. Only the decoder half
+ * of the autoencoder runs during generation; the encoder is for inversion.
+ */
 function vaeDecoder(latentChannels: number): MultimodalComponentSpec {
   return {
     id: "vae_decoder",
     role: "vae_decoder",
     phase: "final_only",
     encoder: {
-      kind: "vit",
-      numLayers: 8,
-      hiddenDim: 512,
-      numHeads: 8,
-      intermediateSize: 512,
-      gatedMlp: false,
-      patchSize: 3,
-      temporalPatchSize: 1,
-      inChannels: latentChannels,
+      kind: "conv_decoder",
+      latentChannels,
+      outputChannels: 3,
+      blockOutChannels: [128, 256, 512, 512],
+      layersPerBlock: 2,
     },
   };
 }
@@ -1109,6 +1357,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     attention: { kind: "gqa", numHeads: 24, numKVHeads: 24, headDim: 128 },
     intermediateSize: 0,
     diffusion: {
+      kind: "mmdit",
       dualBlocks: 19,
       singleBlocks: 38,
       mlpRatio: 4,
@@ -1140,6 +1389,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     attention: { kind: "gqa", numHeads: 24, numKVHeads: 24, headDim: 128 },
     intermediateSize: 0,
     diffusion: {
+      kind: "mmdit",
       dualBlocks: 19,
       singleBlocks: 38,
       mlpRatio: 4,
@@ -1161,6 +1411,78 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     ],
   },
 
+  "stable-diffusion-1.5": {
+    name: "Stable-Diffusion-1.5",
+    publishedTotalParams: 1.07e9,
+    // Widest stage, for reporting. A UNet has no single width.
+    hiddenDim: 1280,
+    vocabSize: 0,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 8, numKVHeads: 8, headDim: 40 },
+    intermediateSize: 0,
+    diffusion: {
+      kind: "unet",
+      blockOutChannels: [320, 640, 1280, 1280],
+      transformerLayersPerBlock: [1, 1, 1, 1],
+      crossAttentionDim: 768,
+      resnetLayersPerBlock: 2,
+      downBlockAttention: [true, true, true, false],
+      upBlockAttention: [false, true, true, true],
+      latentChannels: 4,
+      timeEmbedDim: 1280,
+      vaeFactor: 8,
+      defaultResolutionPx: 512,
+      denoisingSteps: 20,
+      classifierFreeGuidance: true,
+    },
+    multimodal: {
+      components: [CLIP_L_ENCODER, vaeDecoder(4)],
+    },
+    assumptions: [
+      "Classifier-free guidance doubles the denoiser batch at every step.",
+      "Attention runs at several resolutions; the reported latent grid is the"
+        + " finest one, which dominates the cost.",
+      DIFFUSION_UNMODELED,
+    ],
+  },
+
+  "stable-diffusion-xl": {
+    name: "Stable-Diffusion-XL",
+    publishedTotalParams: 3.5e9,
+    hiddenDim: 1280,
+    vocabSize: 0,
+    tiedEmbeddings: true,
+    attention: { kind: "gqa", numHeads: 20, numKVHeads: 20, headDim: 64 },
+    intermediateSize: 0,
+    diffusion: {
+      kind: "unet",
+      blockOutChannels: [320, 640, 1280],
+      // The deepest stage carries ten transformer layers per block.
+      transformerLayersPerBlock: [1, 2, 10],
+      crossAttentionDim: 2048,
+      resnetLayersPerBlock: 2,
+      downBlockAttention: [false, true, true],
+      upBlockAttention: [true, true, false],
+      latentChannels: 4,
+      timeEmbedDim: 1280,
+      // Pooled text plus the size and crop conditioning SDXL adds.
+      additionalEmbedDim: 2816,
+      vaeFactor: 8,
+      defaultResolutionPx: 1024,
+      denoisingSteps: 30,
+      classifierFreeGuidance: true,
+    },
+    multimodal: {
+      components: [CLIP_L_ENCODER, OPENCLIP_BIGG_ENCODER, vaeDecoder(4)],
+    },
+    assumptions: [
+      "Classifier-free guidance doubles the denoiser batch at every step.",
+      "Attention runs at several resolutions; the reported latent grid is the"
+        + " finest one, which dominates the cost.",
+      DIFFUSION_UNMODELED,
+    ],
+  },
+
   "stable-diffusion-3.5-large": {
     name: "Stable-Diffusion-3.5-Large",
     publishedTotalParams: 13.7e9,
@@ -1171,6 +1493,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     attention: { kind: "gqa", numHeads: 38, numKVHeads: 38, headDim: 64 },
     intermediateSize: 0,
     diffusion: {
+      kind: "mmdit",
       dualBlocks: 38,
       singleBlocks: 0,
       mlpRatio: 4,

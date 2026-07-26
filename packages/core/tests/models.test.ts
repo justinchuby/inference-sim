@@ -28,7 +28,8 @@ describe("model presets", () => {
       const spec = MODEL_SPECS[preset]!;
 
       const diffusion = model.architecture.kind === "diffusion";
-      expect(model.layers, preset).toHaveLength(spec.numLayers);
+      expect(model.layers, preset)
+        .toHaveLength(model.architecture.numLayers);
       expect(model.totalParams, preset).toBe(derivedTotalParams(spec));
       // A denoiser has no vocabulary, so it has no embedding table.
       expect(model.embeddingBytes, preset)
@@ -36,7 +37,11 @@ describe("model presets", () => {
       expect(model.architecture.numKVHeads, preset)
         .toBeLessThanOrEqual(model.architecture.numHeads);
       for (const layer of model.layers) {
-        expect(layer.attentionBytes, preset).toBeGreaterThan(0);
+        // Every layer carries weights, but a UNet's plain residual stages
+        // legitimately carry no attention at all.
+        expect(layer.attentionBytes + layer.ffnBytes, preset)
+          .toBeGreaterThan(0);
+        expect(layer.attentionBytes, preset).toBeGreaterThanOrEqual(0);
         expect(layer.ffnBytes, preset).toBeGreaterThanOrEqual(0);
         expect(layer.kvCachePerToken, preset).toBeGreaterThanOrEqual(0);
         expect(Number.isFinite(layer.attentionBytes), preset).toBe(true);
@@ -209,6 +214,59 @@ describe("model presets", () => {
     // Every decoder layer cross-attends, so all layers carry the same weights.
     expect(new Set(model.layers.map((layer) => layer.attentionBytes)).size)
       .toBe(1);
+  });
+
+  it("gives every UNet resolution stage its own width", () => {
+    const model = buildModelProfile("stable-diffusion-xl", "fp16", "fp16");
+    const spec = MODEL_SPECS["stable-diffusion-xl"]!;
+
+    // Three down stages, one middle, three up stages.
+    expect(model.layers).toHaveLength(7);
+    expect(model.architecture.numLayers).toBe(7);
+    // The stack is not uniform: stages differ in weight by a wide margin,
+    // which is exactly what a single hidden size cannot express.
+    const stageBytes = model.layers.map(
+      (layer) => layer.attentionBytes + layer.ffnBytes,
+    );
+    expect(Math.max(...stageBytes) / Math.min(...stageBytes))
+      .toBeGreaterThan(4);
+    // A denoiser caches nothing per token regardless of its shape.
+    expect(model.layers.every((layer) => layer.kvCachePerToken === 0))
+      .toBe(true);
+    expect(spec.diffusion!.kind).toBe("unet");
+  });
+
+  it("charges no attention to a UNet's plain residual stages", () => {
+    // SDXL's finest down stage and coarsest up stage are plain DownBlock2D and
+    // UpBlock2D, so they carry residual weights and no attention at all.
+    const model = buildModelProfile("stable-diffusion-xl", "fp16", "fp16");
+    const attentionFree = model.layers.filter(
+      (layer) => layer.attentionBytes === 0,
+    );
+
+    expect(attentionFree).toHaveLength(2);
+    expect(attentionFree.map((layer) => layer.index)).toEqual([0, 6]);
+    for (const layer of attentionFree) {
+      expect(layer.ffnBytes).toBeGreaterThan(0);
+    }
+  });
+
+  it("reports the finest attending grid for a UNet", () => {
+    // SD1.5 attends from the top latent grid: 512/8 = 64, so 4096 positions.
+    expect(buildModelProfile("stable-diffusion-1.5").diffusion!.latentTokens)
+      .toBe(4096);
+    // SDXL's first stage has no attention, so its finest attending grid is one
+    // downsample below the 128-wide latent: 64 squared.
+    expect(buildModelProfile("stable-diffusion-xl").diffusion!.latentTokens)
+      .toBe(4096);
+  });
+
+  it("counts denoiser invocations from steps and guidance", () => {
+    // Guidance doubles the batch, so 30 steps cost 60 forward passes.
+    expect(buildModelProfile("stable-diffusion-xl").diffusion)
+      .toMatchObject({ denoisingSteps: 30, denoiserInvocations: 60 });
+    expect(buildModelProfile("flux-1-schnell").diffusion)
+      .toMatchObject({ denoisingSteps: 4, denoiserInvocations: 4 });
   });
 
   it("rejects unknown presets with the available list", () => {
