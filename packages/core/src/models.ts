@@ -1332,14 +1332,18 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
           convKernelSize: 3,
           convLayers: 2,
         },
-        // A 30 second window is always 1500 encoder frames.
-        tokensPerItem: 1500,
+        // A 30 second window is always 1500 encoder frames, but the decoder
+        // cross-attends them instead of reading them as positions, so they
+        // expand the prompt by nothing. tokensPerItem counts decoder tokens.
+        tokensPerItem: 0,
       }],
     },
     assumptions: [
       "Encoder-decoder model: the encoder runs once per 30 second audio"
         + " window and its output is cross-attended, not appended to the"
         + " decoder sequence.",
+      "A 30 second window is 1500 encoder frames. They drive encoder work but"
+        + " add no decoder positions, so they cost no prefill or KV.",
       "Cross-attention KV is computed once per window; it is charged here as"
         + " per-layer weights only.",
     ],

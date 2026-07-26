@@ -2488,8 +2488,9 @@ function ConfigurationPanel({
                     ? (
                         <div className="mt-1 text-[11px] text-zinc-500">
                           Encoders resident but idle ·{" "}
-                          {config.modelBinding.mediaTokensPerItem} tok per item
-                          if enabled
+                          {config.modelBinding.mediaTokensPerItem === 0
+                            ? "cross-attended, no prompt growth if enabled"
+                            : `${config.modelBinding.mediaTokensPerItem} tok per item if enabled`}
                         </div>
                       )
                     : (
@@ -2508,10 +2509,12 @@ function ConfigurationPanel({
                             })}
                           />
                           <div className="mt-1 text-[11px] text-zinc-500">
-                            +{(
-                              config.modelBinding.mediaTokensPerItem
-                              * config.mediaItemsPerRequest
-                            ).toLocaleString()} prompt tokens per request
+                            {config.modelBinding.mediaTokensPerItem === 0
+                              ? "Cross-attended: the encoder runs, but adds no decoder positions, prefill or KV."
+                              : `+${(
+                                  config.modelBinding.mediaTokensPerItem
+                                  * config.mediaItemsPerRequest
+                                ).toLocaleString()} prompt tokens per request`}
                           </div>
                         </div>
                       )}

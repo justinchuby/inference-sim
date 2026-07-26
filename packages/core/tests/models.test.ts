@@ -210,10 +210,38 @@ describe("model presets", () => {
       (component) => component.role === "audio_encoder",
     )!;
 
-    expect(encoder.tokensPerItem).toBe(1500);
+    // A 30 second window is 1500 encoder frames, but the decoder cross-attends
+    // them rather than reading them as positions, so they expand no prompt.
+    // tokensPerItem counts decoder tokens only, as it does for Llama Vision.
+    expect(encoder.tokensPerItem).toBe(0);
     // Every decoder layer cross-attends, so all layers carry the same weights.
     expect(new Set(model.layers.map((layer) => layer.attentionBytes)).size)
       .toBe(1);
+  });
+
+  it("expands the prompt only for models that inject decoder tokens", () => {
+    // The contract on tokensPerItem is decoder positions, which the simulator
+    // charges as prompt work. A model whose adapter cross-attends must report
+    // zero or it pays prefill and KV that the real decoder never pays.
+    const crossAttending = ["llama-3.2-11b-vision", "whisper-large-v3"] as const;
+    for (const preset of crossAttending) {
+      const model = buildModelProfile(preset);
+      const injected = (model.components ?? []).reduce(
+        (sum, component) => sum + (component.tokensPerItem ?? 0),
+        0,
+      );
+      expect(injected, preset).toBe(0);
+    }
+
+    // Models that do inject must still declare a positive count.
+    for (const preset of ["gemma-4-12b", "qwen3-vl-8b"] as const) {
+      const model = buildModelProfile(preset);
+      const injected = (model.components ?? []).reduce(
+        (sum, component) => sum + (component.tokensPerItem ?? 0),
+        0,
+      );
+      expect(injected, preset).toBeGreaterThan(0);
+    }
   });
 
   it("gives every UNet resolution stage its own width", () => {
