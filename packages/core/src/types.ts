@@ -62,6 +62,8 @@ export interface ModelProfile {
    * repeated here.
    */
   components?: readonly ModelComponentProfile[];
+  /** Media modalities this checkpoint accepts. Absent when it is text only. */
+  mediaInputs?: readonly MediaInputProfile[];
   /** Present for iterative denoisers. */
   diffusion?: DiffusionProfile;
   provenance: ModelProfileProvenance;
@@ -97,6 +99,28 @@ export interface ModelComponentProfile {
    * prompt work; per-request tile counts are not modeled.
    */
   readonly tokensPerItem?: number;
+}
+
+/** A kind of non-text input a checkpoint accepts. */
+export type MediaModality = "image" | "audio" | "video";
+
+/**
+ * One media modality a model accepts, and what attaching one item costs the
+ * decoder. Models differ on both: a checkpoint may take images but not audio,
+ * and an adapter that cross-attends injects no decoder positions at all.
+ */
+export interface MediaInputProfile {
+  readonly modality: MediaModality;
+  /**
+   * Decoder positions one item injects into the prompt, which the simulator
+   * charges as prompt work. Zero when the adapter cross-attends instead of
+   * expanding the sequence.
+   */
+  readonly decoderTokensPerItem: number;
+  /** What one item is, for display: `image`, `second of audio`, `30s window`. */
+  readonly unit: string;
+  /** Components that run when this modality is attached. */
+  readonly componentIds: readonly string[];
 }
 
 export interface ModelProfileProvenance {

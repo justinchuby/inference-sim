@@ -40,6 +40,7 @@ import type {
   WorkerRunProgressReporter,
 } from "./types.js";
 import type {
+  MediaInputProfile,
   MultiModelResult,
   TopologyResourceUtilization,
 } from "@inference-sim/core";
@@ -863,11 +864,27 @@ export function dashboardKvReservationBytes(
  * Adapters that cross-attend instead of injecting tokens report zero.
  */
 export function dashboardMediaTokens(config: DashboardRunConfig): number {
-  if (config.modality !== "multimodal") {
+  const input = dashboardMediaInput(config);
+  if (input === undefined) {
     return 0;
   }
-  const perItem = config.modelBinding?.mediaTokensPerItem ?? 0;
-  return perItem * clampInteger(config.mediaItemsPerRequest, 0, 64);
+  return input.decoderTokensPerItem
+    * clampInteger(config.mediaItemsPerRequest, 0, 64);
+}
+
+/**
+ * The media input this run attaches, or undefined for a text-only run or a
+ * model that does not accept the selected modality.
+ */
+export function dashboardMediaInput(
+  config: DashboardRunConfig,
+): MediaInputProfile | undefined {
+  if (config.modality === "text") {
+    return undefined;
+  }
+  return config.modelBinding?.mediaInputs?.find(
+    (input) => input.modality === config.modality,
+  );
 }
 
 /** Prompt positions a request occupies, media included. */

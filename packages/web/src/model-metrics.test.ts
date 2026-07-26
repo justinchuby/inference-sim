@@ -58,30 +58,44 @@ describe("model UI metrics", () => {
   });
 
   it("only runs media components when the run selects media", () => {
-    const multimodal = createBuiltinModelBinding(
-      "qwen3-vl-8b", "fp16", "fp16", "multimodal",
+    const withImages = createBuiltinModelBinding(
+      "qwen3-vl-8b", "fp16", "fp16", "image",
     );
     const textOnly = createBuiltinModelBinding(
       "qwen3-vl-8b", "fp16", "fp16", "text",
     );
 
-    expect(multimodal.pipelineExecution).toBeDefined();
-    expect(multimodal.pipelineExecution!.components.map((c) => c.role))
+    expect(withImages.pipelineExecution).toBeDefined();
+    expect(withImages.pipelineExecution!.components.map((c) => c.role))
       .toContain("vision_encoder");
     // Text-only keeps the tower resident but never schedules it.
     expect(textOnly.pipelineExecution).toBeUndefined();
-    expect(textOnly.weightBytes).toBe(multimodal.weightBytes);
-    // Both still report what a media item would cost.
-    expect(textOnly.mediaTokensPerItem).toBe(multimodal.mediaTokensPerItem);
-    expect(textOnly.mediaTokensPerItem).toBeGreaterThan(0);
+    expect(textOnly.weightBytes).toBe(withImages.weightBytes);
+    // Both still report what each modality would cost.
+    expect(textOnly.mediaInputs).toStrictEqual(withImages.mediaInputs);
+    expect(textOnly.mediaInputs!.map((input) => input.modality))
+      .toStrictEqual(["image", "video"]);
     // The two runs are distinct experiments.
-    expect(textOnly.modelFingerprints).not.toEqual(multimodal.modelFingerprints);
+    expect(textOnly.modelFingerprints).not.toEqual(withImages.modelFingerprints);
+  });
+
+  it("offers only the modalities a checkpoint accepts", () => {
+    // Sourced per release: the encoder-free Gemma-4 takes audio, the MoE
+    // sibling has no audio stack at all, and Whisper is audio only.
+    const accepted = (preset: Parameters<typeof createBuiltinModelBinding>[0]) =>
+      (createBuiltinModelBinding(preset).mediaInputs ?? [])
+        .map((input) => input.modality);
+
+    expect(accepted("gemma-4-12b")).toStrictEqual(["image", "audio", "video"]);
+    expect(accepted("gemma-4-26b-a4b")).toStrictEqual(["image", "video"]);
+    expect(accepted("whisper-large-v3")).toStrictEqual(["audio"]);
+    expect(accepted("llama-3.2-11b-vision")).toStrictEqual(["image"]);
   });
 
   it("reports no media cost for a text-only model", () => {
     const binding = createBuiltinModelBinding("llama-3-8b");
 
-    expect(binding.mediaTokensPerItem).toBeUndefined();
+    expect(binding.mediaInputs).toBeUndefined();
     expect(binding.pipelineExecution).toBeUndefined();
   });
 
@@ -89,10 +103,10 @@ describe("model UI metrics", () => {
     // Llama-3.2-Vision cross-attends image features, so media costs encoder
     // work but adds no prompt positions.
     const binding = createBuiltinModelBinding(
-      "llama-3.2-11b-vision", "fp16", "fp16", "multimodal",
+      "llama-3.2-11b-vision", "fp16", "fp16", "image",
     );
 
-    expect(binding.mediaTokensPerItem).toBe(0);
+    expect(binding.mediaInputs![0]!.decoderTokensPerItem).toBe(0);
     expect(binding.pipelineExecution).toBeDefined();
   });
 

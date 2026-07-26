@@ -316,4 +316,81 @@ describe("model presets", () => {
       ).toBe(true);
     }
   });
+  it("declares each accepted media modality with its own token rate", () => {
+    // Sourced from the released configs and model cards. A model is listed
+    // with exactly the modalities it accepts: offering one it cannot take is
+    // as wrong as pricing one it can.
+    const expected = {
+      "gemma-4-12b": [
+        // 16px patches, 3x3 pooled to a 48px token, fixed at 280 per image.
+        { modality: "image", decoderTokensPerItem: 280 },
+        // 16 kHz cut into 640-sample frames, projected without downsampling.
+        { modality: "audio", decoderTokensPerItem: 25 },
+        { modality: "video", decoderTokensPerItem: 280 },
+      ],
+      // The MoE release has a vision tower but no audio stack.
+      "gemma-4-26b-a4b": [
+        { modality: "image", decoderTokensPerItem: 280 },
+        { modality: "video", decoderTokensPerItem: 280 },
+      ],
+      // 16px patches merged 2x2 give a 32px token: (512/32)^2 = 256.
+      "qwen3-vl-8b": [
+        { modality: "image", decoderTokensPerItem: 256 },
+        { modality: "video", decoderTokensPerItem: 256 },
+      ],
+      // 14px patches merged 2x2 give a 28px token: (448/28)^2 = 256, and
+      // tokens_per_second=2 puts two temporal groups in every second.
+      "qwen2.5-vl-7b": [
+        { modality: "image", decoderTokensPerItem: 256 },
+        { modality: "video", decoderTokensPerItem: 512 },
+      ],
+      // Cross-attended, so an image costs the decoder no positions.
+      "llama-3.2-11b-vision": [
+        { modality: "image", decoderTokensPerItem: 0 },
+      ],
+      "whisper-large-v3": [
+        { modality: "audio", decoderTokensPerItem: 0 },
+      ],
+    } as const;
+
+    for (const [preset, inputs] of Object.entries(expected)) {
+      const model = buildModelProfile(preset as keyof typeof expected);
+      expect(
+        (model.mediaInputs ?? []).map((input) => ({
+          modality: input.modality,
+          decoderTokensPerItem: input.decoderTokensPerItem,
+        })),
+        preset,
+      ).toStrictEqual(inputs);
+    }
+  });
+
+  it("names components that exist for every media modality", () => {
+    const profiles = listModelPresets()
+      .map((preset) => [preset, buildModelProfile(preset)] as const);
+    for (const [preset, model] of profiles) {
+      const componentIds = new Set(
+        (model.components ?? []).map((component) => component.id),
+      );
+      for (const input of model.mediaInputs ?? []) {
+        expect(input.componentIds.length, `${preset}/${input.modality}`)
+          .toBeGreaterThan(0);
+        expect(input.unit, `${preset}/${input.modality}`).not.toBe("");
+        for (const id of input.componentIds) {
+          expect(componentIds.has(id), `${preset}/${input.modality}/${id}`)
+            .toBe(true);
+        }
+      }
+    }
+  });
+
+  it("offers no media input for a stack that generates rather than reads", () => {
+    // A diffusion model's text encoders condition the image it produces; they
+    // are not inputs a caller attaches, so nothing should be offered.
+    for (const preset of ["stable-diffusion-xl", "flux-1-dev"] as const) {
+      const model = buildModelProfile(preset);
+      expect(model.components!.length, preset).toBeGreaterThan(0);
+      expect(model.mediaInputs, preset).toBeUndefined();
+    }
+  });
 });

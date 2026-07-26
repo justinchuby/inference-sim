@@ -133,6 +133,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "./components/ui/tooltip.js";
+import type { MediaModality } from "@inference-sim/core";
 import type {
   DashboardArtifactDownload,
   DashboardArtifactExpectation,
@@ -226,6 +227,12 @@ const ADVANCED_WORKLOAD_MODES: readonly WorkloadMode[] = [
   "speculative",
   "expert-cache",
 ];
+
+const MEDIA_MODALITY_LABELS: Record<MediaModality, string> = {
+  image: "Images",
+  audio: "Audio",
+  video: "Video",
+};
 
 const DEFAULT_CONFIG: DashboardRunConfig = {
   scenarioName: "multi-gpu",
@@ -699,11 +706,14 @@ export function App(): React.JSX.Element {
       ?? BUILTIN_KV_CACHE_DTYPES.find((dtype) => dtype === currentKvCacheDtype)
       ?? "fp16";
     const probe = createBuiltinModelBinding(preset);
-    // A model without media components has nothing to enable, so selecting one
-    // must not leave a stale multimodal choice behind.
-    const selectedModality = probe.mediaTokensPerItem === undefined
-      ? "text"
-      : modality ?? config.modality;
+    // Models accept different modalities, so a choice that the newly selected
+    // model cannot take must fall back to text rather than linger and be
+    // silently priced at zero.
+    const requested = modality ?? config.modality;
+    const accepts = (probe.mediaInputs ?? []).some(
+      (input) => input.modality === requested,
+    );
+    const selectedModality = requested === "text" || accepts ? requested : "text";
     // An image generator has no autoregressive target, so serving it makes no
     // sense; its pipeline replaces the decoder entirely.
     const generatesImages = probe.pipelineExecution?.replacesTarget === true;
@@ -2305,10 +2315,11 @@ function ConfigurationPanel({
         (dtype) => dtype === config.modelBinding?.modelFormat?.kvCacheDtype,
       ) ?? "fp16"
     : undefined;
-  const mediaPromptTokens = config.modality === "multimodal"
-    ? (config.modelBinding?.mediaTokensPerItem ?? 0)
-      * config.mediaItemsPerRequest
-    : 0;
+  const selectedMediaInput = config.modelBinding?.mediaInputs?.find(
+    (input) => input.modality === config.modality,
+  );
+  const mediaPromptTokens = (selectedMediaInput?.decoderTokensPerItem ?? 0)
+    * config.mediaItemsPerRequest;
   return (
     <div className="configuration-panel mx-auto max-w-md lg:max-w-none">
       <div className="configuration-scroll">
@@ -2448,7 +2459,7 @@ function ConfigurationPanel({
                   </Select>
                 </label>
               )}
-          {config.modelBinding?.mediaTokensPerItem === undefined
+          {config.modelBinding?.mediaInputs === undefined
             ? null
             : (
                 <>
@@ -2457,7 +2468,7 @@ function ConfigurationPanel({
                       Input
                       <ParameterHelp
                         label="Input modality"
-                        description="Whether this run sends media. A multimodal checkpoint served text-only is a real deployment: the encoders stay resident but never run, and nothing expands the prompt. Selecting media runs the encoders once per request and adds the media's decoder tokens to every prompt."
+                        description="What this run sends. A multimodal checkpoint served text-only is a real deployment: the encoders stay resident but never run, and nothing expands the prompt. Only the modalities this checkpoint actually accepts are offered, because models differ: a release may take images and video but no audio, and each modality has its own token rate."
                       />
                     </span>
                     <Select
@@ -2480,28 +2491,33 @@ function ConfigurationPanel({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="text">Text only</SelectItem>
-                        <SelectItem value="multimodal">Text + media</SelectItem>
+                        {config.modelBinding.mediaInputs.map((input) => (
+                          <SelectItem key={input.modality} value={input.modality}>
+                            {MEDIA_MODALITY_LABELS[input.modality]}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </label>
-                  {config.modality === "text"
+                  {selectedMediaInput === undefined
                     ? (
                         <div className="mt-1 text-[11px] text-zinc-500">
-                          Encoders resident but idle ·{" "}
-                          {config.modelBinding.mediaTokensPerItem === 0
-                            ? "cross-attended, no prompt growth if enabled"
-                            : `${config.modelBinding.mediaTokensPerItem} tok per item if enabled`}
+                          Encoders resident but idle · accepts{" "}
+                          {config.modelBinding.mediaInputs
+                            .map((input) => input.modality)
+                            .join(", ")}
                         </div>
                       )
                     : (
                         <div className="mt-1.5">
                           <SliderField
-                            label="Media per request"
-                            description="Images or audio windows attached to every request. Each one runs the encoder and contributes its decoder tokens to the prompt, so this drives prefill work and KV alongside the text prompt."
+                            label={`${MEDIA_MODALITY_LABELS[selectedMediaInput.modality]} per request`}
+                            description="Media attached to every request. Each item runs the encoder and contributes its decoder tokens to the prompt, so this drives prefill work and KV alongside the text prompt."
                             value={config.mediaItemsPerRequest}
                             minimum={0}
                             maximum={8}
                             step={1}
+                            suffix={` x ${selectedMediaInput.unit}`}
                             disabled={disabled}
                             onChange={(mediaItemsPerRequest) => onChange({
                               ...config,
@@ -2509,12 +2525,9 @@ function ConfigurationPanel({
                             })}
                           />
                           <div className="mt-1 text-[11px] text-zinc-500">
-                            {config.modelBinding.mediaTokensPerItem === 0
+                            {selectedMediaInput.decoderTokensPerItem === 0
                               ? "Cross-attended: the encoder runs, but adds no decoder positions, prefill or KV."
-                              : `+${(
-                                  config.modelBinding.mediaTokensPerItem
-                                  * config.mediaItemsPerRequest
-                                ).toLocaleString()} prompt tokens per request`}
+                              : `${selectedMediaInput.decoderTokensPerItem.toLocaleString()} tok per ${selectedMediaInput.unit} · +${mediaPromptTokens.toLocaleString()} prompt tokens per request`}
                           </div>
                         </div>
                       )}

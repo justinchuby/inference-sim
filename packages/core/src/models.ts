@@ -10,6 +10,7 @@ import type {
   DiffusionProfile,
   ExpertDistribution,
   LayerProfile,
+  MediaInputProfile,
   ModelComponentPhase,
   ModelComponentProfile,
   ModelProfile,
@@ -599,6 +600,26 @@ interface MultimodalComponentSpec {
 
 interface MultimodalSpec {
   readonly components: readonly MultimodalComponentSpec[];
+  /**
+   * Media modalities the checkpoint accepts. Absent means image only, derived
+   * from the components' own tokensPerItem, which is the common case.
+   */
+  readonly mediaInputs?: readonly MediaInputProfile[];
+}
+
+/** One image at the reference resolution, costing the components' own tokens. */
+function imageOnlyInput(
+  components: readonly MultimodalComponentSpec[],
+): readonly MediaInputProfile[] {
+  return [{
+    modality: "image",
+    decoderTokensPerItem: components.reduce(
+      (sum, component) => sum + (component.tokensPerItem ?? 0),
+      0,
+    ),
+    unit: "image",
+    componentIds: components.map((component) => component.id),
+  }];
 }
 
 function componentParams(spec: MultimodalComponentSpec): number {
@@ -823,7 +844,17 @@ function buildProfile(
     layers,
     ...(spec.multimodal === undefined
       ? {}
-      : { components: buildComponents(spec.multimodal, bpp) }),
+      : {
+          components: buildComponents(spec.multimodal, bpp),
+          // A diffusion stack's components condition an image it generates;
+          // they are not inputs a caller attaches, so it declares none.
+          ...(spec.diffusion !== undefined
+            ? {}
+            : {
+                mediaInputs: spec.multimodal.mediaInputs
+                  ?? imageOnlyInput(spec.multimodal.components),
+              }),
+        }),
     ...(spec.diffusion === undefined
       ? {}
       : { diffusion: buildDiffusionProfile(spec.diffusion) }),
@@ -872,8 +903,13 @@ function qwenVisionComponents(
   // Reference image edge, chosen as a multiple of patchSize * mergeSize so the
   // quoted token count is exact.
   referenceImagePx = 512,
+  // Temporal groups a second of video produces. Qwen2.5-VL declares
+  // tokens_per_second=2; Qwen3-VL dropped the field, and sampling two frames
+  // per second against temporal_patch_size=2 leaves one group.
+  temporalGroupsPerSecond = 1,
 ): MultimodalSpec {
   const mergedDim = 4 * visionHiddenDim;
+  const spatialTokens = (referenceImagePx / patchSize / 2) ** 2;
   return {
     components: [
       {
@@ -902,7 +938,23 @@ function qwenVisionComponents(
           hiddenDim: mergedDim,
           outputDim: decoderHiddenDim,
         },
-        tokensPerItem: (referenceImagePx / patchSize / 2) ** 2,
+        tokensPerItem: spatialTokens,
+      },
+    ],
+    mediaInputs: [
+      {
+        modality: "image",
+        decoderTokensPerItem: spatialTokens,
+        unit: `${referenceImagePx}x${referenceImagePx} image`,
+        componentIds: ["vision_encoder", "vision_merger"],
+      },
+      {
+        modality: "video",
+        // Frames are merged in pairs by the temporal patch, so a second of
+        // video costs one spatial grid per temporal group it produces.
+        decoderTokensPerItem: spatialTokens * temporalGroupsPerSecond,
+        unit: "second of video",
+        componentIds: ["vision_encoder", "vision_merger"],
       },
     ],
   };
@@ -1118,12 +1170,40 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
         },
         tokensPerItem: 280,
       }],
+      mediaInputs: [
+        {
+          modality: "image",
+          decoderTokensPerItem: 280,
+          unit: "image",
+          componentIds: ["patch_embedder"],
+        },
+        {
+          modality: "audio",
+          // Raw 16 kHz audio is cut into 640-sample frames and projected with
+          // no downsampling, so one second is 16000/640 = 25 soft tokens.
+          decoderTokensPerItem: 25,
+          unit: "second of audio",
+          componentIds: ["patch_embedder"],
+        },
+        {
+          modality: "video",
+          // No temporal merging: a video is a sequence of independently
+          // tokenized frames, so a second sampled at 1 fps costs one image.
+          decoderTokensPerItem: 280,
+          unit: "second of video",
+          componentIds: ["patch_embedder"],
+        },
+      ],
     },
     assumptions: [
       SLIDING_WINDOW_KV_UPPER_BOUND,
       "This release is encoder free: image patches and audio samples are"
         + " linearly projected instead of passing through a tower.",
       "Every image costs a fixed 280 decoder tokens after 3x3 pooling.",
+      "Audio costs 25 tokens per second: 16 kHz samples in 640-sample frames,"
+        + " projected without downsampling.",
+      "Video is charged as one 280-token frame per second, the common 1 fps"
+        + " sampling. The rate is a preprocessing choice, not architectural.",
     ],
   },
 
@@ -1226,7 +1306,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     attention: { kind: "gqa", numHeads: 28, numKVHeads: 4, headDim: 128 },
     intermediateSize: 18944,
     // This tower uses a gated MLP and 14-pixel patches.
-    multimodal: qwenVisionComponents(1280, 32, 3420, 3584, true, 14, 448),
+    multimodal: qwenVisionComponents(1280, 32, 3420, 3584, true, 14, 448, 2),
     assumptions: [
       "Image token count is dynamic; the quoted expansion assumes a 448x448"
         + " image. Per-request tile counts are not modeled.",
@@ -1294,6 +1374,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
           tokensPerItem: 0,
         },
       ],
+      mediaInputs: [{
+        modality: "image",
+        decoderTokensPerItem: 0,
+        unit: "image",
+        componentIds: ["vision_encoder", "multi_modal_projector"],
+      }],
     },
     assumptions: [
       "Vision features are cross-attended by eight decoder layers and add no"
@@ -1336,6 +1422,13 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
         // cross-attends them instead of reading them as positions, so they
         // expand the prompt by nothing. tokensPerItem counts decoder tokens.
         tokensPerItem: 0,
+      }],
+      mediaInputs: [{
+        modality: "audio",
+        // Cross-attended, so the decoder sequence does not grow at all.
+        decoderTokensPerItem: 0,
+        unit: "30 second window",
+        componentIds: ["audio_encoder"],
       }],
     },
     assumptions: [
@@ -1588,10 +1681,29 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
         // Average pooling fixes the image at 280 soft tokens.
         tokensPerItem: 280,
       }],
+      // This variant has a vision tower but no audio stack at all, unlike the
+      // encoder-free 12B, so audio is not offered rather than priced.
+      mediaInputs: [
+        {
+          modality: "image",
+          decoderTokensPerItem: 280,
+          unit: "image",
+          componentIds: ["vision_encoder"],
+        },
+        {
+          modality: "video",
+          decoderTokensPerItem: 280,
+          unit: "second of video",
+          componentIds: ["vision_encoder"],
+        },
+      ],
     },
     assumptions: [
       SLIDING_WINDOW_KV_UPPER_BOUND,
       "Every image costs a fixed 280 decoder tokens after 3x3 pooling.",
+      "This variant accepts no audio; only the encoder-free release does.",
+      "Video is charged as one 280-token frame per second, the common 1 fps"
+        + " sampling. The rate is a preprocessing choice, not architectural.",
     ],
   },
 

@@ -20,10 +20,14 @@ does not claim hardware-accurate latency without calibration data.
 - Nine of those presets are multimodal, covering the ways vision and audio
   actually attach to a decoder: ViT towers with a merging projector, an
   encoder-free stack that projects raw patches, a cross-attention adapter that
-  adds no decoder tokens at all, and an encoder-decoder audio model. Choose
-  text-only or media per run: a multimodal checkpoint served without images
-  keeps its encoders resident but idle, while selecting media runs them and
-  charges each item's decoder tokens to the prompt.
+  adds no decoder tokens at all, and an encoder-decoder audio model. Each
+  preset declares which modalities it accepts and what one item of each costs,
+  because releases differ: the encoder-free Gemma-4 takes audio at 25 tokens a
+  second while its MoE sibling has no audio stack at all, and Qwen2.5-VL bills
+  twice as many temporal groups per second of video as Qwen3-VL. Choose
+  text-only or one modality per run: a checkpoint served without media keeps
+  its encoders resident but idle, while selecting a modality runs them and
+  charges that modality's decoder tokens to the prompt.
 - Five of the presets generate images rather than tokens, covering both
   denoiser families. A denoiser is not autoregressive: it caches no KV and runs
   once per denoising step, twice under classifier-free guidance, between the

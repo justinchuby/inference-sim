@@ -574,7 +574,7 @@ describe("simulateDashboard", () => {
   });
 
   it("expands the prompt and KV budget by the media a request carries", () => {
-    const run = (modality: "text" | "multimodal", mediaItemsPerRequest: number) => {
+    const run = (modality: "text" | "image", mediaItemsPerRequest: number) => {
       const modelBinding = createBuiltinModelBinding(
         "qwen3-vl-8b", "fp16", "fp16", modality,
       );
@@ -605,8 +605,10 @@ describe("simulateDashboard", () => {
     );
 
     const textOnly = run("text", 2);
-    const withMedia = run("multimodal", 2);
-    const perItem = withMedia.binding.mediaTokensPerItem!;
+    const withMedia = run("image", 2);
+    const perItem = withMedia.binding.mediaInputs!.find(
+      (input) => input.modality === "image",
+    )!.decoderTokensPerItem;
 
     expect(perItem).toBeGreaterThan(0);
     // Two items per request on two requests, all of them prompt positions.

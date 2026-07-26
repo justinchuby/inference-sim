@@ -309,7 +309,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     const coResidency = parseCoResidencyConfig(config.coResidency);
     const modality = requireEnum(
       config.modality,
-      ["text", "multimodal"] as const,
+      ["text", "image", "audio", "video"] as const,
       "artifact input modality",
     );
     const mediaItemsPerRequest = requireInteger(

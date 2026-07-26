@@ -9,7 +9,7 @@ import {
   type TopologyPipelineWork,
 } from "@inference-sim/core";
 import type { ImportedModelPackage } from "./model-package-import.js";
-import type { ModelComponentProfile } from "@inference-sim/core";
+import type { MediaModality, ModelComponentProfile } from "@inference-sim/core";
 import type {
   DashboardModelBinding,
   DashboardModelExecutionProfile,
@@ -69,7 +69,7 @@ export function createBuiltinModelBinding(
   preset: DashboardModelPreset,
   weightDtype: QuantType = "fp16",
   kvCacheDtype: QuantType = "fp16",
-  modality: "text" | "multimodal" = "multimodal",
+  modality: "text" | MediaModality = "image",
 ): DashboardModelBinding {
   const model = buildModelProfile(preset, weightDtype, kvCacheDtype);
   const fingerprint =
@@ -79,7 +79,7 @@ export function createBuiltinModelBinding(
   // serving the checkpoint without media is a real deployment: the encoders
   // stay resident but never run, and nothing expands the prompt.
   const generatesImages = model.diffusion !== undefined;
-  const pipelineExecution = generatesImages || modality === "multimodal"
+  const pipelineExecution = generatesImages || modality !== "text"
     ? builtinPipelineExecution(model, preset)
     : undefined;
   const moeLimitations = [
@@ -108,14 +108,9 @@ export function createBuiltinModelBinding(
     },
     executionProfile: executionProfile(model, preset),
     ...(pipelineExecution === undefined ? {} : { pipelineExecution }),
-    ...(model.components === undefined || generatesImages
+    ...(model.mediaInputs === undefined
       ? {}
-      : {
-          mediaTokensPerItem: model.components.reduce(
-            (sum, component) => sum + (component.tokensPerItem ?? 0),
-            0,
-          ),
-        }),
+      : { mediaInputs: model.mediaInputs }),
     executionCoverage: {
       fidelity: moeLimitations.length === 0 ? "complete" : "partial",
       scope: "full_model",

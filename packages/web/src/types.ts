@@ -26,6 +26,8 @@ import type {
   TopologyResourceUtilization,
   TopologyWorkloadMetrics,
   TopologyWorkloadResult,
+  MediaInputProfile,
+  MediaModality,
   ModelProfile,
   StaticAnalysisResult,
   MemoryPolicyConfig,
@@ -109,11 +111,11 @@ export interface DashboardModelBinding {
   readonly executionProfile: DashboardModelExecutionProfile;
   readonly pipelineExecution?: TopologyPipelineWork;
   /**
-   * Decoder tokens one media item expands into. Present whenever the model
-   * declares media components, so a text-only run can still report what
-   * enabling media would cost.
+   * Media modalities this checkpoint accepts, with what one item of each
+   * costs the decoder. Present whenever the model declares media inputs, so a
+   * text-only run can still report what enabling one would cost.
    */
-  readonly mediaTokensPerItem?: number;
+  readonly mediaInputs?: readonly MediaInputProfile[];
   readonly executionCoverage: DashboardModelExecutionCoverage;
   readonly pipelineStrategy?: string;
   readonly speculativeFamilies: readonly SpeculativeProposerFamily[];
@@ -238,12 +240,13 @@ export interface DashboardRunConfig {
   readonly fault: DashboardFaultConfig;
   readonly coResidency: DashboardCoResidencyConfig;
   /**
-   * Whether media components run. A multimodal checkpoint served without
-   * images is a real deployment, so the encoders and their token expansion
-   * are opt-in rather than implied by the model.
+   * Which input this run sends. A multimodal checkpoint served text-only is a
+   * real deployment, so media is opt-in rather than implied by the model, and
+   * the modality is named because models price image, audio and video
+   * differently and do not all accept the same ones.
    */
-  readonly modality: "text" | "multimodal";
-  /** Media items per request when `modality` is multimodal. */
+  readonly modality: "text" | MediaModality;
+  /** Media items per request when `modality` names a media input. */
   readonly mediaItemsPerRequest: number;
   readonly serving: {
     readonly compareTopologies: boolean;

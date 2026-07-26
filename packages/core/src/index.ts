@@ -8,6 +8,8 @@ export type {
   ModelProfile,
   ModelProfileProvenance,
   ModelComponentProfile,
+  MediaInputProfile,
+  MediaModality,
   ModelComponentPhase,
   DiffusionProfile,
   ModelArchitecture,
