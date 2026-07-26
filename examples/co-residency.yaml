@@ -1,0 +1,46 @@
+# Two models on one consumer GPU.
+#
+# Qwen3-32B at int4 with a 16K context reserves 19.3 GiB while resident, and
+# SDXL reserves 6.4 GiB. Their working set is 25.6 GiB, so on a 24 GiB card
+# they cannot both stay resident and the device swaps between them. Raise
+# device.memory_bytes to 34359738368 (32 GiB) to see the same workload run
+# without a single eviction.
+
+device:
+  # 24 GiB allocatable.
+  memory_bytes: 25769803776
+  # Weights arrive over PCIe 4.0 x16 at a realistic effective rate.
+  load_bandwidth_bytes_per_sec: 25000000000
+  memory_bandwidth_bytes_per_sec: 1008000000000
+  prefill_ns_per_token: 300000
+
+batching:
+  max_batch_tokens: 512
+  prefill_chunk_tokens: 256
+
+models:
+  - id: chat
+    display_name: Qwen3-32B int4
+    # 15.3 GiB of weights.
+    weight_bytes: 16428871680
+    # 64 layers of 8 KV heads at 128 wide, fp16.
+    kv_bytes_per_token: 262144
+    max_kv_tokens: 16384
+    pinned: false
+    requests:
+      - { id: c0, arrival_ns: 0, prompt_tokens: 1024, output_tokens: 64 }
+      - { id: c1, arrival_ns: 4000000000, prompt_tokens: 1024, output_tokens: 64 }
+      - { id: c2, arrival_ns: 8000000000, prompt_tokens: 1024, output_tokens: 64 }
+      - { id: c3, arrival_ns: 12000000000, prompt_tokens: 1024, output_tokens: 64 }
+
+  - id: image
+    display_name: Stable Diffusion XL
+    # 6.4 GiB of weights across the denoiser, text towers, and latent decoder.
+    weight_bytes: 6871947674
+    # A denoiser is not autoregressive, so it holds no KV.
+    kv_bytes_per_token: 0
+    max_kv_tokens: 64
+    pinned: false
+    requests:
+      - { id: i0, arrival_ns: 2000000000, prompt_tokens: 64, output_tokens: 1 }
+      - { id: i1, arrival_ns: 10000000000, prompt_tokens: 64, output_tokens: 1 }

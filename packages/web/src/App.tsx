@@ -148,6 +148,7 @@ import type {
   WorkerResponse,
   WorkloadMode,
 } from "./types.js";
+import { coResidencyMemoryDomain } from "./dashboard-simulation.js";
 import { finalizeEditedTopology } from "./topology-editor.js";
 import { cn } from "./lib/utils.js";
 
@@ -263,6 +264,15 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
   },
   modality: "text",
   mediaItemsPerRequest: 1,
+  coResidency: {
+    models: [
+      { preset: "qwen3-8b", weightDtype: "int4", contextTokens: 8192, pinned: false, requestCount: 3 },
+      { preset: "whisper-large-v3", weightDtype: "fp16", contextTokens: 1024, pinned: false, requestCount: 2 },
+    ],
+    requestGapMs: 4000,
+    promptTokens: 512,
+    outputTokens: 32,
+  },
 };
 
 const DEFAULT_ONNX_CONFIG: OnnxStaticBrowserConfig = {
@@ -2934,7 +2944,7 @@ function ConfigurationPanel({
         {/* Two rows, split by what the run covers: whole-topology runs on
             top, single-mechanism studies below. Five cells on one row do not
             fit the panel, and an arbitrary wrap would hide the distinction. */}
-        <TabsList className="mb-4 h-auto w-full grid-cols-6 gap-1 [&>*]:h-7 [&_[role=tab]]:whitespace-nowrap">
+        <TabsList className="mb-4 h-auto w-full grid-cols-8 gap-1 [&>*]:h-7 [&_[role=tab]]:whitespace-nowrap">
           <TabsTrigger
             value="serving"
             aria-label="Continuous serving"
@@ -2942,17 +2952,24 @@ function ConfigurationPanel({
           >
             Serving
           </TabsTrigger>
+          <TabsTrigger
+            value="co-residency"
+            aria-label="Co-residency"
+            className="col-span-4"
+          >
+            Several models
+          </TabsTrigger>
           <ModeTab
             value="pipeline"
             label="Pipeline"
-            className="col-span-2"
+            className="col-span-3"
             available={pipelineAvailable}
             unavailableReason={pipelineUnavailableReason}
           />
           <TabsTrigger
             value="fault"
             aria-label="Node fault study"
-            className="col-span-2"
+            className="col-span-3"
           >
             Faults
           </TabsTrigger>
@@ -2960,14 +2977,14 @@ function ConfigurationPanel({
             value="speculative"
             label="Spec study"
             accessibleLabel="Speculative study"
-            className="col-span-3"
+            className="col-span-4"
             available={speculativeAvailable}
             unavailableReason={speculativeUnavailableReason}
           />
           <TabsTrigger
             value="expert-cache"
             aria-label="Expert cache study"
-            className="col-span-3"
+            className="col-span-4"
           >
             Cache study
           </TabsTrigger>
@@ -3494,6 +3511,206 @@ function ConfigurationPanel({
                   />
                 </>
               )}
+        </TabsContent>
+        <TabsContent value="co-residency" className="space-y-4">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+            <span>Models on this device</span>
+            <ParameterHelp
+              label="Co-residency"
+              description="Serving more than one model from one device is bound by residency rather than compute. Each model holds its weights plus a preallocated KV arena for as long as it is resident. If the working set fits, everything stays loaded and the models only delay each other's batches. If it does not, the device evicts and reloads, and an eviction discards the KV arena so partial work is prefilled again."
+            />
+          </div>
+          {config.coResidency.models.map((model, index) => (
+            <div
+              key={`${model.preset}-${index}`}
+              className="rounded border border-zinc-200 p-2"
+            >
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <Select
+                  value={model.preset}
+                  disabled={disabled}
+                  onValueChange={(preset) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { preset },
+                  ))}
+                >
+                  <SelectTrigger
+                    aria-label={`Model ${index + 1}`}
+                    className="h-8 min-w-0 flex-1 text-xs [&>span]:truncate"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DASHBOARD_MODEL_PRESETS.map((preset) => (
+                      <SelectItem key={preset} value={preset}>
+                        {createBuiltinModelBinding(preset).displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={model.weightDtype}
+                  disabled={disabled}
+                  onValueChange={(weightDtype) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { weightDtype: weightDtype as QuantType },
+                  ))}
+                >
+                  <SelectTrigger
+                    aria-label={`Model ${index + 1} weight format`}
+                    className="h-8 w-20 shrink-0 text-xs"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BUILTIN_WEIGHT_DTYPES.map((dtype) => (
+                      <SelectItem key={dtype} value={dtype}>
+                        {formatDtype(dtype)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {config.coResidency.models.length > 1
+                  ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon-sm"
+                        className="shrink-0"
+                        aria-label={`Remove model ${index + 1}`}
+                        disabled={disabled}
+                        onClick={() => onChange({
+                          ...config,
+                          coResidency: {
+                            ...config.coResidency,
+                            models: config.coResidency.models.filter(
+                              (_, candidate) => candidate !== index,
+                            ),
+                          },
+                        })}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    )
+                  : null}
+              </div>
+              <SliderField
+                label="Context"
+                description="KV arena this model reserves while resident. It is held whether or not a request is using all of it, so it counts against the device for the whole residency."
+                value={model.contextTokens}
+                minimum={1_024}
+                maximum={131_072}
+                step={1_024}
+                disabled={disabled}
+                suffix=" tok"
+                onChange={(contextTokens) => onChange(withCoResidencyModel(
+                  config,
+                  index,
+                  { contextTokens },
+                ))}
+              />
+              <div className="mt-1.5 flex items-center justify-between gap-3">
+                <label
+                  className="flex items-center gap-1 text-[11px] font-medium text-zinc-600"
+                  htmlFor={`co-residency-pinned-${index}`}
+                >
+                  Keep loaded
+                  <ParameterHelp
+                    label="Keep loaded"
+                    description="A pinned model is never evicted, so it never pays a reload. Pinning more than the device can hold is rejected, as is pinning so much that another model could never be made resident."
+                  />
+                </label>
+                <Switch
+                  id={`co-residency-pinned-${index}`}
+                  checked={model.pinned}
+                  disabled={disabled}
+                  onCheckedChange={(pinned) => onChange(withCoResidencyModel(
+                    config,
+                    index,
+                    { pinned },
+                  ))}
+                />
+              </div>
+              <div className="mt-1 text-[11px] text-zinc-500">
+                {formatBytes(coResidencyFootprintBytes(model))} resident
+              </div>
+            </div>
+          ))}
+          {config.coResidency.models.length < 4
+            ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  disabled={disabled}
+                  onClick={() => onChange({
+                    ...config,
+                    coResidency: {
+                      ...config.coResidency,
+                      models: [
+                        ...config.coResidency.models,
+                        {
+                          preset: "qwen3-0.6b",
+                          weightDtype: "fp16" as QuantType,
+                          contextTokens: 4_096,
+                          pinned: false,
+                          requestCount: 2,
+                        },
+                      ],
+                    },
+                  })}
+                >
+                  Add a model
+                </Button>
+              )
+            : null}
+          <SliderField
+            label="Request gap"
+            description="Time between one model's requests. Streams are offset from each other, so a shorter gap makes the models contend for the device more often."
+            value={config.coResidency.requestGapMs}
+            minimum={100}
+            maximum={30_000}
+            step={100}
+            disabled={disabled}
+            suffix=" ms"
+            onChange={(requestGapMs) => onChange({
+              ...config,
+              coResidency: { ...config.coResidency, requestGapMs },
+            })}
+          />
+          <SliderField
+            label="Prompt tokens"
+            value={config.coResidency.promptTokens}
+            minimum={64}
+            maximum={8_192}
+            step={64}
+            disabled={disabled}
+            onChange={(promptTokens) => onChange({
+              ...config,
+              coResidency: { ...config.coResidency, promptTokens },
+            })}
+          />
+          <SliderField
+            label="Output tokens"
+            value={config.coResidency.outputTokens}
+            minimum={1}
+            maximum={512}
+            step={1}
+            disabled={disabled}
+            onChange={(outputTokens) => onChange({
+              ...config,
+              coResidency: { ...config.coResidency, outputTokens },
+            })}
+          />
+          <div className="border-t border-zinc-200 pt-3 text-[11px] text-zinc-600">
+            {formatBytes(coResidencyWorkingSetBytes(config))} working set
+            {selectedScenario === undefined
+              ? null
+              : ` of ${formatBytes(coResidencyDeviceBytes(selectedScenario))} allocatable`}
+          </div>
         </TabsContent>
         <TabsContent value="fault" className="space-y-4">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
@@ -4221,7 +4438,9 @@ function Results({
         ? pipelineMetrics(result)
         : result.mode === "fault"
           ? faultMetrics(result)
-          : expertMetrics(result);
+          : result.mode === "co-residency"
+            ? coResidencyMetrics(result)
+            : expertMetrics(result);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-3">
@@ -5547,6 +5766,47 @@ function ParameterHelp({
   );
 }
 
+function withCoResidencyModel(
+  config: DashboardRunConfig,
+  index: number,
+  patch: Partial<DashboardRunConfig["coResidency"]["models"][number]>,
+): DashboardRunConfig {
+  return {
+    ...config,
+    coResidency: {
+      ...config.coResidency,
+      models: config.coResidency.models.map((model, candidate) => (
+        candidate === index ? { ...model, ...patch } : model
+      )),
+    },
+  };
+}
+
+/** Bytes a model holds while resident: weights plus its whole KV arena. */
+function coResidencyFootprintBytes(
+  model: DashboardRunConfig["coResidency"]["models"][number],
+): number {
+  const binding = createBuiltinModelBinding(
+    model.preset as DashboardModelPreset,
+    model.weightDtype,
+    "fp16",
+  );
+  return binding.weightBytes
+    + (binding.executionProfile.kvCacheBytesPerToken ?? 0) * model.contextTokens;
+}
+
+function coResidencyWorkingSetBytes(config: DashboardRunConfig): number {
+  return config.coResidency.models.reduce(
+    (sum, model) => sum + coResidencyFootprintBytes(model),
+    0,
+  );
+}
+
+/** Allocatable bytes of the domain the co-residency workload places into. */
+function coResidencyDeviceBytes(scenario: SimulationScenario): number {
+  return coResidencyMemoryDomain(scenario).domain.resourceLimitBytes;
+}
+
 function ModeTab({
   value,
   label,
@@ -5671,6 +5931,52 @@ function speculativeMetrics(result: DashboardResult) {
       value: formatRate(topology.tokensPerSecond),
       detail:
         `${metrics.acceptedAdditionalTokens}/${metrics.proposedAdditionalTokens} additional drafts accepted`,
+      icon: <Cpu className="size-4 text-emerald-700" />,
+    },
+  ];
+}
+
+function coResidencyMetrics(result: DashboardResult) {
+  const metrics = result.coResidency!.metrics;
+  const workingSet = metrics.tenants.reduce(
+    (sum, tenant) => sum + tenant.residencyFootprintBytes,
+    0,
+  );
+  const worstWait = metrics.tenants.reduce(
+    (worst, tenant) => Math.max(worst, tenant.residencyWaitNs),
+    0,
+  );
+  return [
+    {
+      label: "Working set",
+      value: formatBytes(workingSet),
+      detail: metrics.fitsWithoutSwapping
+        ? `fits in ${formatBytes(metrics.deviceMemoryBytes)}, nothing evicted`
+        : `over ${formatBytes(metrics.deviceMemoryBytes)}, the device swaps`,
+      icon: <Database className={`size-4 ${
+        metrics.fitsWithoutSwapping ? "text-emerald-700" : "text-rose-700"
+      }`} />,
+    },
+    {
+      label: "Model swaps",
+      value: metrics.totalEvictions.toLocaleString(),
+      detail: metrics.fitsWithoutSwapping
+        ? "every model stayed loaded"
+        : `${metrics.reloadsPerRequest.toFixed(2)} reloads per request`,
+      icon: <Gauge className="size-4 text-amber-700" />,
+    },
+    {
+      label: "Waiting to load",
+      value: formatDuration(worstWait),
+      detail: `${formatBytes(metrics.totalLoadedBytes)} moved · ${
+        formatDuration(metrics.hiddenTransferNs)
+      } hidden behind compute`,
+      icon: <Clock3 className="size-4 text-sky-700" />,
+    },
+    {
+      label: "Device busy",
+      value: `${(metrics.computeUtilization * 100).toFixed(0)}%`,
+      detail: `${(metrics.transferUtilization * 100).toFixed(0)}% of the run spent loading weights`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
   ];

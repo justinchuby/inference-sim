@@ -46,6 +46,11 @@ does not claim hardware-accurate latency without calibration data.
   controls. The workbench estimates the selected configuration's per-request
   and single-sequence context capacity from model KV geometry, model residency,
   placement, sharding, and user allocation limits.
+- Serve several models from one device, which is what a personal machine
+  actually does. Residency rather than compute is the binding constraint: each
+  model holds its weights plus a preallocated KV arena, so the workload reports
+  whether the working set fits or whether the device has to evict and reload,
+  and what the swapping costs in time to first token.
 - Inject a node fault into a set of concurrent executions and watch what a
   failed node actually does to work in flight: which operations it never ran,
   which ranks failed, aborted, or drained on surviving nodes, and whether
@@ -137,6 +142,7 @@ pnpm sim serving multi-gpu examples/serving.yaml
 pnpm sim serving multi-gpu examples/serving-speculative.yaml
 pnpm sim speculative examples/speculative-mtp.yaml
 pnpm sim expert-cache examples/expert-cache.yaml
+pnpm sim co-residency examples/co-residency.yaml
 ```
 
 Compare topologies or exercise failure protocols:

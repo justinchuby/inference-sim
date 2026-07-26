@@ -57,6 +57,15 @@ function config(seed: number): DashboardRunConfig {
     },
     modality: "text",
     mediaItemsPerRequest: 1,
+      coResidency: {
+        models: [
+          { preset: "qwen3-8b", weightDtype: "int4" as const, contextTokens: 8192, pinned: false, requestCount: 2 },
+          { preset: "qwen3-0.6b", weightDtype: "fp16" as const, contextTokens: 1024, pinned: false, requestCount: 2 },
+        ],
+        requestGapMs: 4000,
+        promptTokens: 256,
+        outputTokens: 16,
+      },
   };
 }
 

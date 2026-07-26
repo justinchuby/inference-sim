@@ -246,6 +246,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       "fault",
       "modality",
       "mediaItemsPerRequest",
+      "coResidency",
     ], "artifact input");
     const scenarioName = requireEnum(
       config.scenarioName,
@@ -290,7 +291,14 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     }
     const mode = requireEnum(
       config.mode,
-      ["serving", "pipeline", "speculative", "expert-cache", "fault"] as const,
+      [
+        "serving",
+        "pipeline",
+        "speculative",
+        "expert-cache",
+        "fault",
+        "co-residency",
+      ] as const,
       "artifact input mode",
     );
     const seed = requireInteger(config.seed, 0, 0xffff_ffff, "artifact input seed");
@@ -298,6 +306,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
     const serving = parseServingConfig(config.serving);
     const expertCache = parseExpertCacheConfig(config.expertCache);
     const fault = parseFaultConfig(config.fault);
+    const coResidency = parseCoResidencyConfig(config.coResidency);
     const modality = requireEnum(
       config.modality,
       ["text", "multimodal"] as const,
@@ -340,6 +349,7 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
       fault,
       modality,
       mediaItemsPerRequest,
+      coResidency,
       ...(calibration === undefined ? {} : { calibration }),
     };
   } catch (error) {
@@ -939,6 +949,66 @@ function parseServingConfig(
       8,
       512,
       "serving prefillChunkTokens",
+    ),
+  };
+}
+
+function parseCoResidencyConfig(
+  input: unknown,
+): DashboardRunConfig["coResidency"] {
+  const config = requireRecord(input, "coResidency");
+  assertOnlyKeys(config, [
+    "models",
+    "requestGapMs",
+    "promptTokens",
+    "outputTokens",
+  ], "coResidency");
+  const models = config.models;
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new Error("coResidency models must be a non-empty array");
+  }
+  return {
+    models: models.map((entry, index) => {
+      const model = requireRecord(entry, `coResidency models[${index}]`);
+      return {
+        preset: requireString(model.preset, `coResidency models[${index}] preset`),
+        weightDtype: requireEnum(
+          model.weightDtype,
+          ["fp32", "fp16", "bf16", "fp8", "int8", "int4", "int2", "int1", "nf4"] as const,
+          `coResidency models[${index}] weightDtype`,
+        ),
+        contextTokens: requireInteger(
+          model.contextTokens,
+          64,
+          1_048_576,
+          `coResidency models[${index}] contextTokens`,
+        ),
+        pinned: model.pinned === true,
+        requestCount: requireInteger(
+          model.requestCount,
+          1,
+          16,
+          `coResidency models[${index}] requestCount`,
+        ),
+      };
+    }),
+    requestGapMs: requireInteger(
+      config.requestGapMs,
+      1,
+      600_000,
+      "coResidency requestGapMs",
+    ),
+    promptTokens: requireInteger(
+      config.promptTokens,
+      16,
+      1_048_576,
+      "coResidency promptTokens",
+    ),
+    outputTokens: requireInteger(
+      config.outputTokens,
+      1,
+      32_768,
+      "coResidency outputTokens",
     ),
   };
 }

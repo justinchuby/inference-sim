@@ -618,6 +618,76 @@ speculative_token_trace:
     expect(capture.stderr()).toContain("unknown scenario preset");
   });
 
+  it("shows co-residency swapping only when the device is too small", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
+    const write = async (name: string, memoryBytes: number) => {
+      const path = join(directory, name);
+      await writeFile(path, `
+device:
+  memory_bytes: ${memoryBytes}
+  load_bandwidth_bytes_per_sec: 25000000000
+  memory_bandwidth_bytes_per_sec: 1000000000000
+  prefill_ns_per_token: 300000
+batching:
+  max_batch_tokens: 256
+  prefill_chunk_tokens: 128
+models:
+  - id: chat
+    weight_bytes: 10737418240
+    kv_bytes_per_token: 262144
+    max_kv_tokens: 4096
+    requests:
+      - { id: c0, arrival_ns: 0, prompt_tokens: 256, output_tokens: 8 }
+      - { id: c1, arrival_ns: 4000000000, prompt_tokens: 256, output_tokens: 8 }
+  - id: image
+    weight_bytes: 6871947674
+    kv_bytes_per_token: 0
+    max_kv_tokens: 64
+    requests:
+      - { id: i0, arrival_ns: 2000000000, prompt_tokens: 64, output_tokens: 1 }
+`, "utf8");
+      return path;
+    };
+    type Summary = {
+      fitsWithoutSwapping: boolean;
+      totalEvictions: number;
+      totalLoads: number;
+      peakResidentBytes: number;
+      deviceMemoryBytes: number;
+      models: { tenantId: string; residencyWaitNs: number }[];
+      replay: { completedRequests: number };
+    };
+    const run = async (name: string, memoryBytes: number) => {
+      const capture = captureIo();
+      expect(await runCli(
+        ["co-residency", await write(name, memoryBytes)],
+        capture.io,
+      )).toBe(0);
+      return JSON.parse(capture.stdout()) as Summary;
+    };
+
+    // 11 GiB of chat plus 6.4 GiB of image does not fit in 16 GiB.
+    const tight = await run("tight.yaml", 16 * 1024 ** 3);
+    expect(tight.fitsWithoutSwapping).toBe(false);
+    expect(tight.totalEvictions).toBeGreaterThan(0);
+    expect(tight.replay.completedRequests).toBe(3);
+
+    // The same workload on a larger device never has to swap.
+    const roomy = await run("roomy.yaml", 32 * 1024 ** 3);
+    expect(roomy.fitsWithoutSwapping).toBe(true);
+    expect(roomy.totalEvictions).toBe(0);
+    expect(roomy.totalLoads).toBe(2);
+    expect(roomy.peakResidentBytes).toBeLessThanOrEqual(roomy.deviceMemoryBytes);
+    expect(roomy.replay.completedRequests).toBe(3);
+
+    // Swapping is what the models spend their extra waiting time on.
+    const waited = (summary: Summary) => summary.models.reduce(
+      (sum, model) => sum + model.residencyWaitNs,
+      0,
+    );
+    expect(waited(tight)).toBeGreaterThan(waited(roomy));
+  });
+
   it("runs an exact-capacity expert-cache workload", async () => {
     const directory = await mkdtemp(join(tmpdir(), "inference-sim-"));
     const path = join(directory, "expert-cache.yaml");

@@ -35,6 +35,8 @@ import type {
   StaticSearchResult,
   SimulationScenario,
   TopologyPipelineWork,
+  MultiModelMetrics,
+  MultiModelResult,
 } from "@inference-sim/core";
 
 export type WorkloadMode =
@@ -42,7 +44,24 @@ export type WorkloadMode =
   | "pipeline"
   | "speculative"
   | "expert-cache"
-  | "fault";
+  | "fault"
+  | "co-residency";
+
+export interface DashboardCoResidencyModel {
+  readonly preset: string;
+  readonly weightDtype: QuantType;
+  readonly contextTokens: number;
+  readonly pinned: boolean;
+  readonly requestCount: number;
+}
+
+export interface DashboardCoResidencyConfig {
+  readonly models: readonly DashboardCoResidencyModel[];
+  /** Seconds between one model's requests, used to interleave the streams. */
+  readonly requestGapMs: number;
+  readonly promptTokens: number;
+  readonly outputTokens: number;
+}
 
 export interface DashboardFaultConfig {
   /** Empty selects the first node that participates in the compiled plan. */
@@ -217,6 +236,7 @@ export interface DashboardRunConfig {
     readonly trace?: SpeculativeTokenTrace;
   };
   readonly fault: DashboardFaultConfig;
+  readonly coResidency: DashboardCoResidencyConfig;
   /**
    * Whether media components run. A multimodal checkpoint served without
    * images is a real deployment, so the encoders and their token expansion
@@ -270,6 +290,10 @@ export interface DashboardResult {
   };
   readonly mode: WorkloadMode;
   readonly fault?: DashboardFaultResult;
+  readonly coResidency?: {
+    readonly metrics: MultiModelMetrics;
+    readonly loadBandwidthBytesPerSec: number;
+  };
   readonly durationMs: number;
   readonly calibration?: {
     readonly datasetId: string;
@@ -378,6 +402,10 @@ export type DashboardCoreEvidence =
   | {
       readonly kind: "fault";
       readonly topology: TopologyWorkloadResult;
+    }
+  | {
+      readonly kind: "co_residency";
+      readonly result: MultiModelResult;
     }
   | {
       readonly kind: "speculative";

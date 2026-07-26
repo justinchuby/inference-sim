@@ -36,6 +36,10 @@ import {
   runPlanFaultCampaign,
   runNodeFailoverCampaign,
   runSeededConcurrentNodeFailureCampaign,
+  simulateMultiModelWorkload,
+  type MultiModelBatchDurationEstimator,
+  type MultiModelConfig,
+  type MultiModelResult,
   runSeededConcurrentPlanCampaign,
   replayPlanTrace,
   serializeFrozenPlanArtifact,
@@ -234,6 +238,18 @@ export async function runCli(
         printJson(
           io,
           simulateExpertCacheWorkload(parseExpertCacheConfig(config)),
+        );
+        return 0;
+      }
+      case "co-residency": {
+        const config = await loadRequiredConfig(argument, "co-residency");
+        const workload = parseMultiModelConfig(config);
+        printJson(
+          io,
+          summarizeMultiModel(simulateMultiModelWorkload(
+            workload,
+            multiModelDurationEstimator(config),
+          )),
         );
         return 0;
       }
@@ -1873,6 +1889,117 @@ function printJson(io: CliIo, value: unknown): void {
   ), 2)}\n`);
 }
 
+/**
+ * Co-residency batch cost. Decode reads the model's weights once per step, so
+ * it scales with weight bytes over bandwidth; prefill is charged per token.
+ */
+function multiModelDurationEstimator(
+  config: Record<string, unknown>,
+): MultiModelBatchDurationEstimator {
+  const device = requireRecord(config.device, "device");
+  const bandwidth = requireNumber(
+    device,
+    "memory_bandwidth_bytes_per_sec",
+    "device",
+  );
+  const prefillNsPerToken = requireNumber(
+    device,
+    "prefill_ns_per_token",
+    "device",
+  );
+  return (batch, tenant) => Math.max(1, Math.round(
+    batch.decodeTokens * (tenant.weightBytes / bandwidth * 1e9)
+    + batch.prefillTokens * prefillNsPerToken,
+  ));
+}
+
+function parseMultiModelConfig(
+  config: Record<string, unknown>,
+): MultiModelConfig {
+  const device = requireRecord(config.device, "device");
+  const batching = requireRecord(config.batching, "batching");
+  return {
+    deviceMemoryBytes: requireNumber(device, "memory_bytes", "device"),
+    loadBandwidthBytesPerSec: requireNumber(
+      device,
+      "load_bandwidth_bytes_per_sec",
+      "device",
+    ),
+    maxBatchTokens: requireNumber(batching, "max_batch_tokens", "batching"),
+    prefillChunkTokens: requireNumber(
+      batching,
+      "prefill_chunk_tokens",
+      "batching",
+    ),
+    tenants: requireRecordArray(config, "models", "co-residency").map(
+      (model, index) => {
+        const context = `models[${index}]`;
+        return {
+          id: requireString(model, "id", context),
+          displayName: optionalString(
+            model,
+            "display_name",
+            requireString(model, "id", context),
+            context,
+          ),
+          weightBytes: requireNumber(model, "weight_bytes", context),
+          kvBytesPerToken: requireNumber(model, "kv_bytes_per_token", context),
+          maxKvTokens: requireNumber(model, "max_kv_tokens", context),
+          pinned: optionalBoolean(model, "pinned", false, context),
+          requests: requireRecordArray(
+            model,
+            "requests",
+            context,
+          ).map((request, requestIndex) => {
+            const requestContext = `${context}.requests[${requestIndex}]`;
+            return {
+              id: requireString(request, "id", requestContext),
+              arrivalNs: requireNumber(request, "arrival_ns", requestContext),
+              promptTokens: requireNumber(
+                request,
+                "prompt_tokens",
+                requestContext,
+              ),
+              outputTokens: requireNumber(
+                request,
+                "output_tokens",
+                requestContext,
+              ),
+            };
+          }),
+        };
+      },
+    ),
+  };
+}
+
+function summarizeMultiModel(result: MultiModelResult) {
+  const metrics = result.metrics;
+  return {
+    revision: result.revision,
+    assumptions: [
+      "a model occupies its weights plus a preallocated KV arena while resident",
+      "eviction releases the KV arena, so partial generation is prefilled again",
+      "a model is evictable only after retiring a request since its last load",
+      "transfers overlap compute; a load can hide behind another model's batch",
+    ],
+    fitsWithoutSwapping: metrics.fitsWithoutSwapping,
+    deviceMemoryBytes: metrics.deviceMemoryBytes,
+    peakResidentBytes: metrics.peakResidentBytes,
+    totalDurationNs: metrics.totalDurationNs,
+    computeUtilization: metrics.computeUtilization,
+    transferUtilization: metrics.transferUtilization,
+    hiddenTransferNs: metrics.hiddenTransferNs,
+    totalLoads: metrics.totalLoads,
+    totalEvictions: metrics.totalEvictions,
+    totalLoadedBytes: metrics.totalLoadedBytes,
+    reloadsPerRequest: metrics.reloadsPerRequest,
+    models: metrics.tenants,
+    replay: result.replay,
+    traceEvents: result.trace.length,
+  };
+}
+
 function helpText(): string {
   return `inference-sim
 
@@ -1885,6 +2012,7 @@ Usage:
   inference-sim speculative-trace <trace.yaml|json> [scenario-target] [calibration.yaml|json]
   inference-sim speculative-capture <target-only.yaml|json> <speculative.yaml|json> [scenario-target] [calibration.yaml|json]
   inference-sim expert-cache <config.yaml|json>
+  inference-sim co-residency <config.yaml|json>
   inference-sim calibrate <calibration.yaml|json>
   inference-sim onnx-inspect <model.onnx> [metadata.yaml|json]
   inference-sim onnx-static <config.yaml|json> <model.onnx> [metadata.yaml|json]

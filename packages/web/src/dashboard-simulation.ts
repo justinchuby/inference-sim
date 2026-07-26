@@ -12,6 +12,7 @@ import {
   compileTopologyWorkloadPlan,
   defaultSpeculativeEligibility,
   runSeededConcurrentNodeFailureCampaign,
+  simulateMultiModelWorkload,
   targetOnlyTopologyProfile,
   expertCacheConfigForTopology,
   fitTopologyCostModel,
@@ -38,7 +39,15 @@ import type {
   DashboardRunConfig,
   WorkerRunProgressReporter,
 } from "./types.js";
-import { modelSupportsSpeculativeFamily } from "./model-binding.js";
+import type {
+  MultiModelResult,
+  TopologyResourceUtilization,
+} from "@inference-sim/core";
+import {
+  createBuiltinModelBinding,
+  modelSupportsSpeculativeFamily,
+  type DashboardModelPreset,
+} from "./model-binding.js";
 import { buildDashboardRoofline } from "./roofline.js";
 
 export function simulateDashboard(
@@ -218,6 +227,26 @@ export function simulateDashboardExecution(
         ...pipelineExecutionSummary([topology]),
       }),
       evidence: { kind: "pipeline", topology },
+    };
+  }
+  if (config.mode === "co-residency") {
+    reportProgress({ progress: 40, phase: "Placing models on the device" });
+    const co = runCoResidency(config, scenario, costModel);
+    reportProgress({ progress: 78, phase: "Summarizing residency evidence" });
+    return {
+      summary: attachCalibration({
+        scenario: scenarioSummary,
+        ...(modelSummary(config) === undefined
+          ? {}
+          : { model: modelSummary(config)! }),
+        mode: config.mode,
+        topology: co.topology,
+        coResidency: {
+          metrics: co.result.metrics,
+          loadBandwidthBytesPerSec: co.loadBandwidthBytesPerSec,
+        },
+      }),
+      evidence: { kind: "co_residency", result: co.result },
     };
   }
   if (config.mode === "fault") {
@@ -1056,6 +1085,182 @@ function runNodeFaultCampaign(
 
 function planRankIds(plan: { readonly steps: readonly { readonly participants: readonly string[] }[] }): string[] {
   return [...new Set(plan.steps.flatMap((step) => step.participants))];
+}
+
+/**
+ * Builds one tenant per selected preset and serves their interleaved request
+ * streams from the scenario's largest compute-visible memory domain.
+ */
+/** Heuristic prefill rate; calibration replaces it for the serving workloads. */
+const PREFILL_NS_PER_TOKEN = 300_000;
+
+/**
+ * The domain a co-resident model's weights live in. A discrete GPU holds them
+ * in its own VRAM even though it can also reach host memory, so device-local
+ * memory wins over the larger host domain rather than the widest one winning.
+ */
+export function coResidencyMemoryDomain(
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): { readonly deviceId: string; readonly domain: ReturnType<typeof buildScenarioPreset>["memoryDomains"][number] } {
+  const device = scenario.devices.find((candidate) => (
+    candidate.capabilities.includes("ffn")
+  )) ?? scenario.devices[0]!;
+  const reachable = scenario.memoryDomains.filter((domain) => (
+    device.memoryDomainIds.includes(domain.id) && domain.kind !== "storage"
+  ));
+  const byKind = (kind: string) => reachable
+    .filter((domain) => domain.kind === kind)
+    .reduce<typeof reachable[number] | undefined>(
+      (widest, domain) => (
+        widest === undefined
+        || domain.resourceLimitBytes > widest.resourceLimitBytes
+          ? domain
+          : widest
+      ),
+      undefined,
+    );
+  const domain = byKind("device")
+    ?? byKind("unified")
+    ?? byKind("host")
+    ?? reachable[0]
+    ?? scenario.memoryDomains[0]!;
+  return { deviceId: device.id, domain };
+}
+
+function runCoResidency(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+  costModel: TopologyCostModel,
+): {
+  readonly result: MultiModelResult;
+  readonly loadBandwidthBytesPerSec: number;
+  readonly topology: DashboardResult["topology"];
+} {
+  const placement = coResidencyMemoryDomain(scenario);
+  const target = placement.domain;
+  // Weights arrive from wherever the device is not: a host or storage domain.
+  const source = scenario.memoryDomains
+    .filter((domain) => domain.id !== target.id)
+    .reduce<{ bandwidthBytesPerSec: number } | undefined>(
+      (best, domain) => (
+        best === undefined || domain.bandwidthBytesPerSec > best.bandwidthBytesPerSec
+          ? domain
+          : best
+      ),
+      undefined,
+    );
+  const link = scenario.links.find((candidate) => (
+    candidate.targetDomainId === target.id
+  ));
+  const loadBandwidthBytesPerSec = Math.max(
+    1,
+    Math.min(
+      link?.bandwidthBytesPerSec ?? Number.POSITIVE_INFINITY,
+      source?.bandwidthBytesPerSec ?? Number.POSITIVE_INFINITY,
+      target.bandwidthBytesPerSec,
+    ),
+  );
+  const gapNs = clampInteger(config.coResidency.requestGapMs, 1, 600_000) * 1e6;
+  const promptTokens = clampInteger(
+    config.coResidency.promptTokens,
+    16,
+    1_048_576,
+  );
+  const outputTokens = clampInteger(config.coResidency.outputTokens, 1, 32_768);
+  const tenants = config.coResidency.models.map((entry, index) => {
+    const binding = createBuiltinModelBinding(
+      entry.preset as DashboardModelPreset,
+      entry.weightDtype,
+      "fp16",
+    );
+    const kvBytesPerToken = Math.round(
+      binding.executionProfile.kvCacheBytesPerToken ?? 0,
+    );
+    const contextTokens = clampInteger(entry.contextTokens, 64, 1_048_576);
+    const requestCount = clampInteger(entry.requestCount, 1, 16);
+    // Streams are offset from each other so the models genuinely interleave
+    // rather than each running to completion in turn.
+    const offsetNs = Math.round(gapNs * index / config.coResidency.models.length);
+    return {
+      id: entry.preset,
+      displayName: binding.displayName,
+      weightBytes: Math.max(1, Math.round(binding.weightBytes)),
+      kvBytesPerToken,
+      maxKvTokens: Math.max(contextTokens, promptTokens + outputTokens - 1),
+      pinned: entry.pinned,
+      requests: Array.from({ length: requestCount }, (_, request) => ({
+        id: `${entry.preset}-r${request}`,
+        arrivalNs: Math.round(offsetNs + request * gapNs),
+        promptTokens,
+        outputTokens,
+      })),
+    };
+  });
+  const memoryBandwidth = target.bandwidthBytesPerSec;
+  const result = simulateMultiModelWorkload(
+    {
+      tenants,
+      deviceMemoryBytes: target.resourceLimitBytes,
+      loadBandwidthBytesPerSec,
+      maxBatchTokens: clampInteger(config.serving.maxBatchTokens, 8, 512),
+      prefillChunkTokens: clampInteger(config.serving.prefillChunkTokens, 8, 512),
+    },
+    (batch, tenant) => Math.max(1, Math.round(
+      // Decode reads the model's weights once per step; prefill is compute
+      // bound and charged per token from the topology cost model.
+      batch.decodeTokens * (tenant.weightBytes / memoryBandwidth * 1e9)
+      + batch.prefillTokens * PREFILL_NS_PER_TOKEN,
+    )),
+  );
+  const committedTokens = result.metrics.tenants.reduce(
+    (sum, tenant) => sum + tenant.outputTokens,
+    0,
+  );
+  const busy = (busyNs: number): TopologyResourceUtilization[] => [{
+    resourceId: placement.deviceId,
+    busyNs,
+    capacityLanes: 1,
+    utilization: result.metrics.totalDurationNs === 0
+      ? 0
+      : busyNs / result.metrics.totalDurationNs,
+  }];
+  return {
+    result,
+    loadBandwidthBytesPerSec,
+    topology: {
+      confidence: "heuristic",
+      assumptions: [
+        "A model occupies its weights plus a preallocated KV arena while resident.",
+        "Eviction releases the KV arena, so partial generation is prefilled again.",
+        "Decode cost is the model's weight bytes over device bandwidth; prefill is charged per token.",
+      ],
+      planSteps: result.trace.length,
+      operationCounts: {
+        compute: result.trace.filter(
+          (event) => event.kind === "batch_start",
+        ).length,
+        transfer: result.metrics.totalLoads,
+        collective: 0,
+        allReduce: 0,
+        allToAll: 0,
+      },
+      metrics: {
+        totalDurationNs: result.metrics.totalDurationNs,
+        foregroundDurationNs: result.metrics.totalDurationNs,
+        backgroundDrainNs: 0,
+        committedTokens,
+        tokensPerSecond: result.metrics.totalDurationNs === 0
+          ? 0
+          : committedTokens / (result.metrics.totalDurationNs / 1e9),
+        computeServiceNs: result.metrics.computeServiceNs,
+        transferServiceNs: result.metrics.transferServiceNs,
+        collectiveServiceNs: 0,
+        computeUtilization: busy(result.metrics.computeServiceNs),
+        linkUtilization: busy(result.metrics.transferServiceNs),
+      },
+      topResources: busy(result.metrics.computeServiceNs),
+    },
+  };
 }
 
 function runExpertCache(

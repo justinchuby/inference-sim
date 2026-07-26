@@ -62,6 +62,19 @@ export default function ResultCharts({
             </section>
           )
         : null}
+      {result.coResidency
+        ? (
+            <section className="panel">
+              <SectionHeading
+                title="Residency"
+                detail={result.coResidency.metrics.fitsWithoutSwapping
+                  ? "every model stayed loaded"
+                  : "the device swapped models in and out"}
+              />
+              <CoResidencyChart result={result} />
+            </section>
+          )
+        : null}
       {result.fault
         ? (
             <section className="panel">
@@ -694,6 +707,64 @@ function formatGiB(bytes: number): string {
   if (giB >= 1) return `${giB.toFixed(1)} GiB`;
   const miB = bytes / 1024 ** 2;
   return miB >= 1 ? `${miB.toFixed(0)} MiB` : `${(bytes / 1024).toFixed(0)} KiB`;
+}
+
+/**
+ * Where each model's time went. A model that had to be swapped shows its
+ * requests waiting for the device to load it again, which is the cost the
+ * working set not fitting actually imposes.
+ */
+function CoResidencyChart({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element {
+  const metrics = result.coResidency!.metrics;
+  const data = metrics.tenants.map((tenant) => ({
+    name: tenant.displayName,
+    resident: tenant.residentNs / 1e6,
+    waiting: tenant.residencyWaitNs / 1e6,
+    loading: tenant.loadServiceNs / 1e6,
+    footprintBytes: tenant.residencyFootprintBytes,
+    loads: tenant.loads,
+    evictions: tenant.evictions,
+  }));
+
+  return (
+    <div className="chart-frame">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical" margin={{ left: 8, right: 18 }}>
+          <CartesianGrid stroke="#e4e4e7" horizontal={false} />
+          <XAxis
+            type="number"
+            tickFormatter={(value: number) => `${Math.round(value)} ms`}
+            tick={{ fill: "#71717a", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            width={132}
+            tick={{ fill: "#52525b", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ChartTooltip
+            contentStyle={chartTooltipStyle}
+            formatter={(value, name) => [
+              `${Number(value).toFixed(1)} ms`,
+              String(name),
+            ]}
+          />
+          <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} iconSize={8} />
+          <Bar dataKey="resident" name="Resident" fill="#0369a1" />
+          <Bar dataKey="loading" name="Being loaded" fill="#f59e0b" />
+          <Bar dataKey="waiting" name="Requests waiting" fill="#dc2626" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 const FAULT_STATUS_FILL = {
