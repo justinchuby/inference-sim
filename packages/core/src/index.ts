@@ -31,6 +31,24 @@ export type {
 export { GPU_PRESETS, buildTopology, listPresets } from "./presets.js";
 export { compareIds } from "./ordering.js";
 export {
+  MULTI_MODEL_TRACE_REVISION,
+  MultiModelProtocolError,
+  replayMultiModelTrace,
+  simulateMultiModelWorkload,
+  tenantFootprintBytes,
+  validateMultiModelConfig,
+  type MultiModelBatchDurationEstimator,
+  type MultiModelBatchWork,
+  type MultiModelConfig,
+  type MultiModelMetrics,
+  type MultiModelRequestResult,
+  type MultiModelRequestSpec,
+  type MultiModelResult,
+  type MultiModelTenantMetrics,
+  type MultiModelTenantSpec,
+  type MultiModelTraceEvent,
+} from "./multi-model.js";
+export {
   MODEL_PRESETS,
   MODEL_SPECS,
   buildModelProfile,
