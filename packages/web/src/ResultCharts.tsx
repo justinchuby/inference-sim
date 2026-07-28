@@ -1,4 +1,6 @@
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
@@ -26,6 +28,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import type { DashboardResult } from "./types.js";
+import { memoryTimeline } from "./memory-timeline.js";
 import { interpretRoofline } from "./roofline-interpretation.js";
 import {
   panLogDomain,
@@ -95,6 +98,7 @@ export default function ResultCharts({
         />
         <MemoryChart result={result} />
       </section>
+      <MemoryTimelineSection result={result} />
       <section className="panel">
         <SectionHeading
           title="Resource utilization"
@@ -871,6 +875,111 @@ function FaultRankChart({
         </BarChart>
       </ResponsiveContainer>
     </div>
+  );
+}
+
+
+function MemoryTimelineSection({
+  result,
+}: {
+  readonly result: DashboardResult;
+}): React.JSX.Element | null {
+  const timeline = memoryTimeline(result);
+  if (timeline === undefined || timeline.samples.length < 2) {
+    return null;
+  }
+  const palette = new Map<string, { key: string; label: string; fill: string }>(
+    MEMORY_PURPOSES.map((purpose) => [purpose.key, { ...purpose }] as const),
+  );
+  const bands = timeline.purposes.map((purpose) => (
+    palette.get(purpose) ?? { key: purpose, label: purpose, fill: "#94a3b8" }
+  ));
+  const data = timeline.samples.map((sample) => ({
+    ms: sample.atNs / 1e6,
+    ...sample.bytes,
+    total: sample.total,
+  }));
+  // Headroom above the peak rather than the whole domain: on a machine with
+  // far more memory than the run uses, scaling to capacity would flatten the
+  // series into a line along the axis and show nothing.
+  const ceiling = Math.min(
+    timeline.capacityBytes,
+    Math.max(timeline.peakTotalBytes * 1.25, timeline.residentBytes * 1.05),
+  );
+  const peakShare = timeline.peakTotalBytes / timeline.capacityBytes * 100;
+  return (
+    <section className="panel">
+      <SectionHeading
+        title="Memory over time"
+        detail={`${shortDomain(timeline.domainId)} · peak ${
+          formatGiB(timeline.peakTotalBytes)
+        } of ${formatGiB(timeline.capacityBytes)} (${
+          peakShare.toFixed(1)
+        }%)`}
+      />
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart
+            data={data}
+            margin={{ top: 8, right: 16, bottom: 4, left: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <XAxis
+              dataKey="ms"
+              type="number"
+              domain={[0, "dataMax"]}
+              tick={{ fontSize: 11 }}
+              tickFormatter={(value: number) => `${value.toFixed(0)} ms`}
+            />
+            <YAxis
+              tick={{ fontSize: 11 }}
+              domain={[0, ceiling]}
+              tickFormatter={(value: number) => formatGiB(value)}
+            />
+            <ChartTooltip
+              labelFormatter={(value) => `${Number(value).toFixed(2)} ms`}
+              formatter={(value) => formatGiB(Number(value))}
+            />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            {/* Stacked, so the top edge is total occupancy and the bands
+                below say what the memory is being held for. */}
+            {bands.map((band) => (
+              <Area
+                key={band.key}
+                type="stepAfter"
+                dataKey={band.key}
+                stackId="memory"
+                name={band.label}
+                stroke={band.fill}
+                fill={band.fill}
+                fillOpacity={0.8}
+                isAnimationActive={false}
+              />
+            ))}
+            {timeline.capacityBytes <= ceiling
+              ? (
+                  <ReferenceLine
+                    y={timeline.capacityBytes}
+                    stroke="#dc2626"
+                    strokeDasharray="4 4"
+                    label={{
+                      value: "allocatable",
+                      position: "insideTopRight",
+                      fontSize: 10,
+                      fill: "#dc2626",
+                    }}
+                  />
+                )
+              : null}
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="mt-2 text-[11px] leading-4 text-zinc-500">
+        Weights and caches do not move once loaded, so KV is the only term that
+        varies: it grows while a request generates and is released when the
+        request retires. {timeline.caveat}
+      </p>
+    </section>
   );
 }
 
