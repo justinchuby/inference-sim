@@ -51,10 +51,17 @@ export {
   type MultiModelTraceEvent,
 } from "./multi-model.js";
 export {
+  expertRoutingWeights,
   planExpertResidency,
   topExpertMass,
   type ExpertResidencyPlan,
 } from "./expert-residency.js";
+export {
+  expertCacheFromModel,
+  expertCacheTierDomains,
+  type ExpertCacheTierDomains,
+  type ModelBoundExpertCache,
+} from "./model-expert-cache.js";
 export {
   MODEL_PRESETS,
   MODEL_SPECS,

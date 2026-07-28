@@ -82,6 +82,54 @@ export function topExpertMass(
 }
 
 /**
+ * Relative probability that each expert is the one routed to, ordered from
+ * most to least requested.
+ *
+ * The cache's sampler draws without replacement using these as weights, so
+ * they only need to be proportional. Deriving them from the model's declared
+ * distribution is what binds cache behaviour to the checkpoint instead of to
+ * an invented ramp.
+ */
+export function expertRoutingWeights(
+  distribution: ExpertDistribution,
+  count: number,
+): readonly number[] {
+  if (count <= 0) {
+    return [];
+  }
+  switch (distribution.kind) {
+    case "uniform":
+      return Array.from({ length: count }, () => 1);
+    case "zipf":
+      return Array.from(
+        { length: count },
+        (_, index) => 1 / (index + 1) ** distribution.s,
+      );
+    case "clustered": {
+      const hot = Math.min(Math.max(distribution.hotExperts, 0), count);
+      const cold = count - hot;
+      const coldMass = 1 - distribution.hotFrequency;
+      return Array.from({ length: count }, (_, index) => (
+        index < hot
+          ? distribution.hotFrequency / Math.max(hot, 1)
+          : coldMass / Math.max(cold, 1)
+      ));
+    }
+    case "empirical": {
+      const sorted = [...distribution.frequencies]
+        .filter((value) => value > 0)
+        .sort((left, right) => right - left);
+      // A declared histogram need not have one bin per expert. Reuse it
+      // cyclically rather than inventing a tail or dropping experts, so every
+      // expert keeps a positive weight as the sampler requires.
+      return Array.from({ length: count }, (_, index) => (
+        sorted.length === 0 ? 1 : sorted[index % sorted.length]!
+      ));
+    }
+  }
+}
+
+/**
  * Divide a model's routed experts between memory and storage given the bytes
  * left for them after everything that must be resident.
  *
