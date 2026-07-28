@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildModelProfile,
+  topExpertMass,
   buildScenarioPreset,
   expertCacheFromModel,
   expertRoutingWeights,
@@ -180,5 +181,33 @@ describe("model-bound expert cache", () => {
     expect(result.snapshot.metrics.hotHitRate).toBe(1);
     expect(result.snapshot.metrics.bytesMoved).toBe(0);
     expect(result.snapshot.metrics.stallNs).toBe(0);
+  });
+
+  it("keeps the same hit rate whichever granularity the experts are held at", () => {
+    // This bounds the known limitation. Caching whole-depth experts rather
+    // than expert-layer units gets the reload volume wrong, but capacity and
+    // demand both scale by the layer count, so the resident share and the hit
+    // rate it produces are identical. Only the volume needs fixing, which is
+    // why the binding is sound to build on.
+    const model = buildModelProfile("qwen-3-235b", "int4", "fp16");
+    const moe = model.moe!;
+    const layers = model.architecture.numLayers;
+    const budget = 40 * GiB;
+
+    const fullDepthResident = Math.floor(
+      budget / (moe.expertBytesPerLayer * layers),
+    );
+    const perLayerResident = Math.floor(
+      budget / moe.expertBytesPerLayer / layers,
+    );
+    expect(fullDepthResident).toBe(perLayerResident);
+    expect(fullDepthResident).toBeGreaterThan(0);
+    expect(fullDepthResident).toBeLessThan(moe.numExperts);
+
+    expect(
+      topExpertMass(moe.activationDistribution, fullDepthResident, moe.numExperts),
+    ).toBe(
+      topExpertMass(moe.activationDistribution, perLayerResident, moe.numExperts),
+    );
   });
 });

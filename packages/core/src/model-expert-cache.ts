@@ -64,6 +64,29 @@ export function expertCacheTierDomains(
 }
 
 /**
+ * Known limitation, and why this is not yet wired into serving.
+ *
+ * An expert here is the whole stack of its per-layer weights, so the unit that
+ * moves is `expertBytesPerLayer * numLayers`. Real runtimes work a layer at a
+ * time: a batch needs every expert it routes to, but only for the layer it is
+ * currently executing, so its working set is one layer wide. For a 235B model
+ * that is every expert at 8.8 MiB each, about 1.1 GiB, which fits anywhere.
+ * The full-depth unit is 827 MiB each and about 105.8 GiB together, which does
+ * not, so a cache modelled at this granularity thrashes where real hardware
+ * streams smoothly, and a prefill chunk appears to move several times the
+ * model's entire expert set.
+ *
+ * Note that the hit rate itself is unaffected: per-layer capacity and demand
+ * scale by the same layer count, so the resident share is identical. Only the
+ * reload volume is wrong, and only when the experts do not all fit.
+ *
+ * Fixing it means caching expert-layer units rather than experts. That cannot
+ * be done by routing once per batch instead of once per token: the same routed
+ * assignments also place each token's activations on the device owning each
+ * expert, and activations genuinely are per token.
+ */
+
+/**
  * Build an expert cache from a checkpoint and the machine it runs on.
  *
  * Every quantity that the standalone mechanism study invents is taken from
