@@ -12,6 +12,8 @@ export interface MemoryTimelineSample {
 
 export interface MemoryTimeline {
   readonly domainId: string;
+  /** Weight-bearing domains in this topology, of which this is one. */
+  readonly weightDomainCount: number;
   readonly capacityBytes: number;
   readonly residentBytes: number;
   readonly peakTotalBytes: number;
@@ -46,10 +48,18 @@ export function memoryTimeline(
     return undefined;
   }
   // The domain that holds the weights is the one worth charting: it is where
-  // the model and its KV contend.
-  const entry = result.scenario.memoryLedger
-    .filter((candidate) => candidate.enabled)
-    .find((candidate) => (candidate.reservedByPurpose.weights ?? 0) > 0);
+  // the model and its KV contend. A sharded topology has several, and this
+  // shows one of them, which the caller is told so it can say so.
+  const weightDomains = result.scenario.memoryLedger
+    .filter((candidate) => (
+      candidate.enabled && (candidate.reservedByPurpose.weights ?? 0) > 0
+    ));
+  // Only a domain that holds both is chartable. Where a scenario places KV
+  // away from the weights, charting the weights domain would draw a flat line
+  // and quietly hide the growth happening elsewhere.
+  const entry = weightDomains.find(
+    (candidate) => (candidate.reservedByPurpose.kv ?? 0) > 0,
+  );
   if (entry === undefined) {
     return undefined;
   }
@@ -64,16 +74,12 @@ export function memoryTimeline(
   const bytesPerToken = serving.kvBudgetTokens > 0
     ? kvReservedBytes / serving.kvBudgetTokens
     : 0;
-  // Prompt length is uniform across a dashboard run, so the prefilled extent
-  // each request holds is its share of the total prefill.
-  const promptTokens = serving.metrics.requests > 0
-    ? serving.metrics.prefillTokens / serving.metrics.requests
-    : 0;
+
 
   // One sample at every instant something changes, so the series is exact
   // rather than resampled: a coarse grid would smooth away a brief peak, and
   // the peak is the number that decides whether a run fits.
-  const instants = new Set<number>([0]);
+  const instants = new Set<number>();
   for (const request of serving.requests) {
     instants.add(request.firstTokenNs);
     instants.add(request.completedAtNs);
@@ -82,24 +88,43 @@ export function memoryTimeline(
     }
   }
   const ordered = [...instants].sort((left, right) => left - right);
+  const indexOf = new Map(ordered.map((at, index) => [at, index] as const));
 
-  const samples = ordered.map((atNs) => {
-    let tokens = 0;
-    let liveRequests = 0;
-    for (const request of serving.requests) {
-      if (atNs < request.firstTokenNs || atNs > request.completedAtNs) {
-        continue;
-      }
-      liveRequests++;
-      let generated = 0;
-      for (const at of request.tokenTimestampsNs) {
-        if (at <= atNs) {
-          generated++;
-        }
-      }
-      tokens += promptTokens + Math.max(0, generated - 1);
+  // Swept rather than evaluated per instant. Scanning every request's tokens
+  // at every instant is quadratic in a product that reaches tens of millions
+  // at the maximum request and output counts, which is seconds to minutes of
+  // blocked main thread. Deltas make it one pass.
+  const tokenDelta = new Float64Array(ordered.length + 1);
+  const liveDelta = new Float64Array(ordered.length + 1);
+  for (const request of serving.requests) {
+    // Per request, not the run's mean: dividing total prefill by the request
+    // count is right in aggregate but attributes the wrong extent to each
+    // request the moment prompts differ, which bends the shape while leaving
+    // the peak correct and so would be invisible.
+    const promptTokens = request.promptTokens;
+    const start = indexOf.get(request.firstTokenNs)!;
+    // The arena appears holding the whole prompt: the first token occupies the
+    // last prompt position rather than adding one.
+    tokenDelta[start] += promptTokens;
+    liveDelta[start] += 1;
+    for (let index = 1; index < request.tokenTimestampsNs.length; index++) {
+      tokenDelta[indexOf.get(request.tokenTimestampsNs[index]!)!] += 1;
     }
-    const kv = tokens * bytesPerToken;
+    // Held through its completion instant, released after it.
+    const end = indexOf.get(request.completedAtNs)! + 1;
+    const held = promptTokens
+      + Math.max(0, request.tokenTimestampsNs.length - 1);
+    tokenDelta[end] -= held;
+    liveDelta[end] -= 1;
+  }
+
+  let tokens = 0;
+  let live = 0;
+  const samples = ordered.map((atNs, index) => {
+    tokens += tokenDelta[index]!;
+    live += liveDelta[index]!;
+    // Deltas are exact but float, so a released arena can leave a residue.
+    const kv = Math.max(0, tokens) * bytesPerToken;
     return {
       atNs,
       bytes: {
@@ -107,12 +132,13 @@ export function memoryTimeline(
         kv,
       },
       total: residentBytes + kv,
-      liveRequests,
+      liveRequests: Math.max(0, Math.round(live)),
     };
   });
 
   return {
     domainId: entry.domainId,
+    weightDomainCount: weightDomains.length,
     capacityBytes: entry.capacityBytes,
     residentBytes,
     peakTotalBytes: samples.reduce(

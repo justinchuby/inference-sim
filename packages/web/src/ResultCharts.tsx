@@ -884,7 +884,9 @@ function MemoryTimelineSection({
 }: {
   readonly result: DashboardResult;
 }): React.JSX.Element | null {
-  const timeline = memoryTimeline(result);
+  // Sweeping every request's tokens is cheap but not free at the maximum
+  // request and output counts, and this rerenders on any prop change.
+  const timeline = useMemo(() => memoryTimeline(result), [result]);
   if (timeline === undefined || timeline.samples.length < 2) {
     return null;
   }
@@ -911,7 +913,11 @@ function MemoryTimelineSection({
     <section className="panel">
       <SectionHeading
         title="Memory over time"
-        detail={`${shortDomain(timeline.domainId)} · peak ${
+        detail={`${shortDomain(timeline.domainId)}${
+          timeline.weightDomainCount > 1
+            ? ` · 1 of ${timeline.weightDomainCount} weight shards`
+            : ""
+        } · peak ${
           formatGiB(timeline.peakTotalBytes)
         } of ${formatGiB(timeline.capacityBytes)} (${
           peakShare.toFixed(1)
@@ -978,6 +984,10 @@ function MemoryTimelineSection({
         Weights and caches do not move once loaded, so KV is the only term that
         varies: it grows while a request generates and is released when the
         request retires. {timeline.caveat}
+        {timeline.weightDomainCount > 1
+          ? " Weights are sharded, and this is one shard: another may sit"
+            + " closer to its limit."
+          : ""}
       </p>
     </section>
   );

@@ -157,6 +157,12 @@ type ServingTraceInput = ServingTraceEvent extends infer Event
 
 export interface ServingRequestResult {
   readonly id: string;
+  /**
+   * Prompt positions this request occupies. Carried per request rather than
+   * left to be inferred from an aggregate, because nothing guarantees every
+   * request in a run has the same prompt.
+   */
+  readonly promptTokens: number;
   readonly arrivalNs: number;
   readonly firstTokenNs: number;
   readonly completedAtNs: number;
@@ -620,6 +626,7 @@ class ServingSimulator {
       }
       return {
         id: spec.id,
+        promptTokens: spec.promptTokens,
         arrivalNs: spec.arrivalNs,
         firstTokenNs,
         completedAtNs: state.completedAtNs,

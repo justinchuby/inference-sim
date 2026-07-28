@@ -85,4 +85,61 @@ describe("memory timeline", () => {
       mode: "expert-cache",
     }))).toBeUndefined();
   });
+
+  it("attributes each request its own prompt rather than the run's mean", () => {
+    const result = simulateDashboard(batched);
+    const timeline = memoryTimeline(result)!;
+    const requests = result.serving!.requests;
+
+    // Carried per request, so a run with uneven prompts bends the shape
+    // correctly instead of only getting the peak right.
+    for (const request of requests) {
+      expect(request.promptTokens).toBeGreaterThan(0);
+    }
+    // With every request holding its whole prompt and all but one of its
+    // generated tokens, the peak must equal the largest concurrent sum.
+    const bytesPerToken = timeline.samples
+      .map((sample) => sample.bytes.kv!)
+      .filter((kv) => kv > 0)[0]! / requests[0]!.promptTokens;
+    const peakKv = Math.max(...timeline.samples.map((s) => s.bytes.kv!));
+    const busiest = Math.max(
+      ...timeline.samples.map((sample) => sample.liveRequests),
+    );
+    expect(peakKv / bytesPerToken).toBeGreaterThanOrEqual(
+      busiest * requests[0]!.promptTokens - 1e-6,
+    );
+  });
+
+  it("stays linear in the number of token events", () => {
+    // Evaluating every request at every instant is quadratic in a product that
+    // reaches tens of millions at the maximum request and output counts, which
+    // blocked the main thread for over a second at a quarter of that and for
+    // minutes at the top. Doubling the work must roughly double the time, not
+    // square it.
+    const run = (outputTokens: number) => {
+      const result = simulateDashboard({
+        ...DEFAULT_CONFIG,
+        serving: {
+          ...DEFAULT_CONFIG.serving,
+          requestCount: 16,
+          maxBatchSize: 1,
+          outputTokens,
+          maxBatchTokens: 512,
+        },
+      });
+      const startedAt = performance.now();
+      const timeline = memoryTimeline(result)!;
+      return {
+        samples: timeline.samples.length,
+        elapsedMs: performance.now() - startedAt,
+      };
+    };
+
+    const small = run(256);
+    const large = run(1024);
+    expect(large.samples / small.samples).toBeGreaterThan(3);
+    // Generous, because a timing assertion must not be flaky. A quadratic
+    // implementation grows about sixteen-fold here and would blow through it.
+    expect(large.elapsedMs).toBeLessThan(Math.max(small.elapsedMs * 8, 250));
+  });
 });
