@@ -109,6 +109,14 @@ export interface TopologyModelWork {
   readonly attentionWeightBytesPerToken: number;
   readonly ffnWeightBytesPerToken: number;
   readonly forwardFlopsPerToken: number;
+  /**
+   * Portion of `ffnWeightBytesPerToken` that is not resident and must be read
+   * from storage on the token that needs it. A sparse model whose routed
+   * experts exceed memory is still runnable, but the reads that miss cross a
+   * storage link rather than local memory, which is the dominant cost when it
+   * happens. Absent or zero means every weight is resident.
+   */
+  readonly streamedFfnWeightBytesPerToken?: number;
 }
 
 export interface TopologyExpertPlacement {
@@ -2349,9 +2357,15 @@ class WorkloadPlanCompiler {
     ) {
       return 0;
     }
-    const bytes = capability === "attention"
+    const streamedBytes = capability === "ffn"
+      ? Math.min(
+          modelWork.streamedFfnWeightBytesPerToken ?? 0,
+          modelWork.ffnWeightBytesPerToken,
+        )
+      : 0;
+    const bytes = (capability === "attention"
       ? modelWork.attentionWeightBytesPerToken
-      : modelWork.ffnWeightBytesPerToken;
+      : modelWork.ffnWeightBytesPerToken) - streamedBytes;
     const placement = this.placements.find((candidate) => (
       candidate.deviceId === deviceId
       && candidate.requiredCapabilities.includes(capability)
@@ -2382,7 +2396,48 @@ class WorkloadPlanCompiler {
       ),
       "model weight stream duration",
     );
-    return Math.ceil(idealDuration / 0.7);
+    const residentDuration = Math.ceil(idealDuration / 0.7);
+    if (streamedBytes === 0) {
+      return residentDuration;
+    }
+    // Reads that miss residency cross the storage link. They are charged in
+    // addition, not instead: the resident share still moves through memory,
+    // and the two are not overlapped because the token needs both before the
+    // layer can run.
+    this.requireSsdStreaming(
+      `model ${modelWork.modelName} weight streaming`,
+    );
+    const storage = this.storageDomainFor(placement.deviceId, modelWork);
+    const streamedIdeal = checkedAdd(
+      storage.latencyNs,
+      scaledDuration(
+        Math.ceil(streamedBytes / shardDegree),
+        storage.bandwidthBytesPerSec,
+        "streamed model weight",
+      ),
+      "streamed model weight duration",
+    );
+    return checkedAdd(
+      residentDuration,
+      Math.ceil(streamedIdeal / 0.7),
+      "model weight floor with streaming",
+    );
+  }
+
+  private storageDomainFor(
+    deviceId: string,
+    modelWork: TopologyModelWork,
+  ): SimulationScenario["memoryDomains"][number] {
+    const nodeId = this.device(deviceId).nodeId;
+    const storage = this.scenario.memoryDomains.find((domain) => (
+      domain.nodeId === nodeId && domain.kind === "storage"
+    ));
+    if (storage === undefined) {
+      throw new TopologyWorkloadError(
+        `model ${modelWork.modelName} streams weights but node ${nodeId} declares no storage domain`,
+      );
+    }
+    return storage;
   }
 
   private requireSsdStreaming(context: string): void {

@@ -51,6 +51,11 @@ export {
   type MultiModelTraceEvent,
 } from "./multi-model.js";
 export {
+  planExpertResidency,
+  topExpertMass,
+  type ExpertResidencyPlan,
+} from "./expert-residency.js";
+export {
   MODEL_PRESETS,
   MODEL_SPECS,
   buildModelProfile,

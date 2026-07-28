@@ -152,6 +152,12 @@ export interface DashboardModelExecutionProfile {
   readonly modelName: string;
   readonly attentionWeightBytesPerToken: number;
   readonly ffnWeightBytesPerToken: number;
+  /**
+   * Share of `ffnWeightBytesPerToken` read from storage rather than memory,
+   * when routed experts do not all fit. Scenario-dependent, so it is resolved
+   * per run rather than carried by the model binding.
+   */
+  readonly streamedFfnWeightBytesPerToken?: number;
   readonly forwardFlopsPerToken: number;
   readonly kvCacheBytesPerToken?: number;
   readonly kvCacheEvidence?: "architecture_derived" | "metadata_declared";
@@ -281,6 +287,20 @@ export interface DashboardResult {
     readonly totalParameters: number;
     readonly weightBytes: number;
     readonly modelFormat?: DashboardModelFormat;
+    /**
+     * Present when the model did not fit and its routed experts were left on
+     * storage. A run that reports this is bounded by the storage link, not by
+     * memory bandwidth, which is why it is reported rather than inferred.
+     */
+    readonly expertOffload?: {
+      readonly residentWeightBytes: number;
+      readonly streamedExpertBytes: number;
+      readonly residentExperts: number;
+      readonly totalExperts: number;
+      /** Share of routed reads served from memory. */
+      readonly residentHitFraction: number;
+      readonly streamedBytesPerToken: number;
+    };
   };
   readonly scenario: {
     readonly id: string;

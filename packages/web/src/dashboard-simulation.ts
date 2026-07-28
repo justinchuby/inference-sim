@@ -26,6 +26,10 @@ import {
   topologyProfileFromExpertCache,
   topologyProfileFromPipeline,
   topologyProfileFromSpeculative,
+  buildModelProfile,
+  planExpertResidency,
+  type ExpertResidencyPlan,
+  type ModelProfile,
   type ScenarioPresetName,
   type ServingSchedulerConfig,
   type TopologyWorkloadResult,
@@ -36,6 +40,7 @@ import type {
   DashboardArtifactOutput,
   DashboardResult,
   DashboardFaultResult,
+  DashboardModelBinding,
   DashboardRunConfig,
   WorkerRunProgressReporter,
 } from "./types.js";
@@ -102,6 +107,10 @@ export function simulateDashboardExecution(
       buildServingConfig(config),
       costModel,
       buildServingExpertCacheConfig(config),
+      // Comparison spans topologies, and how much spills differs per topology.
+      // The profile is therefore resolved per scenario inside the comparison
+      // rather than shared, so a machine that holds every expert is not timed
+      // as though it streamed.
       config.modelBinding?.executionProfile,
       config.modelBinding?.pipelineExecution,
     );
@@ -144,7 +153,7 @@ export function simulateDashboardExecution(
       scenario,
       topologyProfileFromSpeculative(
         workload.result,
-        config.modelBinding?.executionProfile,
+        executionProfileFor(config, scenario),
         config.modelBinding?.pipelineExecution,
       ),
       costModel,
@@ -153,9 +162,9 @@ export function simulateDashboardExecution(
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
-        ...(modelSummary(config) === undefined
+        ...(modelSummary(config, scenario) === undefined
           ? {}
-          : { model: modelSummary(config)! }),
+          : { model: modelSummary(config, scenario)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
         roofline: buildDashboardRoofline({
@@ -213,9 +222,9 @@ export function simulateDashboardExecution(
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
-        ...(modelSummary(config) === undefined
+        ...(modelSummary(config, scenario) === undefined
           ? {}
-          : { model: modelSummary(config)! }),
+          : { model: modelSummary(config, scenario)! }),
         mode: config.mode,
         topology: summarizeTopology(topology),
         roofline: buildDashboardRoofline({
@@ -237,9 +246,9 @@ export function simulateDashboardExecution(
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
-        ...(modelSummary(config) === undefined
+        ...(modelSummary(config, scenario) === undefined
           ? {}
-          : { model: modelSummary(config)! }),
+          : { model: modelSummary(config, scenario)! }),
         mode: config.mode,
         topology: co.topology,
         coResidency: {
@@ -257,9 +266,9 @@ export function simulateDashboardExecution(
     return {
       summary: attachCalibration({
         scenario: scenarioSummary,
-        ...(modelSummary(config) === undefined
+        ...(modelSummary(config, scenario) === undefined
           ? {}
-          : { model: modelSummary(config)! }),
+          : { model: modelSummary(config, scenario)! }),
         mode: config.mode,
         topology: summarizeTopology(fault.topology),
         roofline: buildDashboardRoofline({
@@ -308,14 +317,124 @@ export function simulateDashboardExecution(
   };
 }
 
-function validateModelCapacity(
+/**
+ * Bytes a model must hold in memory no matter what. Routed experts are
+ * excluded because a sparse model can leave them on storage and read them as
+ * they are routed to; everything else is touched on every token.
+ */
+export function residentWeightBytes(config: DashboardRunConfig): number {
+  const binding = config.modelBinding;
+  if (binding === undefined) {
+    return 0;
+  }
+  const plan = dashboardExpertResidency(config, undefined);
+  return plan === undefined
+    ? binding.weightBytes
+    : binding.weightBytes - plan.streamedExpertBytes;
+}
+
+/**
+ * How the selected model's routed experts divide between memory and storage on
+ * this scenario, or undefined when nothing is offloaded: a dense model, a
+ * scenario without SSD streaming, or a model that simply fits.
+ *
+ * Passing no scenario asks the same question against an unbounded budget,
+ * which answers "what could be left behind" rather than "what will be".
+ */
+export function dashboardExpertResidency(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset> | undefined,
+): ExpertResidencyPlan | undefined {
+  const binding = config.modelBinding;
+  if (binding?.source !== "builtin_model") {
+    return undefined;
+  }
+  const model = buildModelProfile(
+    binding.executionProfile.modelId,
+    binding.modelFormat?.weightDtypes[0],
+    binding.modelFormat?.kvCacheDtype,
+  );
+  if (scenario === undefined) {
+    return planExpertResidency(model, 0);
+  }
+  if (!scenario.execution.features.ssdStreaming) {
+    return undefined;
+  }
+  const budget = expertMemoryBudgetBytes(config, scenario, model);
+  const plan = planExpertResidency(model, budget);
+  // Everything fits, so this is an ordinary resident run and must be reported
+  // as one rather than as an offload that happens to stream nothing.
+  return plan === undefined || plan.streamedExpertBytes === 0
+    ? undefined
+    : plan;
+}
+
+/** Memory left for routed experts after everything that must be resident. */
+function expertMemoryBudgetBytes(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
-): void {
+  model: ModelProfile,
+): number {
+  const capacity = targetDomainCapacity(config, scenario);
+  const dense = model.layers.reduce(
+    (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
+    0,
+  );
+  const shared = model.moe === undefined
+    ? 0
+    : model.architecture.numLayers * model.moe.sharedExpertBytesPerLayer;
+  const alwaysResident = dense + shared + (model.embeddingBytes ?? 0);
+  return capacity.availableBytes - alwaysResident;
+}
+
+/** Weight bytes that must sit in memory on this scenario. */
+function residentWeightBytesFor(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): number {
   const binding = config.modelBinding;
-  if (binding === undefined || config.mode === "expert-cache") {
-    return;
+  if (binding === undefined) {
+    return 0;
   }
+  const offload = dashboardExpertResidency(config, scenario);
+  return offload === undefined
+    ? binding.weightBytes
+    : binding.weightBytes - offload.streamedExpertBytes;
+}
+
+/**
+ * The execution profile to time this run with. When routed experts are left on
+ * storage, the share of each token's routed reads that misses residency is
+ * declared so the cost model charges it against the storage link instead of
+ * local memory. Without this the run would report memory-bandwidth speed for
+ * bytes that never came from memory.
+ */
+function executionProfileFor(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): DashboardModelBinding["executionProfile"] | undefined {
+  const profile = config.modelBinding?.executionProfile;
+  if (profile === undefined) {
+    return undefined;
+  }
+  const offload = dashboardExpertResidency(config, scenario);
+  if (offload === undefined || offload.streamedBytesPerToken <= 0) {
+    return profile;
+  }
+  return {
+    ...profile,
+    streamedFfnWeightBytesPerToken: Math.min(
+      Math.round(offload.streamedBytesPerToken),
+      profile.ffnWeightBytesPerToken,
+    ),
+  };
+}
+
+/** Target-domain capacity and what non-weight reservations already claim. */
+function targetDomainCapacity(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): { readonly availableBytes: number } {
   const targetDomains = new Set(scenario.placements
     .filter((placement) => (
       placement.requiredCapabilities.includes("attention")
@@ -328,7 +447,10 @@ function validateModelCapacity(
     .filter((domain) => targetDomains.has(domain.id))
     .reduce((sum, domain) => sum + domain.resourceLimitBytes, 0);
   const seenAllocations = new Set<string>();
-  const allocationBytes = allocationBytesForDashboard(config, scenario);
+  // Deliberately not allocationBytesForDashboard: sizing the weight allocation
+  // needs this capacity, so asking the full ledger here would be circular.
+  // Only non-weight purposes are read, and none of them depend on weights.
+  const allocationBytes = nonWeightAllocationBytes(config, scenario);
   const reservedNonWeightBytes = scenario.placements
     .flatMap((placement) => placement.allocations)
     .filter((allocation) => (
@@ -351,11 +473,50 @@ function validateModelCapacity(
       ),
       0,
     );
-  const availableBytes = capacityBytes - reservedNonWeightBytes;
-  if (binding.weightBytes > availableBytes) {
+  return { availableBytes: capacityBytes - reservedNonWeightBytes };
+}
+
+function validateModelCapacity(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): void {
+  const binding = config.modelBinding;
+  if (binding === undefined || config.mode === "expert-cache") {
+    return;
+  }
+  const { availableBytes } = targetDomainCapacity(config, scenario);
+  // A sparse model can leave its routed experts on storage and read them as
+  // routing reaches them, so what must fit is the tier that every token
+  // touches, not the whole checkpoint. A dense model has nothing to leave
+  // behind and still has to fit outright.
+  const offload = dashboardExpertResidency(config, scenario);
+  const requiredBytes = offload === undefined
+    ? binding.weightBytes
+    : binding.weightBytes - offload.streamedExpertBytes;
+  if (requiredBytes > availableBytes) {
+    const streamable = dashboardExpertResidency(config, undefined);
+    const hint = offload !== undefined
+      || streamable === undefined
+      || streamable.streamedExpertBytes === 0
+        ? ""
+        : scenario.execution.features.ssdStreaming
+          ? ""
+          : `. ${formatGiB(streamable.streamedExpertBytes)} GiB of that is routed experts, which SSD streaming would leave on storage`;
     throw new Error(
-      `model ${binding.displayName} requires ${formatGiB(binding.weightBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains`,
+      `model ${binding.displayName} requires ${formatGiB(requiredBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains${hint}`,
     );
+  }
+  if (offload !== undefined) {
+    // Streaming only works if the experts left behind actually have somewhere
+    // to live, so a scenario without storage fails rather than pretending.
+    const storageBytes = scenario.memoryDomains
+      .filter((domain) => domain.kind === "storage")
+      .reduce((sum, domain) => sum + domain.resourceLimitBytes, 0);
+    if (offload.streamedExpertBytes > storageBytes) {
+      throw new Error(
+        `model ${binding.displayName} streams ${formatGiB(offload.streamedExpertBytes)} GiB of routed experts but topology ${scenario.id} declares only ${formatGiB(storageBytes)} GiB of storage`,
+      );
+    }
   }
   if (binding.pipelineExecution !== undefined) {
     const bytesByDomain = new Map<string, number>();
@@ -554,7 +715,7 @@ function runServing(
     buildServingConfig(config),
     costModel,
     buildServingExpertCacheConfig(config),
-    config.modelBinding?.executionProfile,
+    executionProfileFor(config, scenario),
     config.modelBinding?.pipelineExecution,
   );
 }
@@ -630,9 +791,9 @@ function servingDashboardResult(
 ): Omit<DashboardResult, "durationMs"> {
   return {
     scenario: summarizeScenario(scenario, config),
-    ...(modelSummary(config) === undefined
+    ...(modelSummary(config, scenario) === undefined
       ? {}
-      : { model: modelSummary(config)! }),
+      : { model: modelSummary(config, scenario)! }),
     mode: "serving",
     topology: summarizeServingTopology(serving),
     roofline: buildDashboardRoofline({
@@ -716,20 +877,36 @@ function servingDashboardResult(
 
 function modelSummary(
   config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
 ): DashboardResult["model"] | undefined {
   const binding = config.modelBinding;
-  return binding === undefined
-    ? undefined
-    : {
-        name: binding.displayName,
-        source: binding.source,
-        fingerprint: binding.targetModelFingerprint,
-        totalParameters: binding.totalParameters,
-        weightBytes: binding.weightBytes,
-        ...(binding.modelFormat === undefined
-          ? {}
-          : { modelFormat: binding.modelFormat }),
-      };
+  if (binding === undefined) {
+    return undefined;
+  }
+  const offload = dashboardExpertResidency(config, scenario);
+  return {
+    name: binding.displayName,
+    source: binding.source,
+    fingerprint: binding.targetModelFingerprint,
+    totalParameters: binding.totalParameters,
+    weightBytes: binding.weightBytes,
+    ...(binding.modelFormat === undefined
+      ? {}
+      : { modelFormat: binding.modelFormat }),
+    ...(offload === undefined
+      ? {}
+      : {
+          expertOffload: {
+            residentWeightBytes:
+              binding.weightBytes - offload.streamedExpertBytes,
+            streamedExpertBytes: offload.streamedExpertBytes,
+            residentExperts: offload.residentExpertsPerLayer,
+            totalExperts: offload.totalExpertsPerLayer,
+            residentHitFraction: offload.residentHitFraction,
+            streamedBytesPerToken: offload.streamedBytesPerToken,
+          },
+        }),
+  };
 }
 
 function summarizeScenario(
@@ -748,7 +925,11 @@ function summarizeScenario(
   };
 }
 
-function allocationBytesForDashboard(
+/**
+ * Every allocation override except weights. Sizing the weight allocation needs
+ * the capacity left by these, so they are derived without reference to it.
+ */
+function nonWeightAllocationBytes(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
 ): Readonly<Record<string, number>> {
@@ -756,16 +937,6 @@ function allocationBytesForDashboard(
     (placement) => placement.allocations,
   );
   const result: Record<string, number> = {};
-  const weightAllocations = allocations.filter(
-    (allocation) => allocation.purpose === "weights",
-  );
-  distributeAllocationBytes(
-    result,
-    weightAllocations,
-    config.mode === "expert-cache"
-      ? 0
-      : config.modelBinding?.weightBytes,
-  );
 
   // KV is a real reservation driven by the workload, not a preset constant.
   // Without this the ledger reports the preset's placeholder extent and the
@@ -780,10 +951,6 @@ function allocationBytesForDashboard(
     (allocation) => allocation.purpose === "cache",
   );
   distributeAllocationBytes(result, cacheAllocations, 0);
-  const backingAllocations = allocations.filter(
-    (allocation) => allocation.purpose === "backing",
-  );
-  distributeAllocationBytes(result, backingAllocations, 0);
   if (!isExpertCacheEnabled(config)) {
     return result;
   }
@@ -826,15 +993,49 @@ function allocationBytesForDashboard(
         clampInteger(config.expertCache.expertCount, 4, 64),
       ),
   );
+  result[EXPERT_CACHE_COLD_BYTES] = coldExperts === 0
+    ? 0
+    : expert.cache.experts.reduce(
+        (sum, candidate) => sum + candidate.bytes,
+        0,
+      );
+  return result;
+}
+
+/** Sentinel key carrying the expert-cache cold extent between the two passes. */
+const EXPERT_CACHE_COLD_BYTES = "\u0000expert-cache-cold";
+
+function allocationBytesForDashboard(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+): Readonly<Record<string, number>> {
+  const allocations = scenario.placements.flatMap(
+    (placement) => placement.allocations,
+  );
+  const { [EXPERT_CACHE_COLD_BYTES]: coldBytes, ...result } = {
+    ...nonWeightAllocationBytes(config, scenario),
+  };
+
+  // Weights charged to memory are the resident tier only. Routed experts left
+  // on storage are charged to the backing allocation instead, so a sparse
+  // model that spills is not counted twice.
   distributeAllocationBytes(
     result,
-    backingAllocations,
-    coldExperts === 0
+    allocations.filter((allocation) => allocation.purpose === "weights"),
+    config.mode === "expert-cache"
       ? 0
-      : expert.cache.experts.reduce(
-          (sum, candidate) => sum + candidate.bytes,
-          0,
-        ),
+      : config.modelBinding === undefined
+        ? undefined
+        : Math.round(residentWeightBytesFor(config, scenario)),
+  );
+
+  const offload = dashboardExpertResidency(config, scenario);
+  distributeAllocationBytes(
+    result,
+    allocations.filter((allocation) => allocation.purpose === "backing"),
+    Math.round(
+      (offload?.streamedExpertBytes ?? 0) + (coldBytes ?? 0),
+    ),
   );
   return result;
 }

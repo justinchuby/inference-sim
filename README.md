@@ -46,6 +46,14 @@ does not claim hardware-accurate latency without calibration data.
 - Simulate target-only and supported speculative decode families, continuous
   batching, chunked prefill, MoE placement and expert caching, TP/PP/EP/DP,
   multimodal pipelines, and optional SSD streaming.
+- Run a sparse model that does not fit. With SSD streaming on, routed experts
+  spill to storage while everything a token always touches stays resident, so
+  a 109.5 GiB INT4 Qwen3-235B-A22B runs on a 64 GB Mac mini. It is timed
+  honestly: the resident share of each token's routed reads is charged against
+  memory and the rest against the storage link, and the hit rate comes from the
+  model's declared routing skew rather than a flat expert count, so the run
+  reports single-digit tokens per second instead of memory-bandwidth speed. A
+  dense model has no expert to leave behind and still fails closed.
 - Explore prompts up to 1M tokens and outputs up to 32K tokens with logarithmic
   controls. The workbench estimates the selected configuration's per-request
   and single-sequence context capacity from model KV geometry, model residency,

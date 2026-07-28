@@ -1223,4 +1223,75 @@ describe("simulateDashboard", () => {
       withoutBinding.coResidency?.metrics,
     );
   });
+
+  it("runs a sparse model too large for memory by leaving experts on storage", () => {
+    // 109.5 GiB of INT4 weights on a 56 GiB machine. Only 3.7 GiB of that is
+    // touched on every token; the routed experts are read as routing reaches
+    // them, which is how these models are actually served on a laptop.
+    const config: DashboardRunConfig = {
+      ...base,
+      scenarioName: "mac-mini-m4-pro-64gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 1,
+        maxBatchSize: 1,
+        outputTokens: 4,
+      },
+    };
+    const result = simulateDashboard(config);
+
+    // It runs, and it is slow, because most of what a token reads crosses a
+    // 7 GB/s link rather than 273 GB/s memory. Reporting memory-bandwidth
+    // speed here would overstate it by more than an order of magnitude.
+    const rate = result.serving!.metrics.throughputTokensPerSecond;
+    expect(rate).toBeGreaterThan(0.5);
+    expect(rate).toBeLessThan(20);
+
+    // The same model on a machine that holds it is far faster, which is the
+    // comparison the offload exists to make legible.
+    const resident = simulateDashboard({
+      ...config,
+      scenarioName: "mac-studio-m3-ultra-512gb",
+    });
+    expect(resident.serving!.metrics.throughputTokensPerSecond)
+      .toBeGreaterThan(rate * 3);
+  });
+
+  it("keeps failing closed for a dense model that does not fit", () => {
+    // A dense model has no expert to leave behind: every byte is read every
+    // token, so streaming cannot rescue it and it must still be rejected.
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "mac-mini-m4-pro-64gb",
+      mode: "serving",
+      serving: { ...base.serving, decodeMode: "target_only" },
+      modelBinding: createBuiltinModelBinding("llama-3-70b", "fp16"),
+    })).toThrow("requires 131.4 GiB of weights");
+  });
+
+  it("refuses to stream when the scenario forbids it, and says so", () => {
+    const preset = buildScenarioPreset("mac-mini-m4-pro-64gb");
+    const withoutSsd = {
+      ...preset,
+      id: `${preset.id}-no-ssd`,
+      execution: {
+        ...preset.execution,
+        features: { ...preset.execution.features, ssdStreaming: false },
+      },
+    };
+
+    // Fails closed, and names the reason rather than leaving the reader to
+    // guess that a switch they already found would have changed the answer.
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "custom",
+      customScenario: withoutSsd,
+      mode: "serving",
+      serving: { ...base.serving, decodeMode: "target_only" },
+      modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
+    })).toThrow(/routed experts, which SSD streaming would leave on storage/);
+  });
 });

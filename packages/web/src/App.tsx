@@ -4442,6 +4442,25 @@ function Results({
             {result.topology.operationCounts.transfer.toLocaleString()} transfer ·{" "}
             {result.topology.operationCounts.collective.toLocaleString()} collective
           </div>
+          {result.model?.expertOffload
+            ? (
+                <div className="mt-1.5 flex gap-2 border-l-2 border-amber-500 bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-900">
+                  <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    Does not fit:{" "}
+                    {formatBytes(result.model.expertOffload.residentWeightBytes)}
+                    {" "}resident,{" "}
+                    {formatBytes(result.model.expertOffload.streamedExpertBytes)}
+                    {" "}of routed experts left on storage.{" "}
+                    {(
+                      result.model.expertOffload.residentHitFraction * 100
+                    ).toFixed(0)}% of routed reads hit memory; the rest cross
+                    the storage link, which is what bounds this run rather than
+                    memory bandwidth.
+                  </span>
+                </div>
+              )
+            : null}
         </div>
         <div className="flex items-center gap-2">
           {artifactReplay
@@ -4507,6 +4526,14 @@ function Results({
             ? (
                 <Badge variant="neutral">
                   {result.model.modelFormat.kvCacheDtype} KV
+                </Badge>
+              )
+            : null}
+          {result.model?.expertOffload
+            ? (
+                <Badge variant="warning">
+                  {result.model.expertOffload.residentExperts}/
+                  {result.model.expertOffload.totalExperts} experts resident
                 </Badge>
               )
             : null}
