@@ -234,11 +234,19 @@ const MEDIA_MODALITY_LABELS: Record<MediaModality, string> = {
   video: "Video",
 };
 
-const DEFAULT_CONFIG: DashboardRunConfig = {
-  scenarioName: "multi-gpu",
+// The opening configuration is the simplest thing a person actually runs: one
+// model on one personal computer, one request at a time, nothing batched,
+// speculated or offloaded. Every mechanism this simulator models is reachable
+// from here by turning exactly one thing on, which is not true of a
+// multi-device default that starts with several already entangled.
+export const DEFAULT_CONFIG: DashboardRunConfig = {
+  scenarioName: "mac-mini-m4-pro-64gb",
   multiGpuRanks: 2,
   multiNodeCount: 2,
-  modelBinding: createBuiltinModelBinding("llama-3-8b"),
+  // INT4 is what a laptop actually holds; the same checkpoint at FP16 is 15
+  // GiB and decodes four times slower, which is a worse first impression than
+  // it is an honest one.
+  modelBinding: createBuiltinModelBinding("llama-3-8b", "int4"),
   mode: "serving",
   seed: 42,
   speculative: {
@@ -253,13 +261,16 @@ const DEFAULT_CONFIG: DashboardRunConfig = {
     decodeMode: "target_only",
     draftWidth: 4,
     firstPositionAcceptance: 0.82,
-    requestCount: 12,
+    // One request, batched with nothing, prefilled in one pass. Continuous
+    // batching and chunked prefill are the first two things worth turning on,
+    // but they are only legible once the run without them has been seen.
+    requestCount: 1,
     arrivalGapUs: 250,
     promptTokens: 512,
     outputTokens: 64,
-    maxBatchSize: 8,
-    maxBatchTokens: 128,
-    prefillChunkTokens: 64,
+    maxBatchSize: 1,
+    maxBatchTokens: 512,
+    prefillChunkTokens: 512,
   },
   expertCache: {
     placementStrategy: "contiguous",
@@ -3211,10 +3222,10 @@ function ConfigurationPanel({
                 </>
               )}
           <div className="flex items-center gap-1.5 border-t border-zinc-200 pt-3 text-xs font-semibold text-zinc-700">
-            <span>Continuous batching</span>
+            <span>Requests and batching</span>
             <ParameterHelp
-              label="Continuous batching"
-              description="Requests enter at their arrival time. Each non-preemptive scheduler batch selects decode work first, then fills remaining sequence and token capacity with chunked prefill. Completed requests release their KV allocation before the next batch."
+              label="Requests and batching"
+              description="Requests enter at their arrival time. Each non-preemptive scheduler batch selects decode work first, then fills remaining sequence and token capacity with chunked prefill. Completed requests release their KV allocation before the next batch. Batch sequences of 1 disables batching: every request is served alone, which is the simplest thing to read and what a single-user machine usually does."
             />
           </div>
           <SliderField
@@ -4500,7 +4511,13 @@ function Results({
               )
             : null}
           {result.serving
-            ? <Badge variant="neutral">continuous batch</Badge>
+            ? (
+                <Badge variant="neutral">
+                  {result.serving.batches.some((batch) => batch.sequenceCount > 1)
+                    ? "continuous batch"
+                    : "unbatched"}
+                </Badge>
+              )
             : null}
           {result.serving && result.expertCache
             ? <Badge variant="neutral">stateful expert cache</Badge>
@@ -6224,6 +6241,10 @@ function servingMetrics(result: DashboardResult) {
   const serving = result.serving!;
   const metrics = serving.metrics;
   const speculative = serving.decodeMode !== "target_only";
+  // A run whose batches never held two sequences did not batch, whatever the
+  // budget allowed. Calling every decode step a "continuous batch" reads as a
+  // mechanism being exercised when nothing was.
+  const batched = serving.batches.some((batch) => batch.sequenceCount > 1);
   // Tokens alone cannot be reconciled with the memory breakdown, so report the
   // extent the run actually held and how much of its reservation that used.
   const kvReservedBytes = result.scenario.memoryLedger.reduce(
@@ -6248,7 +6269,9 @@ function servingMetrics(result: DashboardResult) {
       value: formatDuration(metrics.p95InterTokenLatencyNs),
       detail: speculative
         ? `${metrics.targetForwards} target verifications`
-        : `${metrics.batches} continuous batches`,
+        : batched
+          ? `${metrics.batches} continuous batches`
+          : `${metrics.batches} decode steps, unbatched`,
       icon: <Gauge className="size-4 text-sky-700" />,
     },
     {
@@ -6256,7 +6279,9 @@ function servingMetrics(result: DashboardResult) {
       value: formatRate(metrics.throughputTokensPerSecond),
       detail: speculative
         ? `${metrics.committedTokensPerTargetForward.toFixed(2)} tokens / target`
-        : `${metrics.requests} requests · ${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`,
+        : batched
+          ? `${metrics.requests} requests · ${(metrics.tokenBatchUtilization * 100).toFixed(1)}% token slots`
+          : `${metrics.requests} request${metrics.requests === 1 ? "" : "s"}, one at a time`,
       icon: <Cpu className="size-4 text-emerald-700" />,
     },
     {

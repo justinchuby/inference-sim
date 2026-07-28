@@ -122,6 +122,12 @@ Start the local workbench:
 pnpm dev:web
 ```
 
+It opens on the simplest run that is still real: one INT4 Llama-3-8B on a Mac
+mini, one request, one sequence per batch, prefilled in a single pass, with
+speculation, expert caching and media all off. Every mechanism the simulator
+models is then one switch away, which is easier to read than a default that
+starts with several already interacting.
+
 ### Common CLI Workflows
 
 List and inspect device scenarios:
