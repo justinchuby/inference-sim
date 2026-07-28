@@ -23,15 +23,39 @@ export interface ModelBoundExpertCache {
   readonly warmExperts: number;
 }
 
-/** Time to move `bytes` out of a domain, at its declared latency and rate. */
+/**
+ * Time to move `bytes` from one domain to another.
+ *
+ * Bounded by the slower of the source's own rate and the link between them,
+ * because a promotion crosses both. Host DRAM reads at 100 GB/s but arrives
+ * over PCIe at 32, so charging the source's rate alone would understate every
+ * promotion on a machine whose tiers are genuinely separate. Where a scenario
+ * declares no link between the two, the source's rate is all there is.
+ */
 function transferNs(
-  domain: SimulationScenario["memoryDomains"][number],
+  scenario: SimulationScenario,
+  sourceId: string,
+  targetId: string,
   bytes: number,
 ): number {
-  return Math.max(
-    1,
-    Math.round(domain.latencyNs + (bytes / domain.bandwidthBytesPerSec) * 1e9),
+  const source = scenario.memoryDomains.find(
+    (candidate) => candidate.id === sourceId,
   );
+  if (source === undefined) {
+    throw new Error(`expert cache tier references unknown domain ${sourceId}`);
+  }
+  const link = sourceId === targetId
+    ? undefined
+    : scenario.links.find((candidate) => (
+      candidate.sourceDomainId === sourceId
+      && candidate.targetDomainId === targetId
+    ));
+  const bandwidth = Math.min(
+    source.bandwidthBytesPerSec,
+    link?.bandwidthBytesPerSec ?? Number.POSITIVE_INFINITY,
+  );
+  const latency = source.latencyNs + (link?.latencyNs ?? 0);
+  return Math.max(1, Math.round(latency + (bytes / bandwidth) * 1e9));
 }
 
 /**
@@ -118,15 +142,6 @@ export function expertCacheFromModel(
   if (bytesPerExpert <= 0) {
     return undefined;
   }
-  const domain = (id: string) => {
-    const found = scenario.memoryDomains.find(
-      (candidate) => candidate.id === id,
-    );
-    if (found === undefined) {
-      throw new Error(`expert cache tier references unknown domain ${id}`);
-    }
-    return found;
-  };
   const weights = expertRoutingWeights(
     moe.activationDistribution,
     moe.numExperts,
@@ -173,15 +188,21 @@ export function expertCacheFromModel(
       // cannot be right across both a 60 MiB expert and an 850 MiB one, nor
       // across a 7 GB/s SSD and a 1 TB/s device memory.
       warmToHotLatencyNs: transferNs(
-        domain(tiers.warmDomainId),
+        scenario,
+        tiers.warmDomainId,
+        tiers.hotDomainId,
         bytesPerExpert,
       ),
       coldToHotLatencyNs: transferNs(
-        domain(tiers.coldDomainId),
+        scenario,
+        tiers.coldDomainId,
+        tiers.hotDomainId,
         bytesPerExpert,
       ),
       coldToWarmLatencyNs: transferNs(
-        domain(tiers.coldDomainId),
+        scenario,
+        tiers.coldDomainId,
+        tiers.warmDomainId,
         bytesPerExpert,
       ),
       routingSeed: options.routingSeed,

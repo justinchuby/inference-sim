@@ -346,7 +346,10 @@ export function dashboardExpertResidency(
   scenario: ReturnType<typeof buildScenarioPreset> | undefined,
 ): ExpertResidencyPlan | undefined {
   const binding = config.modelBinding;
-  if (binding?.source !== "builtin_model") {
+  // The standalone cache study schedules its own synthetic expert set and
+  // charges it to the same backing allocation. Offloading the bound model's
+  // experts as well would describe two unrelated things as the same bytes.
+  if (binding?.source !== "builtin_model" || config.mode === "expert-cache") {
     return undefined;
   }
   const model = buildModelProfile(
@@ -495,13 +498,18 @@ function validateModelCapacity(
     : binding.weightBytes - offload.streamedExpertBytes;
   if (requiredBytes > availableBytes) {
     const streamable = dashboardExpertResidency(config, undefined);
+    // Say why it does not fit, not merely that it does not. The two cases
+    // need opposite advice: one is fixed by a switch the reader has already
+    // seen, the other cannot be fixed by streaming at all.
     const hint = offload !== undefined
-      || streamable === undefined
-      || streamable.streamedExpertBytes === 0
+      ? `. Streaming already left ${
+          formatGiB(offload.streamedExpertBytes)
+        } GiB of routed experts on storage; what remains is touched on every token and has to fit`
+      : streamable === undefined
+        || streamable.streamedExpertBytes === 0
+        || scenario.execution.features.ssdStreaming
         ? ""
-        : scenario.execution.features.ssdStreaming
-          ? ""
-          : `. ${formatGiB(streamable.streamedExpertBytes)} GiB of that is routed experts, which SSD streaming would leave on storage`;
+        : `. ${formatGiB(streamable.streamedExpertBytes)} GiB of that is routed experts, which SSD streaming would leave on storage`;
     throw new Error(
       `model ${binding.displayName} requires ${formatGiB(requiredBytes)} GiB of weights but topology ${scenario.id} has ${formatGiB(availableBytes)} GiB available in target memory domains${hint}`,
     );

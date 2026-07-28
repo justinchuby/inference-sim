@@ -2276,20 +2276,17 @@ class WorkloadPlanCompiler {
     activeExperts: number,
     expertRouted: boolean,
   ): number {
-    // Expert multiplicity is counted once. A bound model already carries every
-    // active expert inside ffnWeightBytesPerToken, so scaling the synthetic
-    // per-work-item cost by the same count as well would multiply a normalized
-    // unit by a real expert count, which is not a quantity. Unbound runs keep
-    // the scaling: it is the only place their expert width is expressed.
-    const expertScale = this.profile.modelWork !== undefined
-      && capability === "ffn"
-      ? 1
-      : Math.max(1, activeExperts);
+    // Routed experts multiply FFN work. This is not double counting against
+    // ffnWeightBytesPerToken, which also sums the active experts: that feeds
+    // the bandwidth floor below, and the two are combined with a max because
+    // they are the two sides of a roofline. Dropping the scaling here would
+    // leave a sparse model costing the same compute as a dense one of the
+    // same shape, which is wrong wherever compute rather than bandwidth binds.
     const workItems = checkedMultiply(
       tokenWidth,
       checkedMultiply(
         this.profile.batchSize,
-        expertScale,
+        Math.max(1, activeExperts),
         "active expert batch",
       ),
       "compute token batch",

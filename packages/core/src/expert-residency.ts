@@ -27,8 +27,21 @@ export interface ExpertResidencyPlan {
  * Probability mass of the `count` most-requested experts out of `total`.
  *
  * A cache holding the most popular experts is the limit an LRU converges to,
- * so this is the hit rate a well-behaved runtime approaches rather than an
- * optimistic bound invented here.
+ * so this is the hit rate a well-behaved runtime approaches rather than a
+ * bound invented here. It is nonetheless the optimistic end of that range, and
+ * knowingly so:
+ *
+ * - it assumes the resident set is exactly the globally most-requested
+ *   experts, which a real LRU only approaches and never holds;
+ * - routing skew is declared once per model, while each layer has its own
+ *   ranking, so a cache of whole-depth experts holds the top set for an
+ *   aggregate rather than for any one layer;
+ * - warm-up is not modelled, so the cold start every real run pays is absent.
+ *
+ * That is appropriate for "does this configuration run, and roughly how fast",
+ * which is what it is used for. It is not a latency guarantee, and hit rates
+ * near 1 under strong skew should be read as the ceiling rather than the
+ * expectation.
  */
 export function topExpertMass(
   distribution: ExpertDistribution,

@@ -4,6 +4,7 @@ import {
   topExpertMass,
   buildScenarioPreset,
   expertCacheFromModel,
+  expertCacheTierDomains,
   expertRoutingWeights,
   simulateExpertCacheWorkload,
 } from "../src/index.js";
@@ -47,8 +48,18 @@ describe("model-bound expert cache", () => {
     // An 850 MiB expert over a 7 GB/s SSD is over a tenth of a second. The
     // constant this replaced was 2.2 ms, which is off by more than 50x and
     // could not have been right for both this and a 64 MiB expert.
+    const link = scenario.links.find((candidate) => (
+      candidate.sourceDomainId === storage.id
+    ))!;
+    // Both hops count: the read out of storage and the link it crosses. The
+    // narrower of the two rates binds, and both latencies are paid.
+    const bandwidth = Math.min(
+      storage.bandwidthBytesPerSec,
+      link.bandwidthBytesPerSec,
+    );
     const expected = storage.latencyNs
-      + (bound.bytesPerExpert / storage.bandwidthBytesPerSec) * 1e9;
+      + link.latencyNs
+      + (bound.bytesPerExpert / bandwidth) * 1e9;
     expect(bound.config.coldToHotLatencyNs).toBeCloseTo(expected, -4);
     expect(bound.config.coldToHotLatencyNs).toBeGreaterThan(50_000_000);
   });
@@ -156,12 +167,12 @@ describe("model-bound expert cache", () => {
     }
   });
 
-  it("counts expert multiplicity once when a model is bound", () => {
-    // ffnWeightBytesPerToken already sums every active expert, so scaling the
-    // normalized per-work-item cost by the same count multiplies a synthetic
-    // unit by a real expert count. The product is not a quantity, and it grew
-    // large enough to beat the model-derived floor: a cache that never missed
-    // then appeared to make the run slower than having no cache at all.
+  it("moves nothing when every expert is already resident", () => {
+    // A cache large enough for the whole checkpoint must never fetch. This is
+    // about traffic only: switching routing on legitimately raises FFN compute
+    // for a sparse model, because a token really does run several expert FFNs.
+    // That cost is where the model's expert width is expressed and is not a
+    // cache effect, so it is not asserted away here.
     const scenario = buildScenarioPreset("mac-mini-m4-pro-64gb");
     const model = buildModelProfile("qwen3-30b-a3b", "int4", "fp16");
     const bound = expertCacheFromModel(model, scenario, {
@@ -209,5 +220,49 @@ describe("model-bound expert cache", () => {
     ).toBe(
       topExpertMass(moe.activationDistribution, perLayerResident, moe.numExperts),
     );
+  });
+
+  it("charges a promotion at the link when the link is the narrow part", () => {
+    // A discrete-GPU machine promotes from host DRAM over PCIe. DRAM reads far
+    // faster than PCIe carries, so charging the source domain's own rate would
+    // understate every promotion on any machine whose tiers are really
+    // separate. The shipped unified-memory preset cannot expose this, so the
+    // narrow link is constructed here.
+    const preset = buildScenarioPreset("rtx-4090-desktop");
+    const model = buildModelProfile("qwen3-30b-a3b", "int4", "fp16");
+    const tiers = expertCacheTierDomains(preset)!;
+    expect(tiers.warmDomainId).not.toBe(tiers.hotDomainId);
+
+    const warm = preset.memoryDomains.find(
+      (domain) => domain.id === tiers.warmDomainId,
+    )!;
+    const narrowed = {
+      ...preset,
+      links: preset.links.map((link) => (
+        link.sourceDomainId === tiers.warmDomainId
+          && link.targetDomainId === tiers.hotDomainId
+          ? { ...link, bandwidthBytesPerSec: Math.floor(
+              warm.bandwidthBytesPerSec / 4,
+            ) }
+          : link
+      )),
+    };
+
+    const wide = expertCacheFromModel(model, preset, {
+      hotCapacityBytes: 4 * GiB,
+      warmCapacityBytes: 4 * GiB,
+      routingSeed: 42,
+    })!;
+    const narrow = expertCacheFromModel(model, narrowed, {
+      hotCapacityBytes: 4 * GiB,
+      warmCapacityBytes: 4 * GiB,
+      routingSeed: 42,
+    })!;
+
+    expect(narrow.config.warmToHotLatencyNs)
+      .toBeGreaterThan(wide.config.warmToHotLatencyNs);
+    // Cold promotions come from storage and are unaffected by this link.
+    expect(narrow.config.coldToHotLatencyNs)
+      .toBe(wide.config.coldToHotLatencyNs);
   });
 });

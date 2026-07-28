@@ -1294,4 +1294,30 @@ describe("simulateDashboard", () => {
       modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
     })).toThrow(/routed experts, which SSD streaming would leave on storage/);
   });
+
+  it("does not charge a bound model's experts to the cache study's backing", () => {
+    // The standalone cache study schedules a synthetic expert set of its own
+    // and charges it to the same storage allocation. If the selected model's
+    // routed experts were offloaded as well, the two would describe the same
+    // bytes and the backing reservation would be tens of GiB of double count.
+    const study = simulateDashboard({
+      ...base,
+      scenarioName: "mac-mini-m4-pro-64gb",
+      mode: "expert-cache",
+      modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
+    });
+    const dense = simulateDashboard({
+      ...base,
+      scenarioName: "mac-mini-m4-pro-64gb",
+      mode: "expert-cache",
+      modelBinding: createBuiltinModelBinding("llama-3-8b", "int4"),
+    });
+
+    const backing = (result: typeof study) => result.scenario.memoryLedger
+      .reduce((sum, entry) => sum + (entry.reservedByPurpose.backing ?? 0), 0);
+    // The study is synthetic, so its backing cannot depend on which model is
+    // selected beside it.
+    expect(backing(study)).toBe(backing(dense));
+    expect(backing(study)).toBeLessThan(8 * 1024 ** 3);
+  });
 });
