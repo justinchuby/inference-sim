@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "./App.js";
 import { simulateDashboard } from "./dashboard-simulation.js";
 import { memoryTimeline } from "./memory-timeline.js";
-import type { DashboardRunConfig } from "./types.js";
+import type { DashboardResult, DashboardRunConfig } from "./types.js";
 
 const batched: DashboardRunConfig = {
   ...DEFAULT_CONFIG,
@@ -141,5 +141,95 @@ describe("memory timeline", () => {
     // Generous, because a timing assertion must not be flaky. A quadratic
     // implementation grows about sixteen-fold here and would blow through it.
     expect(large.elapsedMs).toBeLessThan(Math.max(small.elapsedMs * 8, 250));
+  });
+});
+
+/**
+ * The straightforward reading of the same definition: at each instant, ask
+ * every request whether it is live and how many tokens it has emitted. This is
+ * what the sweep replaced, kept as an oracle because the sweep's deltas are
+ * easy to get subtly wrong at boundaries and no property assertion would
+ * notice a one-instant shift.
+ */
+function referenceTimeline(
+  result: Pick<DashboardResult, "serving" | "scenario">,
+): readonly {
+  readonly atNs: number;
+  readonly kv: number;
+  readonly liveRequests: number;
+}[] {
+  const serving = result.serving!;
+  const entry = result.scenario.memoryLedger
+    .filter((candidate) => candidate.enabled)
+    .find((candidate) => (
+      (candidate.reservedByPurpose.weights ?? 0) > 0
+      && (candidate.reservedByPurpose.kv ?? 0) > 0
+    ))!;
+  const bytesPerToken = serving.kvBudgetTokens > 0
+    ? (entry.reservedByPurpose.kv ?? 0) / serving.kvBudgetTokens
+    : 0;
+  const instants = new Set<number>();
+  for (const request of serving.requests) {
+    instants.add(request.firstTokenNs);
+    instants.add(request.completedAtNs);
+    for (const at of request.tokenTimestampsNs) {
+      instants.add(at);
+    }
+  }
+  return [...instants].sort((left, right) => left - right).map((atNs) => {
+    let tokens = 0;
+    let liveRequests = 0;
+    for (const request of serving.requests) {
+      if (atNs < request.firstTokenNs || atNs > request.completedAtNs) {
+        continue;
+      }
+      liveRequests++;
+      let generated = 0;
+      for (const at of request.tokenTimestampsNs) {
+        if (at <= atNs) {
+          generated++;
+        }
+      }
+      tokens += request.promptTokens + Math.max(0, generated - 1);
+    }
+    return { atNs, kv: tokens * bytesPerToken, liveRequests };
+  });
+}
+
+describe("memory timeline sweep", () => {
+  it("matches an instant-by-instant reading of the same definition", () => {
+    // Batching regimes chosen to exercise the boundaries the sweep could get
+    // wrong: several arenas released at once, one request per batch so every
+    // token lands on its own instant, arrivals close enough that a completion
+    // coincides with another request's first token, and a long single stream.
+    for (const [requestCount, maxBatchSize, outputTokens, arrivalGapUs] of [
+      [6, 3, 12, 20_000],
+      [4, 1, 9, 500],
+      [8, 4, 7, 100],
+      [3, 2, 20, 5_000],
+      [1, 1, 16, 250],
+    ] as const) {
+      const label = `r${requestCount} b${maxBatchSize} o${outputTokens}`;
+      const result = simulateDashboard({
+        ...DEFAULT_CONFIG,
+        serving: {
+          ...DEFAULT_CONFIG.serving,
+          requestCount,
+          maxBatchSize,
+          outputTokens,
+          arrivalGapUs,
+        },
+      });
+      const swept = memoryTimeline(result)!;
+      const expected = referenceTimeline(result);
+
+      expect(swept.samples.length, label).toBe(expected.length);
+      for (const [index, want] of expected.entries()) {
+        const got = swept.samples[index]!;
+        expect(got.atNs, `${label}@${index}`).toBe(want.atNs);
+        expect(got.bytes.kv!, `${label}@${index}`).toBeCloseTo(want.kv, 3);
+        expect(got.liveRequests, `${label}@${index}`).toBe(want.liveRequests);
+      }
+    }
   });
 });

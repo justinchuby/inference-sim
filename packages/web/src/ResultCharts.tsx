@@ -915,7 +915,7 @@ function MemoryTimelineSection({
         title="Memory over time"
         detail={`${shortDomain(timeline.domainId)}${
           timeline.weightDomainCount > 1
-            ? ` · 1 of ${timeline.weightDomainCount} weight shards`
+            ? ` · 1 of ${timeline.weightDomainCount} weight-bearing domains`
             : ""
         } · peak ${
           formatGiB(timeline.peakTotalBytes)
@@ -985,8 +985,8 @@ function MemoryTimelineSection({
         varies: it grows while a request generates and is released when the
         request retires. {timeline.caveat}
         {timeline.weightDomainCount > 1
-          ? " Weights are sharded, and this is one shard: another may sit"
-            + " closer to its limit."
+          ? " Weights sit in more than one domain and this is one of them:"
+            + " another may be closer to its limit."
           : ""}
       </p>
     </section>

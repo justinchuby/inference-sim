@@ -12,7 +12,12 @@ export interface MemoryTimelineSample {
 
 export interface MemoryTimeline {
   readonly domainId: string;
-  /** Weight-bearing domains in this topology, of which this is one. */
+  /**
+   * Domains in this topology holding weights, of which this is one. They are
+   * not always shards of the same weights: a topology may split attention and
+   * FFN across different devices, which is a functional partition rather than
+   * a replica, so the count is reported without claiming which.
+   */
   readonly weightDomainCount: number;
   readonly capacityBytes: number;
   readonly residentBytes: number;
@@ -123,7 +128,9 @@ export function memoryTimeline(
   const samples = ordered.map((atNs, index) => {
     tokens += tokenDelta[index]!;
     live += liveDelta[index]!;
-    // Deltas are exact but float, so a released arena can leave a residue.
+    // Deltas are integers summed in a float, so they stay exact well past the
+    // sample counts reachable here. Clamped anyway so a future non-integer
+    // term cannot turn rounding into negative memory.
     const kv = Math.max(0, tokens) * bytesPerToken;
     return {
       atNs,
