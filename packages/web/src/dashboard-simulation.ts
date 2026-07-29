@@ -214,7 +214,7 @@ export function simulateDashboardExecution(
       scenario,
       topologyProfileFromPipeline(
         pipeline,
-        clampInteger(config.serving.requestCount, 1, 32),
+        clampInteger(config.serving.requestCount, 1, 128),
       ),
       costModel,
     );
@@ -524,6 +524,16 @@ function validateModelCapacity(
     return;
   }
   const { availableBytes } = targetDomainCapacity(config, scenario);
+  // Non-weight reservations can exceed the domain on their own, which leaves
+  // nothing for weights and makes the weight comparison below report a
+  // negative budget. That reads as though the model were at fault when the
+  // reservation that does not fit is the KV arena the run asked for.
+  if (availableBytes <= 0) {
+    const kvBytes = dashboardKvReservationBytes(config) ?? 0;
+    throw new Error(
+      `run reserves ${formatGiB(kvBytes)} GiB of KV on topology ${scenario.id}, which leaves no room for ${binding.displayName}'s weights. Reduce requests, output length, or context, or choose a machine with more memory`,
+    );
+  }
   // A sparse model can leave its routed experts on storage and read them as
   // routing reaches them, so what must fit is the tier that every token
   // touches, not the whole checkpoint. A dense model has nothing to leave
@@ -767,7 +777,7 @@ function runServing(
 function buildServingConfig(
   config: DashboardRunConfig,
 ): ServingSchedulerConfig {
-  const requestCount = clampInteger(config.serving.requestCount, 1, 32);
+  const requestCount = clampInteger(config.serving.requestCount, 1, 128);
   const promptTokens = dashboardPromptTokens(config);
   const outputTokens = clampInteger(
     config.serving.outputTokens,
@@ -792,11 +802,11 @@ function buildServingConfig(
       promptTokens,
       outputTokens,
     })),
-    maxBatchSize: clampInteger(config.serving.maxBatchSize, 1, 16),
+    maxBatchSize: clampInteger(config.serving.maxBatchSize, 1, 64),
     maxBatchTokens: clampInteger(
       config.serving.maxBatchTokens,
       8,
-      512,
+      2048,
     ),
     prefillChunkTokens: clampInteger(
       config.serving.prefillChunkTokens,
@@ -1140,7 +1150,7 @@ export function dashboardPromptTokens(config: DashboardRunConfig): number {
 
 /** Token budget the serving scheduler is given for the whole run. */
 export function dashboardKvBudgetTokens(config: DashboardRunConfig): number {
-  const requestCount = clampInteger(config.serving.requestCount, 1, 32);
+  const requestCount = clampInteger(config.serving.requestCount, 1, 128);
   const outputTokens = clampInteger(config.serving.outputTokens, 1, 32_768);
   return requestCount * (dashboardPromptTokens(config) + outputTokens - 1);
 }
@@ -1464,7 +1474,7 @@ function runCoResidency(
       tenants,
       deviceMemoryBytes: target.resourceLimitBytes,
       loadBandwidthBytesPerSec,
-      maxBatchTokens: clampInteger(config.serving.maxBatchTokens, 8, 512),
+      maxBatchTokens: clampInteger(config.serving.maxBatchTokens, 8, 2048),
       prefillChunkTokens: clampInteger(config.serving.prefillChunkTokens, 8, 512),
     },
     (batch, tenant) => Math.max(1, Math.round(

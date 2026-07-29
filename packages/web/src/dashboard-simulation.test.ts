@@ -1359,4 +1359,71 @@ describe("simulateDashboard", () => {
 
     expect(result.model!.expertOffload!.residentExperts).toBe(62);
   });
+
+  it("turns a bandwidth-bound decode into throughput by batching", () => {
+    // A wider batch reads the weights once for every sequence in it, so
+    // aggregate tokens per second rise even though nothing about the memory
+    // system changed. This is the only lever that moves a decode which is
+    // bound by bandwidth rather than by capacity.
+    const run = (maxBatchSize: number) => simulateDashboard({
+      ...base,
+      scenarioName: "panther-lake-x9-388h-32gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("gemma-4-e2b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 32,
+        maxBatchSize,
+        maxBatchTokens: 1024,
+        promptTokens: 512,
+        outputTokens: 32,
+        arrivalGapUs: 1,
+      },
+    }).serving!.metrics.throughputTokensPerSecond;
+
+    const single = run(1);
+    const wide = run(16);
+    expect(wide).toBeGreaterThan(single * 4);
+
+    // And it costs almost nothing in memory, which is the point: this model's
+    // KV is small enough that width is free where bandwidth is not.
+    const held = (batch: number) => simulateDashboard({
+      ...base,
+      scenarioName: "panther-lake-x9-388h-32gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("gemma-4-e2b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 32,
+        maxBatchSize: batch,
+        maxBatchTokens: 1024,
+        promptTokens: 512,
+        outputTokens: 32,
+        arrivalGapUs: 1,
+      },
+    }).scenario.memoryLedger.reduce((sum, entry) => sum + entry.reservedBytes, 0);
+    expect(held(16)).toBeLessThan(held(1) * 1.5);
+  });
+
+  it("blames the reservation, not the model, when KV alone will not fit", () => {
+    // Raising the request ceiling made this reachable: the KV arena can
+    // exceed the machine on its own, which left the weight comparison
+    // reporting a negative budget and reading as though a 0.3 GiB model were
+    // too large for a 64 GB desktop.
+    expect(() => simulateDashboard({
+      ...base,
+      scenarioName: "arrow-lake-s-285k-64gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("qwen3-0.6b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode: "target_only",
+        requestCount: 128,
+        maxBatchSize: 64,
+        outputTokens: 4096,
+      },
+    })).toThrow(/reserves .* GiB of KV .* leaves no room/);
+  });
 });

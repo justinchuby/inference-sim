@@ -3241,7 +3241,7 @@ function ConfigurationPanel({
             description="Total independent requests in this run. Requests share the prompt and output lengths below, but arrive separately according to Arrival gap."
             value={config.serving.requestCount}
             minimum={1}
-            maximum={32}
+            maximum={128}
             step={1}
             disabled={disabled}
             onChange={(requestCount) => onChange({
@@ -3359,10 +3359,10 @@ function ConfigurationPanel({
                 )}
           <SliderField
             label="Batch sequences"
-            description="Maximum request slices selected for one scheduler batch across decode and prefill. This limits per-batch sequence width, not the number of requests that may be queued or retain KV state."
+            description="Maximum request slices selected for one scheduler batch across decode and prefill. This limits per-batch sequence width, not the number of requests that may be queued or retain KV state. Widening it is what turns a bandwidth-bound decode into a throughput gain: the weights are read once for the whole batch, so aggregate tokens per second rise while each individual request slows down."
             value={config.serving.maxBatchSize}
             minimum={1}
-            maximum={16}
+            maximum={64}
             step={1}
             disabled={disabled}
             onChange={(maxBatchSize) => onChange({
@@ -3372,10 +3372,10 @@ function ConfigurationPanel({
           />
           <SliderField
             label="Batch token budget"
-            description="Maximum token work in one scheduler batch: prefill tokens plus target decode or verification width. In target-only decoding, each selected decode request normally consumes one token of this budget."
+            description="Maximum token work in one scheduler batch: prefill tokens plus target decode or verification width. In target-only decoding, each selected decode request normally consumes one token of this budget, so this has to be at least the batch width or it caps the batch before the sequence limit does."
             value={config.serving.maxBatchTokens}
             minimum={16}
-            maximum={512}
+            maximum={2048}
             step={16}
             disabled={disabled}
             onChange={(maxBatchTokens) => onChange({

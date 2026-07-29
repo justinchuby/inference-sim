@@ -913,7 +913,7 @@ function parseServingConfig(
     requestCount: requireInteger(
       config.requestCount,
       1,
-      32,
+      128,
       "serving requestCount",
     ),
     arrivalGapUs: requireInteger(
@@ -937,13 +937,13 @@ function parseServingConfig(
     maxBatchSize: requireInteger(
       config.maxBatchSize,
       1,
-      16,
+      64,
       "serving maxBatchSize",
     ),
     maxBatchTokens: requireInteger(
       config.maxBatchTokens,
       8,
-      512,
+      2048,
       "serving maxBatchTokens",
     ),
     prefillChunkTokens: requireInteger(
