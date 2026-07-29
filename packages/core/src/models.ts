@@ -575,6 +575,13 @@ export interface ModelSpec {
   readonly crossAttention?:
     | AttentionGeometry
     | ((layer: number) => AttentionGeometry | undefined);
+  /**
+   * Width of a per-layer embedding table, for stacks that give every layer its
+   * own lookup for each token. The table is large but read one row at a time,
+   * so it counts toward the checkpoint's size without joining the weights a
+   * token streams, which is why it belongs with the embeddings.
+   */
+  readonly perLayerEmbeddingDim?: number;
   readonly moe?: MoESpec;
   readonly multimodal?: MultimodalSpec;
   /**
@@ -724,7 +731,11 @@ function expertParamsPerMoELayer(spec: ModelSpec): number {
 }
 
 function embeddingParams(spec: ModelSpec): number {
-  return spec.vocabSize * spec.hiddenDim * (spec.tiedEmbeddings ? 1 : 2);
+  const perLayer = spec.perLayerEmbeddingDim === undefined
+    ? 0
+    : specLayerCount(spec) * spec.vocabSize * spec.perLayerEmbeddingDim;
+  return spec.vocabSize * spec.hiddenDim * (spec.tiedEmbeddings ? 1 : 2)
+    + perLayer;
 }
 
 /**
@@ -1140,6 +1151,95 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     tiedEmbeddings: false,
     attention: { kind: "gqa", numHeads: 32, numKVHeads: 8, headDim: 128 },
     intermediateSize: 12288,
+  },
+
+  "gemma-4-e2b": {
+    name: "Gemma-4-E2B",
+    // "E" is for effective: 5.1B stored, of which 2.3B are read as weights.
+    // The rest is a per-layer embedding table that is looked up, not streamed.
+    publishedTotalParams: 5.1e9,
+    numLayers: 35,
+    hiddenDim: 1536,
+    vocabSize: 262144,
+    tiedEmbeddings: true,
+    perLayerEmbeddingDim: 256,
+    // Four sliding layers per global one, and the last twenty share their KV
+    // with an earlier layer, so they carry no key or value projection and
+    // allocate no cache of their own. Multi-query throughout: eight query
+    // heads read a single KV head.
+    attention: (layer) => ({
+      kind: "gqa",
+      numHeads: 8,
+      numKVHeads: layer >= 15 ? 0 : 1,
+      headDim: isGlobalLayer(5)(layer) ? 512 : 256,
+    }),
+    // The same twenty layers widen their MLP to compensate for the attention
+    // they no longer carry.
+    intermediateSize: (layer) => (layer >= 15 ? 12288 : 6144),
+    multimodal: {
+      components: [
+        {
+          id: "vision_encoder",
+          role: "vision_encoder",
+          phase: "prompt_only",
+          encoder: {
+            kind: "vit",
+            numLayers: 16,
+            hiddenDim: 768,
+            numHeads: 12,
+            intermediateSize: 3072,
+            gatedMlp: false,
+            patchSize: 16,
+            temporalPatchSize: 1,
+            inChannels: 3,
+          },
+          tokensPerItem: 280,
+        },
+        {
+          id: "audio_encoder",
+          role: "audio_encoder",
+          phase: "prompt_only",
+          encoder: {
+            kind: "conv_transformer",
+            numLayers: 12,
+            hiddenDim: 1024,
+            numHeads: 8,
+            intermediateSize: 4096,
+            melBins: 128,
+            convKernelSize: 3,
+            convLayers: 2,
+          },
+          tokensPerItem: 0,
+        },
+      ],
+      mediaInputs: [
+        {
+          modality: "image",
+          decoderTokensPerItem: 280,
+          unit: "image",
+          componentIds: ["vision_encoder"],
+        },
+        {
+          modality: "video",
+          decoderTokensPerItem: 280,
+          unit: "second of video",
+          componentIds: ["vision_encoder"],
+        },
+      ],
+    },
+    assumptions: [
+      SLIDING_WINDOW_KV_UPPER_BOUND,
+      "Twenty of the thirty-five layers share KV with an earlier layer, so"
+        + " they allocate none and carry no key or value projection.",
+      "The per-layer embedding table is 2.3B of the 5.1B stored parameters."
+        + " It is indexed one row per token rather than multiplied, so it is"
+        + " charged as an embedding and does not enter per-token weight"
+        + " bandwidth. A runtime that cannot page it will hold it in memory.",
+      "Audio is accepted, but the tokens one second of audio expands into are"
+        + " not published, so no audio input is offered rather than guessed.",
+      "Per-layer embedding projections, about 41M parameters, are not modelled"
+        + " separately; they are 2% of the streamed weights.",
+    ],
   },
 
   "gemma-4-12b": {

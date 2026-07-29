@@ -39,6 +39,8 @@ export const COMPUTER_PRESET_NAMES = [
   "mac-mini-m4-pro-64gb",
   "mac-studio-m3-ultra-512gb",
   "ryzen-ai-max-395-128gb",
+  "panther-lake-x9-388h-32gb",
+  "arrow-lake-s-285k-64gb",
 ] as const;
 
 export const ALL_SCENARIO_PRESET_NAMES = [
@@ -120,6 +122,38 @@ const PRESET_FACTORIES: Readonly<
     bandwidthBytesPerSec: 256 * GBps,
     storageCapacityBytes: 2 * TiB,
     executionProvider: "DirectMLExecutionProvider",
+  }),
+  // LPDDR5X-9600 across a 128-bit bus: 9600 MT/s x 16 B = 153.6 GB/s. The
+  // iGPU and NPU share system DRAM with no fixed carve-out, so the allocatable
+  // share is a driver policy rather than a hardware split.
+  "panther-lake-x9-388h-32gb": () => buildUnifiedComputer({
+    id: "panther-lake-x9-388h-32gb",
+    nodeId: "panther-lake",
+    gpuId: "panther-lake:xe3-igpu",
+    npuId: "panther-lake:npu5",
+    gpuComputeProfileId: "intel-core-ultra-x9-388h-gpu",
+    npuComputeProfileId: "intel-core-ultra-x9-388h-npu",
+    capacityBytes: 32 * GiB,
+    resourceLimitBytes: 28 * GiB,
+    bandwidthBytesPerSec: 153.6 * GBps,
+    storageCapacityBytes: 1 * TiB,
+    executionProvider: "OpenVINOExecutionProvider",
+  }),
+  // DDR5-6400 across a 128-bit bus: 6400 MT/s x 16 B = 102.4 GB/s. Socketed
+  // DIMMs take more capacity than the soldered mobile part but two thirds of
+  // its bandwidth, which is the axis that decides decode rate.
+  "arrow-lake-s-285k-64gb": () => buildUnifiedComputer({
+    id: "arrow-lake-s-285k-64gb",
+    nodeId: "arrow-lake-s",
+    gpuId: "arrow-lake-s:xe-lpg-igpu",
+    npuId: "arrow-lake-s:npu3",
+    gpuComputeProfileId: "intel-core-ultra-9-285k-gpu",
+    npuComputeProfileId: "intel-core-ultra-9-285k-npu",
+    capacityBytes: 64 * GiB,
+    resourceLimitBytes: 56 * GiB,
+    bandwidthBytesPerSec: 102.4 * GBps,
+    storageCapacityBytes: 2 * TiB,
+    executionProvider: "OpenVINOExecutionProvider",
   }),
 };
 
@@ -1345,6 +1379,25 @@ function scenario(parts: ScenarioParts): SimulationScenario {
   };
 }
 
+/**
+ * Placeholder extent for one expert cache tier.
+ *
+ * A fixed figure does not survive contact with a small machine: two 8 GiB
+ * tiers beside the weight and KV placeholders overrun a 32 GB laptop before
+ * any model is chosen. Sized against the domain instead, so a preset stays
+ * internally consistent whatever it represents. Runs that enable the cache
+ * replace this with what the checkpoint actually needs.
+ */
+function expertTierBytes(parts: ScenarioParts, domainId: string): number {
+  const domain = parts.domains.find(
+    (candidate: MemoryDomainSpec) => candidate.id === domainId,
+  );
+  if (domain === undefined) {
+    return 8 * GiB;
+  }
+  return Math.min(8 * GiB, Math.floor(domain.resourceLimitBytes / 8));
+}
+
 function storageTiers(parts: ScenarioParts): {
   readonly domains: readonly MemoryDomainSpec[];
   readonly devices: readonly SimDeviceSpec[];
@@ -1374,7 +1427,7 @@ function storageTiers(parts: ScenarioParts): {
         allocation(
           `expert-hot-cache:${entry.partitionId}`,
           workspace.domainId,
-          8 * GiB,
+          expertTierBytes(parts, workspace.domainId),
           workspace.allocationClass,
           "cache",
         ),
@@ -1437,7 +1490,7 @@ function storageTiers(parts: ScenarioParts): {
         allocation(
           `expert-warm-cache:${nodeId}`,
           warmDomain.id,
-          8 * GiB,
+          expertTierBytes(parts, warmDomain.id),
           warmDomain.kind === "unified" ? "unified" : "pinned",
           "cache",
         ),

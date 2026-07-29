@@ -502,6 +502,54 @@ function intelProfiles(): readonly HardwareComputeProfile[] {
       ],
       notes: "MME peaks; TPC vector rates are intentionally not added to them.",
     },
+    {
+      id: "intel-core-ultra-x9-388h-gpu",
+      vendor: "Intel" as const,
+      model: "Core Ultra X9 388H Xe3 GPU",
+      releaseDate: "2026-01-05",
+      deviceKind: "gpu" as const,
+      productClass: "integrated" as const,
+      aliases: ["Panther Lake Xe3 iGPU"],
+      sources: [source(
+        "Intel Xe3 GPU architecture briefing for Panther Lake",
+        "https://videocardz.com/newz/intel-details-xe3-gpu-architecture-for-panther-lake-up-to-12-xe-cores-and-50-performance-vs-lunar-lake",
+      )],
+      peaks: [
+        // Published by Intel for the 12-core configuration, counting a MAC as
+        // two operations, which 96 XMX engines at 2.5 GHz reproduce.
+        peak("int8", 120 * T, "matrix"),
+        // Arithmetic on the published core count and clock rather than a
+        // quoted figure: 12 x 8 vector engines x 512 bits / 32 x 2 x 2.5 GHz.
+        peak("fp32", 7.7 * T, "vector"),
+      ],
+      notes: "Intel publishes one AI figure for this GPU, its XMX INT8 rate."
+        + " No FP16 or BF16 matrix rate is published, so a run computing in"
+        + " half precision has no declared ceiling here.",
+    },
+    {
+      id: "intel-core-ultra-9-285k-gpu",
+      vendor: "Intel" as const,
+      model: "Core Ultra 9 285K Xe-LPG GPU",
+      releaseDate: "2024-10-24",
+      deviceKind: "gpu" as const,
+      productClass: "integrated" as const,
+      aliases: ["Arrow Lake-S iGPU"],
+      sources: [source(
+        "Intel Core Ultra 9 285K specifications",
+        "https://www.intel.com/content/www/us/en/products/sku/241060/intel-core-ultra-9-processor-285k-36m-cache-up-to-5-70-ghz/specifications.html",
+      )],
+      peaks: [
+        // 64 EUs x 8 FP32 lanes x 2 x 2.0 GHz. This tile has no matrix
+        // engines, so half precision shares the vector units at the same rate
+        // rather than reaching a faster path.
+        peak("fp32", 2.0 * T, "vector"),
+        peak("fp16", 2.0 * T, "vector"),
+      ],
+      notes: "This desktop tile carries no XMX matrix engines, so half"
+        + " precision is not faster than single. Intel publishes no standalone"
+        + " GPU AI rate for it; both figures are arithmetic on the published"
+        + " execution-unit count and clock.",
+    },
     ...([
       ["intel-core-ultra-series-1-npu", "Core Ultra Series 1 NPU", "2023-12-14", 11, "https://www.intel.com/content/www/us/en/products/sku/236776/intel-core-ultra-7-processor-165h-24m-cache-up-to-5-00-ghz/specifications.html", "unspecified"],
       ["intel-core-ultra-9-288v-npu", "Core Ultra 9 288V NPU", "2024-09-03", 48, "https://www.intel.com/content/www/us/en/products/sku/240961/intel-core-ultra-9-processor-288v-12m-cache-up-to-5-10-ghz/specifications.html", "dense"],

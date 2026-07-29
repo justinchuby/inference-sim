@@ -256,6 +256,8 @@ function parseDashboardRunConfig(input: unknown): DashboardRunConfig {
         "mac-mini-m4-pro-64gb",
         "mac-studio-m3-ultra-512gb",
         "ryzen-ai-max-395-128gb",
+        "panther-lake-x9-388h-32gb",
+        "arrow-lake-s-285k-64gb",
         "cpu-only",
         "single-gpu-cpu",
         "multi-gpu",

@@ -187,6 +187,14 @@ const COMPUTER_SCENARIOS: ReadonlyArray<{
     value: "ryzen-ai-max-395-128gb",
     label: "Ryzen AI Max+ 395 · 128GB",
   },
+  {
+    value: "panther-lake-x9-388h-32gb",
+    label: "Core Ultra X9 388H · 32GB",
+  },
+  {
+    value: "arrow-lake-s-285k-64gb",
+    label: "Core Ultra 9 285K · 64GB",
+  },
 ];
 
 const TOPOLOGY_SCENARIOS: ReadonlyArray<{

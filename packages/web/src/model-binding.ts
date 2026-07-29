@@ -23,6 +23,7 @@ export const DASHBOARD_MODEL_PRESETS = [
   "stable-diffusion-3.5-large",
   "flux-1-schnell",
   "flux-1-dev",
+  "gemma-4-e2b",
   "qwen3-0.6b",
   "llama-3.2-1b",
   "whisper-large-v3",

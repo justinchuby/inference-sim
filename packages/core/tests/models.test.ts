@@ -393,4 +393,26 @@ describe("model presets", () => {
       expect(model.mediaInputs, preset).toBeUndefined();
     }
   });
+
+  it("keeps a per-layer embedding table out of streamed weight bytes", () => {
+    // Gemma-4-E2B stores 5.1B parameters of which 2.3B are a per-layer
+    // embedding table. A token reads one row of it, not the table, so it
+    // counts toward what the checkpoint occupies and not toward what a token
+    // streams. Conflating the two would make this model look four times
+    // heavier to decode than it is.
+    const model = buildModelProfile("gemma-4-e2b", "int4", "fp16");
+    const streamed = model.layers.reduce(
+      (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
+      0,
+    );
+
+    expect(model.embeddingBytes!).toBeGreaterThan(streamed);
+    // Twenty of thirty-five layers share KV with an earlier layer, so they
+    // allocate none and carry no key or value projection.
+    const withoutCache = model.layers.filter(
+      (layer) => layer.kvCachePerToken === 0,
+    );
+    expect(withoutCache).toHaveLength(20);
+    expect(withoutCache.every((layer) => layer.attentionBytes > 0)).toBe(true);
+  });
 });
