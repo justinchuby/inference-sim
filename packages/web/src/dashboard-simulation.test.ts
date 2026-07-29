@@ -1320,4 +1320,43 @@ describe("simulateDashboard", () => {
     expect(backing(study)).toBe(backing(dense));
     expect(backing(study)).toBeLessThan(8 * 1024 ** 3);
   });
+
+  it("sizes an offload against the tightest domain, not their total", () => {
+    // gpu-npu puts attention weights on a 16 GiB NPU and the FFN on a 48 GiB
+    // GPU. Capacity is enforced per domain, so a plan sized against the 64 GiB
+    // total overran the GPU and the run was rejected by the resource manager
+    // with a message about allocations rather than about residency.
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "gpu-npu",
+      mode: "serving",
+      serving: { ...base.serving, decodeMode: "target_only" },
+      modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
+    });
+
+    const offload = result.model!.expertOffload!;
+    expect(offload.residentExperts).toBeGreaterThan(0);
+    expect(offload.residentExperts).toBeLessThan(offload.totalExperts);
+
+    // Every domain must still fit, which is the property the total-based
+    // sizing violated.
+    for (const entry of result.scenario.memoryLedger) {
+      if (!entry.enabled) continue;
+      expect(entry.freeBytes, entry.domainId).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("leaves a single-domain machine's offload untouched", () => {
+    // The tightest domain is the only domain there, so the stricter sizing
+    // must not cost a personal machine any residency.
+    const result = simulateDashboard({
+      ...base,
+      scenarioName: "mac-mini-m4-pro-64gb",
+      mode: "serving",
+      serving: { ...base.serving, decodeMode: "target_only" },
+      modelBinding: createBuiltinModelBinding("qwen-3-235b", "int4"),
+    });
+
+    expect(result.model!.expertOffload!.residentExperts).toBe(62);
+  });
 });

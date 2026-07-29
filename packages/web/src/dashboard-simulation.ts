@@ -379,6 +379,12 @@ function expertMemoryBudgetBytes(
   model: ModelProfile,
 ): number {
   const capacity = targetDomainCapacity(config, scenario);
+  // Experts are distributed across the weight allocations, so the plan has to
+  // fit the tightest of them rather than their total.
+  const usableBytes = Math.min(
+    capacity.availableBytes,
+    capacity.tightestDomainBytes,
+  );
   const dense = model.layers.reduce(
     (sum, layer) => sum + layer.attentionBytes + layer.ffnBytes,
     0,
@@ -387,7 +393,7 @@ function expertMemoryBudgetBytes(
     ? 0
     : model.architecture.numLayers * model.moe.sharedExpertBytesPerLayer;
   const alwaysResident = dense + shared + (model.embeddingBytes ?? 0);
-  return capacity.availableBytes - alwaysResident;
+  return usableBytes - alwaysResident;
 }
 
 /** Weight bytes that must sit in memory on this scenario. */
@@ -437,7 +443,11 @@ function executionProfileFor(
 function targetDomainCapacity(
   config: DashboardRunConfig,
   scenario: ReturnType<typeof buildScenarioPreset>,
-): { readonly availableBytes: number } {
+): {
+  readonly availableBytes: number;
+  /** Headroom in the tightest target domain, which admission cannot exceed. */
+  readonly tightestDomainBytes: number;
+} {
   const targetDomains = new Set(scenario.placements
     .filter((placement) => (
       placement.requiredCapabilities.includes("attention")
@@ -476,7 +486,33 @@ function targetDomainCapacity(
       ),
       0,
     );
-  return { availableBytes: capacityBytes - reservedNonWeightBytes };
+  // Capacity is enforced per domain, so a plan sized against the sum can still
+  // overrun one of them. A topology that puts attention on one device and the
+  // FFN on another has two, and their headroom is not interchangeable.
+  const perDomain = scenario.memoryDomains
+    .filter((domain) => targetDomains.has(domain.id))
+    .map((domain) => {
+      const reserved = scenario.placements
+        .flatMap((placement) => placement.allocations)
+        .filter((allocation) => (
+          allocation.domainId === domain.id
+          && allocation.purpose !== "weights"
+          && allocation.purpose !== "cache"
+        ))
+        .reduce(
+          (sum, allocation) => sum + (
+            allocationBytes[allocation.physicalAllocationId] ?? allocation.bytes
+          ),
+          0,
+        );
+      return domain.resourceLimitBytes - reserved;
+    });
+  return {
+    availableBytes: capacityBytes - reservedNonWeightBytes,
+    tightestDomainBytes: perDomain.length === 0
+      ? 0
+      : Math.min(...perDomain),
+  };
 }
 
 function validateModelCapacity(
