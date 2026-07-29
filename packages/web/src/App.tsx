@@ -26,6 +26,7 @@ import {
   Database,
   Download,
   Link2,
+  Rocket,
   FileDiff,
   FileCheck2,
   FilePlay,
@@ -6368,7 +6369,22 @@ function servingMetrics(result: DashboardResult) {
     ? kvReservedBytes / serving.kvBudgetTokens
     : 0;
   const kvHighWaterBytes = metrics.kvHighWaterTokens * kvBytesPerToken;
+  const gain = result.speculativeGain;
   return [
+    ...(gain === undefined
+      ? []
+      : [{
+          label: "Speculative speedup",
+          value: `${gain.speedup.toFixed(2)}x`,
+          // The acceptance is an input, so it is named here rather than left
+          // to be read as something the run discovered.
+          detail: `${gain.committedTokensPerTargetForward.toFixed(1)} tokens per target forward, at an assumed ${
+            (gain.firstPositionAcceptance * 100).toFixed(0)
+          }% first-position acceptance. ${
+            formatRate(gain.baselineTokensPerSecond)
+          } without it.`,
+          icon: <Rocket className="size-4 text-violet-700" />,
+        }]),
     {
       label: "P95 TTFT",
       value: formatDuration(metrics.p95TimeToFirstTokenNs),

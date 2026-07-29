@@ -400,6 +400,20 @@ export interface DashboardResult {
     readonly hotPartitions: readonly ExpertCachePartitionSnapshot[];
     readonly warmPartitions: readonly ExpertCachePartitionSnapshot[];
   };
+  /**
+   * What speculation bought against the same run without it, present only when
+   * the run speculated. The acceptance behind it is declared rather than
+   * predicted, and is reported alongside so the speedup is read as its
+   * consequence rather than as a measurement of the proposer.
+   */
+  readonly speculativeGain?: {
+    readonly baselineTokensPerSecond: number;
+    readonly speculativeTokensPerSecond: number;
+    readonly speedup: number;
+    readonly committedTokensPerTargetForward: number;
+    readonly firstPositionAcceptance: number;
+    readonly acceptanceDecay: number;
+  };
   readonly serving?: {
     readonly decodeMode: "target_only" | SpeculativeProposerFamily;
     readonly support: "onnx_genai_current" | "design_only" | "target_only";

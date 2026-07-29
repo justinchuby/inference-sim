@@ -43,6 +43,16 @@ does not claim hardware-accurate latency without calibration data.
 - Build or edit one- to four-node device topologies with separate compute,
   VRAM/RAM/unified-memory/SSD domains, resource-manager capacity limits, and
   selectable PCIe, fabric, Ethernet, or RDMA links.
+- Switching speculative decoding on reports what it bought, by simulating the
+  same run without it and dividing. The acceptance behind it is declared, not
+  predicted: nothing here knows what a proposer would agree with the target on,
+  and prompt lookup in particular swings from excellent on editing to near
+  useless on open generation, so the acceptance is reported beside the speedup
+  rather than left to be mistaken for a measurement. The regime matters more
+  than the proposer: a verification pass reads the weights once whatever its
+  width, so on one Panther Lake stream the same acceptance is worth 2.6x, and
+  at a batch of 64 it is worth 1.03x. Speculation and batching amortise the
+  same weight read and do not stack.
 - Machine presets check their own arithmetic. Peak memory bandwidth is not a
   free parameter but the transfer rate times the bus width, so each preset
   declares the bus beside the vendor's figure and the product has to agree

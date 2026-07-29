@@ -774,6 +774,36 @@ function runServing(
   );
 }
 
+/**
+ * How likely each drafted position is to survive verification.
+ *
+ * This is a declared assumption, not a prediction. Nothing here knows what the
+ * proposer would actually agree with the target on: that depends on the
+ * checkpoint pair and on the text being generated, and prompt lookup in
+ * particular swings from excellent on editing and summarisation, where the
+ * output repeats the prompt, to near useless on open generation. The first
+ * position is whatever the reader declares, and later positions decay because
+ * a draft that has already diverged rarely recovers.
+ *
+ * The decay is a modelling choice with no measurement behind it, which is why
+ * it is named here rather than left inline: any speedup this simulator reports
+ * is a consequence of these numbers and is only as good as they are.
+ */
+export const SPECULATIVE_ACCEPTANCE_DECAY = 0.86;
+
+export function speculativeAcceptanceLadder(
+  firstPositionAcceptance: number,
+  draftWidth: number,
+): readonly number[] {
+  return Array.from(
+    { length: draftWidth },
+    (_, index) => Math.max(
+      0.05,
+      firstPositionAcceptance * SPECULATIVE_ACCEPTANCE_DECAY ** index,
+    ),
+  );
+}
+
 function buildServingConfig(
   config: DashboardRunConfig,
 ): ServingSchedulerConfig {
@@ -825,14 +855,58 @@ function buildServingConfig(
             maxAdditionalTokens: draftWidth,
             acceptance: {
               kind: "conditional_heuristic" as const,
-              matchProbabilityByPosition: Array.from(
-                { length: draftWidth },
-                (_, index) => Math.max(0.05, first * 0.86 ** index),
+              matchProbabilityByPosition: speculativeAcceptanceLadder(
+                first,
+                draftWidth,
               ),
               seed: clampInteger(config.seed, 0, 0xffff_ffff),
             },
           },
         }),
+  };
+}
+
+/**
+ * What speculation bought, measured rather than asserted.
+ *
+ * The question a reader asks when switching it on is how much faster the run
+ * got, which needs the same run without it. Both are simulated and the ratio
+ * reported, because the answer is not a property of the proposer alone: a
+ * verification pass reads the weights once whatever its width, so speculation
+ * pays exactly where the decode was waiting on memory and pays almost nothing
+ * once batching has already saturated the machine. The two buy the same thing
+ * and do not stack.
+ *
+ * Returns undefined when there is nothing to compare, which is any run that
+ * was not already speculating.
+ */
+function speculativeGain(
+  config: DashboardRunConfig,
+  scenario: ReturnType<typeof buildScenarioPreset>,
+  serving: ReturnType<typeof simulateTopologyServingWorkload>,
+  costModel: TopologyCostModel,
+): DashboardResult["speculativeGain"] {
+  if (config.serving.decodeMode === "target_only") {
+    return undefined;
+  }
+  const baseline = runServing(
+    {
+      ...config,
+      serving: { ...config.serving, decodeMode: "target_only" },
+    },
+    scenario,
+    costModel,
+  );
+  const baselineRate = baseline.serving.metrics.throughputTokensPerSecond;
+  const speculativeRate = serving.serving.metrics.throughputTokensPerSecond;
+  return {
+    baselineTokensPerSecond: baselineRate,
+    speculativeTokensPerSecond: speculativeRate,
+    speedup: baselineRate > 0 ? speculativeRate / baselineRate : 1,
+    committedTokensPerTargetForward:
+      serving.serving.metrics.committedTokensPerTargetForward,
+    firstPositionAcceptance: config.serving.firstPositionAcceptance,
+    acceptanceDecay: SPECULATIVE_ACCEPTANCE_DECAY,
   };
 }
 
@@ -860,6 +934,15 @@ function servingDashboardResult(
     ...pipelineExecutionSummary(
       serving.batches.map((batch) => batch.topology),
     ),
+    ...(comparison !== undefined
+      // A topology comparison already simulates every machine; adding a
+      // baseline for each would double that to answer a question the reader
+      // did not ask in that mode.
+      ? {}
+      : (() => {
+          const gain = speculativeGain(config, scenario, serving, costModel);
+          return gain === undefined ? {} : { speculativeGain: gain };
+        })()),
     serving: {
       decodeMode: config.serving.decodeMode,
       support: config.serving.decodeMode === "target_only"
@@ -1232,10 +1315,7 @@ function runSpeculative(
     maxAdditionalTokens: draftWidth,
     acceptance: {
       kind: "conditional_heuristic",
-      matchProbabilityByPosition: Array.from(
-        { length: draftWidth },
-        (_, index) => Math.max(0.05, first * 0.86 ** index),
-      ),
+      matchProbabilityByPosition: speculativeAcceptanceLadder(first, draftWidth),
       seed: clampInteger(config.seed, 0, 0xffff_ffff),
     },
     stateGroups: buildSpeculativeStateGroups(

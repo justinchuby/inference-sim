@@ -1426,4 +1426,80 @@ describe("simulateDashboard", () => {
       },
     })).toThrow(/reserves .* GiB of KV .* leaves no room/);
   });
+
+  it("measures what speculation bought instead of asserting it", () => {
+    const run = (decodeMode: "target_only" | "prompt_lookup") => simulateDashboard({
+      ...base,
+      scenarioName: "panther-lake-x9-388h-32gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("gemma-4-e2b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode,
+        draftWidth: 4,
+        firstPositionAcceptance: 0.82,
+        requestCount: 4,
+        maxBatchSize: 1,
+        outputTokens: 32,
+      },
+    });
+
+    const speculative = run("prompt_lookup");
+    const gain = speculative.speculativeGain!;
+    // The reported baseline has to be the same run without speculation, not a
+    // figure derived from the acceptance ladder.
+    expect(gain.baselineTokensPerSecond).toBeCloseTo(
+      run("target_only").serving!.metrics.throughputTokensPerSecond,
+      6,
+    );
+    expect(gain.speedup).toBeCloseTo(
+      gain.speculativeTokensPerSecond / gain.baselineTokensPerSecond,
+      6,
+    );
+    expect(gain.speedup).toBeGreaterThan(1.5);
+    // The acceptance travels with the number so it is not mistaken for one.
+    expect(gain.firstPositionAcceptance).toBe(0.82);
+
+    // A run that did not speculate has nothing to report.
+    expect(run("target_only").speculativeGain).toBeUndefined();
+  });
+
+  it("shows speculation and batching buying the same thing", () => {
+    // Both amortise one weight read over several tokens, so they do not stack:
+    // the same acceptance that is worth 2.6x on a single stream is worth
+    // almost nothing once a wide batch has already saturated memory. Reporting
+    // the speedup without this would invite stacking them in a plan.
+    const speedupAt = (maxBatchSize: number) => simulateDashboard({
+      ...base,
+      scenarioName: "panther-lake-x9-388h-32gb",
+      mode: "serving",
+      modelBinding: createBuiltinModelBinding("gemma-4-e2b", "int4"),
+      serving: {
+        ...base.serving,
+        decodeMode: "prompt_lookup",
+        draftWidth: 4,
+        firstPositionAcceptance: 0.82,
+        requestCount: Math.max(8, maxBatchSize * 2),
+        maxBatchSize,
+        maxBatchTokens: 2048,
+        outputTokens: 32,
+        arrivalGapUs: 1,
+      },
+    }).speculativeGain!;
+
+    const narrow = speedupAt(1);
+    const wide = speedupAt(64);
+    expect(narrow.speedup).toBeGreaterThan(2);
+    expect(wide.speedup).toBeLessThan(1.2);
+    // The acceptance did not change; only what it was worth did. The two runs
+    // draft over different request counts, so the committed length is sampled
+    // slightly differently, but it stays within a few percent while the
+    // speedup falls by more than half.
+    const drift = Math.abs(
+      wide.committedTokensPerTargetForward
+        - narrow.committedTokensPerTargetForward,
+    ) / narrow.committedTokensPerTargetForward;
+    expect(drift).toBeLessThan(0.1);
+    expect(wide.speedup / narrow.speedup).toBeLessThan(0.5);
+  });
 });
