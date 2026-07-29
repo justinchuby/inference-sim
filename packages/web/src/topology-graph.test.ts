@@ -242,4 +242,46 @@ describe("topology graph projection", () => {
     expect(graph.nodes.find((node) => node.id === "node0:storage")?.data
       .details[0]).toBe("disabled / 2.0 TiB physical");
   });
+
+  it("puts a rate on the edge every weight and KV byte crosses", () => {
+    // The unified pool's rate was printed inside the memory node in small
+    // text while the edge from the chip to it was an unlabelled dash, so the
+    // only labelled edge on a laptop diagram was the SSD, which is the one
+    // that is usually idle.
+    const graph = buildTopologyGraph(
+      buildScenarioPreset("panther-lake-x9-388h-32gb"),
+    );
+    const toUnified = graph.edges.filter((edge) => (
+      edge.data?.category === "access"
+      && edge.target === "panther-lake:unified"
+    ));
+
+    expect(toUnified).toHaveLength(3);
+    for (const edge of toUnified) {
+      expect(edge.label, edge.source).toContain("153.6 GB/s");
+      expect(edge.data!.bandwidthBytesPerSec, edge.source)
+        .toBeCloseTo(153.6e9, -8);
+    }
+  });
+
+  it("charges a device the bus it crosses, not the memory it reaches", () => {
+    // A discrete GPU reading host DRAM gets PCIe, not the 83 GB/s the DRAM
+    // itself runs at. Labelling this edge with the domain's own rate would
+    // overstate offload by more than double.
+    const graph = buildTopologyGraph(buildScenarioPreset("rtx-4090-desktop"));
+    const find = (source: string, target: string) => graph.edges.find(
+      (edge) => edge.data?.category === "access"
+        && edge.source === source
+        && edge.target === target,
+    )!;
+
+    // Its own memory, at its own rate.
+    expect(find("desktop:rtx4090", "desktop:rtx4090:vram").label)
+      .toContain("1,008 GB/s");
+    // Host memory, over the bus between them.
+    expect(find("desktop:rtx4090", "desktop:host").label).toContain("32 GB/s");
+    // And the CPU, attached to that same memory directly, is not charged the
+    // GPU's bus for it.
+    expect(find("desktop:cpu", "desktop:host").label).toContain("83 GB/s");
+  });
 });

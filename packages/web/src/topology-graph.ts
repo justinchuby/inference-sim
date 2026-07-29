@@ -292,9 +292,66 @@ export function buildTopologyGraph(
     nodes.push(networkResourceNode(resource, position));
   });
 
+  /**
+   * Rate at which one device reaches one memory domain.
+   *
+   * Its own memory it reaches at that memory's rate. Memory it does not own
+   * it reaches over whatever link joins them, and the narrower of the two
+   * binds, so a discrete GPU reading host RAM is charged the bus and not the
+   * DRAM. Where no link joins them the path is unknown and nothing is
+   * claimed, because a wrong rate on this edge is worse than none: it is the
+   * edge every weight and KV byte crosses.
+   */
+  const accessRate = (
+    device: SimulationScenario["devices"][number],
+    domain: SimulationScenario["memoryDomains"][number],
+    localMemory: boolean,
+  ): { readonly bandwidthBytesPerSec: number; readonly latencyNs: number }
+  | undefined => {
+    if (localMemory) {
+      return {
+        bandwidthBytesPerSec: domain.bandwidthBytesPerSec,
+        latencyNs: domain.latencyNs,
+      };
+    }
+    const owned = new Set(device.memoryDomainIds.filter(
+      (candidate) => domainOwnerById.get(candidate) === device.id,
+    ));
+    const link = scenario.links.find((candidate) => (
+      (candidate.targetDomainId === domain.id
+        && owned.has(candidate.sourceDomainId))
+      || (candidate.sourceDomainId === domain.id
+        && owned.has(candidate.targetDomainId))
+    ));
+    if (link !== undefined) {
+      return {
+        bandwidthBytesPerSec: Math.min(
+          domain.bandwidthBytesPerSec,
+          link.bandwidthBytesPerSec,
+        ),
+        latencyNs: domain.latencyNs + link.latencyNs,
+      };
+    }
+    // Attached directly, with no link between them. A unified pool is nobody's
+    // private memory and yet every engine on the die reads it at its own rate,
+    // which is the case this diagram was quietly leaving blank.
+    return domain.nodeId === device.nodeId
+      ? {
+          bandwidthBytesPerSec: domain.bandwidthBytesPerSec,
+          latencyNs: domain.latencyNs,
+        }
+      : undefined;
+  };
+
   const accessEdges: TopologyGraphEdge[] = scenario.devices.flatMap(
     (device) => device.memoryDomainIds.map((domainId) => {
       const localMemory = domainOwnerById.get(domainId) === device.id;
+      const domain = scenario.memoryDomains.find(
+        (candidate) => candidate.id === domainId,
+      );
+      const rate = domain === undefined
+        ? undefined
+        : accessRate(device, domain, localMemory);
       return {
         id: `access:${device.id}:${domainId}`,
         source: device.id,
@@ -309,12 +366,23 @@ export function buildTopologyGraph(
           strokeWidth: localMemory ? 2.5 : 1,
           ...(localMemory ? {} : { strokeDasharray: "4 4" }),
         },
+        // The rate a chip reads memory at is the number this diagram exists to
+        // show, and it was the only edge without one.
+        ...(rate === undefined
+          ? {}
+          : {
+              label: [
+                formatRate(rate.bandwidthBytesPerSec),
+                formatDuration(rate.latencyNs),
+              ].join(" · "),
+            }),
         data: {
           category: "access" as const,
           scope: systemByDevice.get(device.id) === systemByDomain.get(domainId)
             ? "intra-node" as const
             : "inter-node" as const,
           kind: localMemory ? "local memory" : "memory access",
+          ...(rate === undefined ? {} : rate),
           memoryRelation: localMemory
             ? "local" as const
             : "accessible" as const,
