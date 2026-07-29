@@ -1,3 +1,4 @@
+import { derivedMemoryBandwidth, type MemoryBusSpec } from "./memory-bus.js";
 import {
   SCENARIO_SCHEMA_VERSION,
   type AllocationClass,
@@ -62,6 +63,7 @@ const PRESET_FACTORIES: Readonly<
   "multi-node": buildMultiNode,
   "rtx-4090-desktop": () => buildDiscreteComputer({
     id: "rtx-4090-desktop",
+    memoryBus: { label: "GDDR6X-21000", transferMtPerSec: 21_000, busWidthBits: 384 },
     gpuId: "desktop:rtx4090",
     gpuComputeProfileId: "nvidia-geforce-rtx-4090",
     hostCapacityBytes: 64 * GiB,
@@ -75,6 +77,7 @@ const PRESET_FACTORIES: Readonly<
   }),
   "rtx-5090-desktop": () => buildDiscreteComputer({
     id: "rtx-5090-desktop",
+    memoryBus: { label: "GDDR7-28000", transferMtPerSec: 28_000, busWidthBits: 512 },
     gpuId: "desktop:rtx5090",
     gpuComputeProfileId: "nvidia-geforce-rtx-5090",
     hostCapacityBytes: 128 * GiB,
@@ -88,6 +91,7 @@ const PRESET_FACTORIES: Readonly<
   }),
   "mac-mini-m4-pro-64gb": () => buildUnifiedComputer({
     id: "mac-mini-m4-pro-64gb",
+    memoryBus: { label: "LPDDR5X-8533", transferMtPerSec: 8_533, busWidthBits: 256 },
     nodeId: "mac-mini",
     gpuId: "mac-mini:m4-pro-gpu",
     npuId: "mac-mini:m4-pro-neural-engine",
@@ -101,6 +105,7 @@ const PRESET_FACTORIES: Readonly<
   }),
   "mac-studio-m3-ultra-512gb": () => buildUnifiedComputer({
     id: "mac-studio-m3-ultra-512gb",
+    memoryBus: { label: "LPDDR5-6400", transferMtPerSec: 6_400, busWidthBits: 1_024 },
     nodeId: "mac-studio",
     gpuId: "mac-studio:m3-ultra-gpu",
     npuId: "mac-studio:m3-ultra-neural-engine",
@@ -114,6 +119,7 @@ const PRESET_FACTORIES: Readonly<
   }),
   "ryzen-ai-max-395-128gb": () => buildUnifiedComputer({
     id: "ryzen-ai-max-395-128gb",
+    memoryBus: { label: "LPDDR5X-8000", transferMtPerSec: 8_000, busWidthBits: 256 },
     nodeId: "ryzen-ai",
     gpuId: "ryzen-ai:radeon-8060s",
     npuId: "ryzen-ai:xdna2-npu",
@@ -128,6 +134,7 @@ const PRESET_FACTORIES: Readonly<
   // share is a driver policy rather than a hardware split.
   "panther-lake-x9-388h-32gb": () => buildUnifiedComputer({
     id: "panther-lake-x9-388h-32gb",
+    memoryBus: { label: "LPDDR5X-9600", transferMtPerSec: 9_600, busWidthBits: 128 },
     nodeId: "panther-lake",
     gpuId: "panther-lake:xe3-igpu",
     npuId: "panther-lake:npu5",
@@ -144,6 +151,7 @@ const PRESET_FACTORIES: Readonly<
   // its bandwidth, which is the axis that decides decode rate.
   "arrow-lake-s-285k-64gb": () => buildUnifiedComputer({
     id: "arrow-lake-s-285k-64gb",
+    memoryBus: { label: "DDR5-6400", transferMtPerSec: 6_400, busWidthBits: 128 },
     nodeId: "arrow-lake-s",
     gpuId: "arrow-lake-s:xe-lpg-igpu",
     npuId: "arrow-lake-s:npu3",
@@ -171,6 +179,8 @@ export function buildScenarioPreset(name: ScenarioPresetName): SimulationScenari
 
 interface DiscreteComputerConfig {
   readonly id: string;
+  /** Bus the device memory sits on, checked against the declared bandwidth. */
+  readonly memoryBus: MemoryBusSpec;
   readonly gpuId: string;
   readonly gpuComputeProfileId: string;
   readonly hostCapacityBytes: number;
@@ -230,7 +240,11 @@ function buildDiscreteComputer(
           nodeId,
           "device",
           config.vramCapacityBytes,
-          config.vramBandwidthBytesPerSec,
+          assertDeclaredBandwidth(
+            config.id,
+            config.memoryBus,
+            config.vramBandwidthBytesPerSec,
+          ),
           ["device"],
           [gpu.id],
           { kind: "device", deviceId: gpu.id },
@@ -289,6 +303,8 @@ function buildDiscreteComputer(
 
 interface UnifiedComputerConfig {
   readonly id: string;
+  /** Bus the unified pool sits on, checked against the declared bandwidth. */
+  readonly memoryBus: MemoryBusSpec;
   readonly nodeId: string;
   readonly gpuId: string;
   readonly npuId: string;
@@ -299,6 +315,33 @@ interface UnifiedComputerConfig {
   readonly bandwidthBytesPerSec: number;
   readonly storageCapacityBytes: number;
   readonly executionProvider: string;
+}
+
+/**
+ * Fail a preset whose declared bandwidth does not match its declared bus.
+ *
+ * Checked when the preset is built rather than in a test, so a machine that
+ * cannot be described consistently cannot be simulated at all. One percent
+ * covers vendors rounding their own figure, as Apple does quoting 273 GB/s for
+ * a bus that computes to 273.06.
+ */
+function assertDeclaredBandwidth(
+  id: string,
+  bus: MemoryBusSpec,
+  declaredBytesPerSec: number,
+): number {
+  const derived = derivedMemoryBandwidth(bus);
+  const drift = Math.abs(derived - declaredBytesPerSec) / derived;
+  if (!(drift <= 0.01)) {
+    throw new Error(
+      `scenario ${id} declares ${
+        (declaredBytesPerSec / 1e9).toFixed(1)
+      } GB/s of memory bandwidth, but its ${bus.label} bus at ${
+        bus.busWidthBits
+      } bits computes to ${(derived / 1e9).toFixed(1)} GB/s`,
+    );
+  }
+  return declaredBytesPerSec;
 }
 
 function buildUnifiedComputer(
@@ -342,7 +385,11 @@ function buildUnifiedComputer(
           config.nodeId,
           "unified",
           config.capacityBytes,
-          config.bandwidthBytesPerSec,
+          assertDeclaredBandwidth(
+            config.id,
+            config.memoryBus,
+            config.bandwidthBytesPerSec,
+          ),
           ["unified"],
           [cpu.id, gpu.id, npu.id],
           { kind: "host", nodeId: config.nodeId },

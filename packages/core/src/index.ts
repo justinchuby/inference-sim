@@ -51,6 +51,10 @@ export {
   type MultiModelTraceEvent,
 } from "./multi-model.js";
 export {
+  derivedMemoryBandwidth,
+  type MemoryBusSpec,
+} from "./memory-bus.js";
+export {
   expertRoutingWeights,
   planExpertResidency,
   topExpertMass,

@@ -43,6 +43,13 @@ does not claim hardware-accurate latency without calibration data.
 - Build or edit one- to four-node device topologies with separate compute,
   VRAM/RAM/unified-memory/SSD domains, resource-manager capacity limits, and
   selectable PCIe, fabric, Ethernet, or RDMA links.
+- Machine presets check their own arithmetic. Peak memory bandwidth is not a
+  free parameter but the transfer rate times the bus width, so each preset
+  declares the bus beside the vendor's figure and the product has to agree
+  within a percent. A preset that cannot be described consistently fails to
+  build rather than quietly simulating a machine that does not exist. This is
+  the same discipline the model presets already got from checking derived
+  parameter counts against published ones.
 - Simulate target-only and supported speculative decode families, continuous
   batching, chunked prefill, MoE placement and expert caching, TP/PP/EP/DP,
   multimodal pipelines, and optional SSD streaming.
