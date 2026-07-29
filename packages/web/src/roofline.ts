@@ -6,6 +6,7 @@ import type {
   TopologyWorkloadResult,
 } from "@inference-sim/core";
 import {
+  compareIds,
   denseHardwareComputePeak,
   hardwareComputeProfile,
 } from "@inference-sim/core";
@@ -65,11 +66,8 @@ export function buildDashboardRoofline(
   const computeDtype = model.modelFormat?.activationDtype?.toLowerCase()
     ?? model.modelFormat?.weightDtypes[0]?.toLowerCase()
     ?? "fp16";
-  const computeRoof = resolvedComputeRoof(
-    input,
-    targetDevices,
-    computeDtype,
-  );
+  const { roof: computeRoof, absence: computeRoofAbsence } =
+    resolvedComputeRoof(input, targetDevices, computeDtype);
   const localRoof = preferredLocalRoof(input.scenario, targetDevices)
     ?? bandwidthRoofs[0];
   const seeds = pointSeeds(input);
@@ -143,6 +141,7 @@ export function buildDashboardRoofline(
       ? { unavailableReason: "No positive-duration model work was produced." }
       : {}),
     ...(computeRoof === undefined ? {} : { computeRoof }),
+    ...(computeRoofAbsence === undefined ? {} : { computeRoofAbsence }),
     bandwidthRoofs,
     points,
   };
@@ -253,19 +252,42 @@ function pointSeeds(input: RooflineInput): readonly PointSeed[] {
   }];
 }
 
+/**
+ * The compute ceiling for this dtype, or why there is none.
+ *
+ * A missing ceiling has several causes that need opposite advice, so the
+ * absence is described rather than left as undefined: no hardware is bound at
+ * all, the vendor publishes no absolute peak for any dtype, or the peaks that
+ * exist do not cover this one.
+ */
 function resolvedComputeRoof(
   input: RooflineInput,
   deviceIds: readonly string[],
   dtype: string,
-): DashboardRooflineResult["computeRoof"] | undefined {
+): {
+  readonly roof?: DashboardRooflineResult["computeRoof"];
+  readonly absence?: NonNullable<DashboardRooflineResult["computeRoofAbsence"]>;
+} {
   const devices = deviceIds.map((id) => input.scenario.devices.find(
     (candidate) => candidate.id === id,
   )).filter((device) => device !== undefined);
+  const deviceLabels = devices.map((device) => device.id);
   const boundProfiles = devices.filter((device) => (
     device.computeProfileId !== undefined || device.customComputePeaks !== undefined
   ));
   if (boundProfiles.length > 0) {
-    if (boundProfiles.length !== devices.length) return undefined;
+    if (boundProfiles.length !== devices.length) {
+      return {
+        absence: {
+          reason: "mixed_devices",
+          dtype,
+          deviceLabels: devices
+            .filter((device) => !boundProfiles.includes(device))
+            .map((device) => device.id),
+          publishedDtypes: [],
+        },
+      };
+    }
     const peaks = boundProfiles.map((device) => {
       if (device.customComputePeaks !== undefined) {
         return {
@@ -282,12 +304,32 @@ function resolvedComputeRoof(
       };
     });
     if (peaks.some((item) => item.peak === undefined)) {
-      return undefined;
+      const published = [...new Set(peaks.flatMap((item) => (
+        item.device.customComputePeaks?.map((peak) => peak.dtype)
+          ?? item.profile?.peaks
+            .filter((peak) => peak.sparsity === "dense")
+            .map((peak) => peak.dtype)
+          ?? []
+      )))].sort(compareIds);
+      return {
+        absence: {
+          // A vendor that publishes nothing at all needs different advice
+          // from one whose published set simply omits this dtype.
+          reason: published.length === 0
+            ? "profile_publishes_none"
+            : "dtype_not_published",
+          dtype,
+          deviceLabels: peaks
+            .filter((item) => item.peak === undefined)
+            .map((item) => item.device.id),
+          publishedDtypes: published,
+        },
+      };
     }
     const userDeclared = peaks.some((item) => (
       item.device.customComputePeaks !== undefined
     ));
-    return {
+    return { roof: {
       label: userDeclared ? "User-declared dense compute" : "Official dense compute",
       flopsPerSecond: peaks.reduce((sum, item) => (
         sum + item.peak!.operationsPerSecond
@@ -300,14 +342,30 @@ function resolvedComputeRoof(
       sourceUrls: [...new Set(peaks.flatMap((item) => (
         item.profile?.sources.map((itemSource) => itemSource.url) ?? []
       )))],
-    };
+    } };
   }
   if (["int4", "int2", "int1", "nf4", "mixed", "unknown"].includes(dtype)) {
-    return undefined;
+    // No hardware is bound, and a sub-byte dtype has no defensible generic
+    // rate to fall back on.
+    return {
+      absence: {
+        reason: "no_profile_narrow_dtype",
+        dtype,
+        deviceLabels,
+        publishedDtypes: [],
+      },
+    };
   }
   const profile = input.model?.executionProfile;
   if (profile === undefined) {
-    return undefined;
+    return {
+      absence: {
+        reason: "no_profile",
+        dtype,
+        deviceLabels,
+        publishedDtypes: [],
+      },
+    };
   }
   let total = 0;
   for (const device of devices) {
@@ -319,16 +377,23 @@ function resolvedComputeRoof(
     total += profile.forwardFlopsPerToken * 1e9 / serviceNs;
   }
   if (!(total > 0)) {
-    return undefined;
+    return {
+      absence: {
+        reason: "no_profile",
+        dtype,
+        deviceLabels,
+        publishedDtypes: [],
+      },
+    };
   }
-  return {
+  return { roof: {
     label: "Effective compute",
     flopsPerSecond: total,
     evidence: input.costModel.confidence === "calibrated"
       ? "calibrated_effective"
       : "heuristic_effective",
     dtype,
-  };
+  } };
 }
 
 function buildBandwidthRoofs(

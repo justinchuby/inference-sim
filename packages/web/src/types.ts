@@ -190,6 +190,23 @@ export interface DashboardRooflineResult {
     readonly profileIds?: readonly string[];
     readonly sourceUrls?: readonly string[];
   };
+  /**
+   * Why there is no compute ceiling, when there is none. The causes need
+   * opposite advice, so the reader is told which one applies rather than left
+   * to infer that a different dtype might help when nothing would.
+   */
+  readonly computeRoofAbsence?: {
+    readonly reason:
+      | "no_profile"
+      | "no_profile_narrow_dtype"
+      | "profile_publishes_none"
+      | "dtype_not_published"
+      | "mixed_devices";
+    readonly dtype: string;
+    readonly deviceLabels: readonly string[];
+    /** Dtypes the bound hardware does publish, when it publishes any. */
+    readonly publishedDtypes: readonly string[];
+  };
   readonly bandwidthRoofs: readonly {
     readonly id: string;
     readonly label: string;
