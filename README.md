@@ -130,6 +130,17 @@ Start the local workbench:
 pnpm dev:web
 ```
 
+The address bar carries the configuration, so a run can be shared by copying
+the link. Only what differs from the defaults is written, which keeps a link
+short and readable: `?scenario=panther-lake-x9-388h-32gb&model=gemma-4-e2b&batch=8`
+says what it changes. A link is inputs rather than results, and whoever opens
+it runs them. Imported files stay local: a custom topology, a local ONNX
+package, a calibration dataset or a token trace cannot travel in a URL, and
+Copy link says which of them it had to leave behind. Values are bounds-checked
+on the way in, so an edited link cannot reach a state the controls could not
+produce; anything unusable is reported and keeps its default rather than
+discarding the rest of the link.
+
 It opens on the simplest run that is still real: one INT4 Llama-3-8B on a Mac
 mini, one request, one sequence per batch, prefilled in a single pass, with
 speculation, expert caching and media all off. Every mechanism the simulator

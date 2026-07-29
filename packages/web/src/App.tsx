@@ -25,6 +25,7 @@ import {
   Cpu,
   Database,
   Download,
+  Link2,
   FileDiff,
   FileCheck2,
   FilePlay,
@@ -81,7 +82,13 @@ import {
 import { importModelPackage } from "./model-import-client.js";
 import type { ImportedModelPackage } from "./model-package-import.js";
 import {
+  decodeDashboardShareLink,
+  encodeDashboardShareLink,
+} from "./share-link.js";
+import {
   assessImportedModelExecutionCoverage,
+  BUILTIN_KV_CACHE_DTYPES,
+  BUILTIN_WEIGHT_DTYPES,
   createBuiltinModelBinding,
   createImportedModelBinding,
   DASHBOARD_MODEL_PRESETS,
@@ -153,24 +160,6 @@ import type {
 import { coResidencyMemoryDomain } from "./dashboard-simulation.js";
 import { finalizeEditedTopology } from "./topology-editor.js";
 import { cn } from "./lib/utils.js";
-
-const BUILTIN_WEIGHT_DTYPES = [
-  "fp16",
-  "bf16",
-  "fp8",
-  "int8",
-  "int4",
-  "int2",
-  "int1",
-] as const satisfies readonly QuantType[];
-
-const BUILTIN_KV_CACHE_DTYPES = [
-  "fp16",
-  "bf16",
-  "fp8",
-  "int8",
-  "int4",
-] as const satisfies readonly QuantType[];
 
 const COMPUTER_SCENARIOS: ReadonlyArray<{
   readonly value: DashboardRunConfig["scenarioName"];
@@ -416,7 +405,15 @@ interface ModelPackageSelection {
 }
 
 export function App(): React.JSX.Element {
-  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  // Read once, at mount. A link describes a starting point rather than a live
+  // binding: re-reading later would fight the controls the reader then uses.
+  const [initialShare] = useState(() => (
+    typeof window === "undefined"
+      ? { config: DEFAULT_CONFIG, warnings: [] as readonly string[] }
+      : decodeDashboardShareLink(window.location.search, DEFAULT_CONFIG)
+  ));
+  const [config, setConfig] = useState(initialShare.config);
+  const [shareWarnings, setShareWarnings] = useState(initialShare.warnings);
   const [runState, setRunState] = useState<RunState>({
     status: "idle",
     progress: 0,
@@ -448,6 +445,17 @@ export function App(): React.JSX.Element {
   const initializedRef = useRef(false);
   const changeConfig = useCallback((nextConfig: DashboardRunConfig) => {
     setConfig(nextConfig);
+    // Replaced rather than pushed: every slider drag would otherwise become a
+    // history entry and the back button would stop meaning anything.
+    if (typeof window !== "undefined") {
+      const { search } = encodeDashboardShareLink(nextConfig, DEFAULT_CONFIG);
+      window.history.replaceState(
+        null,
+        "",
+        search === "" ? window.location.pathname : `?${search}`,
+      );
+    }
+    setShareWarnings([]);
     setRunState((current) => current.status === "running"
       ? current
       : {
@@ -1373,6 +1381,7 @@ export function App(): React.JSX.Element {
               <Download className="size-4" />
               Export result
             </Button>
+            <ShareLinkButton config={config} />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1452,6 +1461,7 @@ export function App(): React.JSX.Element {
               : (
                   <ConfigurationPanel
                     config={config}
+                    shareWarnings={shareWarnings}
                     modelPackage={modelPackage}
                     onModelPackageFiles={importLocalModelPackage}
                     onBuiltinModel={selectBuiltinModel}
@@ -2206,6 +2216,7 @@ function resolveSelectedScenario(
 
 function ConfigurationPanel({
   config,
+  shareWarnings,
   modelPackage,
   onModelPackageFiles,
   onBuiltinModel,
@@ -2227,6 +2238,8 @@ function ConfigurationPanel({
   running,
 }: {
   readonly config: DashboardRunConfig;
+  /** Settings a shared link carried that this build could not use. */
+  readonly shareWarnings: readonly string[];
   readonly modelPackage: ModelPackageSelection;
   readonly onModelPackageFiles: (
     files: readonly File[],
@@ -2345,6 +2358,17 @@ function ConfigurationPanel({
         <div className="mb-4">
           <h2 className="text-sm font-bold">Run configuration</h2>
           <p className="mt-0.5 text-xs text-zinc-500">Seed {config.seed}</p>
+          {shareWarnings.length === 0
+            ? null
+            : (
+                <div className="mt-2 flex gap-2 border-l-2 border-amber-500 bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-900">
+                  <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                  <span>
+                    The link you opened had settings this build could not use,
+                    so they kept their defaults: {shareWarnings.join("; ")}.
+                  </span>
+                </div>
+              )}
         </div>
 
         <div className="mb-4 border-y border-zinc-200 py-3">
@@ -5775,6 +5799,60 @@ function ParameterHelp({
     </Tooltip>
   );
 }
+
+/**
+ * Copies an address that reopens this configuration.
+ *
+ * The address is already current, so this only saves a trip to the bar, but it
+ * is also where the reader learns that an imported file could not travel with
+ * it. Discovering that after sending the link is worse than being told before.
+ */
+function ShareLinkButton({
+  config,
+}: {
+  readonly config: DashboardRunConfig;
+}): React.JSX.Element {
+  const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
+  const { search, omitted } = encodeDashboardShareLink(config, DEFAULT_CONFIG);
+  const href = typeof window === "undefined"
+    ? ""
+    : `${window.location.origin}${window.location.pathname}${
+      search === "" ? "" : `?${search}`
+    }`;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="secondary"
+          className="gap-1"
+          onClick={() => {
+            navigator.clipboard.writeText(href).then(
+              () => setCopied("done"),
+              () => setCopied("failed"),
+            );
+            window.setTimeout(() => setCopied("idle"), 2000);
+          }}
+        >
+          <Link2 className="size-4" />
+          {copied === "done"
+            ? "Copied"
+            : copied === "failed"
+              ? "Copy failed"
+              : "Copy link"}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80">
+        {omitted.length === 0
+          ? "Reopens this configuration. Results are not included; the link is the inputs, and whoever opens it runs them."
+          : `Reopens this configuration, except: ${
+            omitted.map((entry) => `${entry.field}, because ${entry.reason}`)
+              .join("; ")
+          }.`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 
 function CoResidencyRoster({
   config,

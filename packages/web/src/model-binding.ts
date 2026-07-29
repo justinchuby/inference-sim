@@ -17,6 +17,26 @@ import type {
 } from "./types.js";
 
 /** Built-in presets offered by the workbench, ordered by parameter count. */
+/** Weight formats a built-in preset can be bound in. */
+export const BUILTIN_WEIGHT_DTYPES = [
+  "fp16",
+  "bf16",
+  "fp8",
+  "int8",
+  "int4",
+  "int2",
+  "int1",
+] as const satisfies readonly QuantType[];
+
+/** KV cache formats a built-in preset can be bound in. */
+export const BUILTIN_KV_CACHE_DTYPES = [
+  "fp16",
+  "bf16",
+  "fp8",
+  "int8",
+  "int4",
+] as const satisfies readonly QuantType[];
+
 export const DASHBOARD_MODEL_PRESETS = [
   "stable-diffusion-1.5",
   "stable-diffusion-xl",
