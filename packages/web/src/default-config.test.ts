@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "./App.js";
 import { simulateDashboard } from "./dashboard-simulation.js";
 import { buildScenarioPreset } from "@inference-sim/core";
+import {
+  createBuiltinModelBinding,
+  modelSupportsSpeculativeFamily,
+  presetsShippingProposers,
+} from "./model-binding.js";
 import type { ScenarioPresetName } from "@inference-sim/core";
 
 describe("opening configuration", () => {
@@ -78,5 +83,40 @@ describe("opening configuration", () => {
     });
     expect(batched.serving!.batches.some((batch) => batch.sequenceCount > 1))
       .toBe(true);
+  });
+
+  it("offers only prompt lookup, and can say which models offer more", () => {
+    // The opening model ships no drafter, so the decode-mode menu is two
+    // entries long. That reads as an unfinished tool unless the reason is
+    // stated, and the reason is a fact about the checkpoint: prompt lookup
+    // needs nothing from the weights, everything else is a second set of
+    // weights the publisher either released or did not.
+    const families = ["mtp", "eagle3", "draft_model", "shared_kv"] as const;
+    for (const family of families) {
+      expect(modelSupportsSpeculativeFamily(DEFAULT_CONFIG.modelBinding!, family))
+        .toBe(false);
+    }
+    expect(
+      modelSupportsSpeculativeFamily(DEFAULT_CONFIG.modelBinding!, "prompt_lookup"),
+    ).toBe(true);
+
+    // The pointer the note gives has to be real, and has to be read out of the
+    // specs so that declaring a head on a new preset never leaves a hand-typed
+    // list behind saying otherwise.
+    const shipped = presetsShippingProposers();
+    expect(shipped.length).toBeGreaterThan(0);
+    expect(shipped.map((entry) => entry.preset)).toContain("deepseek-v3");
+    expect(shipped.map((entry) => entry.preset)).not.toContain("llama-3-8b");
+    for (const entry of shipped) {
+      expect(entry.displayName.length).toBeGreaterThan(0);
+      for (const family of entry.families) {
+        expect(
+          modelSupportsSpeculativeFamily(
+            createBuiltinModelBinding(entry.preset, "int4"),
+            family,
+          ),
+        ).toBe(true);
+      }
+    }
   });
 });

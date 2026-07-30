@@ -94,6 +94,7 @@ import {
   createImportedModelBinding,
   DASHBOARD_MODEL_PRESETS,
   modelSupportsSpeculativeFamily,
+  presetsShippingProposers,
   type DashboardModelPreset,
 } from "./model-binding.js";
 import {
@@ -2292,6 +2293,12 @@ function ConfigurationPanel({
   const speculativeOptions = SPECULATIVE_FAMILIES.filter((family) => (
     availableSpeculativeFamilies.includes(family.value)
   ));
+  // A short menu reads as an unfinished tool unless it says why it is short,
+  // and the reason is a fact about the checkpoint rather than about this
+  // simulator.
+  const onlyPromptLookupAvailable = speculativeOptions.length === 1
+    && speculativeOptions[0]?.value === "prompt_lookup";
+  const shippedProposerModels = useMemo(presetsShippingProposers, []);
   const pipelineAvailable =
     config.modelBinding?.pipelineExecution?.replacesTarget === true;
   const pipelineUnavailableReason =
@@ -3193,6 +3200,25 @@ function ConfigurationPanel({
                 ))}
               </SelectContent>
             </Select>
+            {onlyPromptLookupAvailable
+              ? (
+                  <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+                    Only prompt lookup is offered here because{" "}
+                    {config.modelBinding?.displayName ?? "this model"} ships no
+                    drafter in its released weights. Prompt lookup needs nothing
+                    from the checkpoint, so every model has it; MTP and the
+                    other families are a second set of weights the publisher has
+                    to release.{" "}
+                    {shippedProposerModels.length === 0
+                      ? null
+                      : `Models here that do: ${
+                        shippedProposerModels
+                          .map((entry) => entry.displayName)
+                          .join(", ")
+                      }.`}
+                  </p>
+                )
+              : null}
           </Field>
           <div className="flex min-h-9 items-center justify-between gap-3">
             <label

@@ -1,6 +1,7 @@
 import { compareIds } from "@inference-sim/core";
 import {
   buildModelProfile,
+  MODEL_SPECS,
   resolveOnnxModelProfile,
   type ModelProfile,
   type QuantType,
@@ -84,6 +85,38 @@ export function modelSupportsSpeculativeFamily(
 ): boolean {
   return binding.speculativeFamilies.includes(family)
     || (binding.source === "builtin_model" && family === "prompt_lookup");
+}
+
+/**
+ * Built-in presets whose released weights ship a speculative proposer, each
+ * with the families it declares.
+ *
+ * A model offering only prompt lookup is not missing a feature and is not a
+ * gap in this simulator: prompt lookup needs nothing from the checkpoint, so
+ * every model has it, while anything else is a second set of weights that the
+ * publisher either released or did not. Most did not. Saying so beside the
+ * choice is the difference between a person concluding the tool is incomplete
+ * and a person learning something true about the checkpoint they picked.
+ *
+ * Read out of the specs rather than listed by hand, so declaring a head on a
+ * new preset shows up here without a second edit that could be forgotten.
+ */
+export function presetsShippingProposers(): readonly {
+  readonly preset: DashboardModelPreset;
+  readonly displayName: string;
+  readonly families: readonly SpeculativeProposerFamily[];
+}[] {
+  return DASHBOARD_MODEL_PRESETS
+    .map((preset) => ({
+      preset,
+      families: (MODEL_SPECS[preset]?.speculative?.families
+        ?? []) as readonly SpeculativeProposerFamily[],
+    }))
+    .filter((entry) => entry.families.length > 0)
+    .map((entry) => ({
+      ...entry,
+      displayName: createBuiltinModelBinding(entry.preset).displayName,
+    }));
 }
 
 export function createBuiltinModelBinding(
