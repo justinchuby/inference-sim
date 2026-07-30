@@ -1502,4 +1502,40 @@ describe("simulateDashboard", () => {
     expect(drift).toBeLessThan(0.1);
     expect(wide.speedup / narrow.speedup).toBeLessThan(0.5);
   });
+
+  it("caps the speedup at what the acceptance allows", () => {
+    // The ceiling is what a reader needs when a claim of five-fold arrives
+    // without a model or a platform attached: a verification pass commits what
+    // it accepts and no more, so no drafter and no machine can beat the
+    // accepted length. A run short of its ceiling is paying for drafting; a
+    // ceiling short of the claim means the acceptance was never going to
+    // allow it.
+    const run = (firstPositionAcceptance: number, draftWidth: number) =>
+      simulateDashboard({
+        ...base,
+        scenarioName: "mac-studio-m3-ultra-512gb",
+        mode: "serving",
+        modelBinding: createBuiltinModelBinding("deepseek-v3", "int4"),
+        serving: {
+          ...base.serving,
+          decodeMode: "mtp",
+          draftWidth,
+          firstPositionAcceptance,
+          outputTokens: 32,
+        },
+      }).speculativeGain!;
+
+    const modest = run(0.72, 4);
+    expect(modest.speedup).toBeLessThanOrEqual(modest.ceiling + 1e-9);
+    expect(modest.ceiling).toBeCloseTo(
+      modest.committedTokensPerTargetForward,
+      6,
+    );
+
+    // Even an acceptance nobody measures, at the widest draft offered, stays
+    // under five: the ladder decays faster than width can compensate for.
+    const generous = run(0.95, 8);
+    expect(generous.ceiling).toBeGreaterThan(modest.ceiling);
+    expect(generous.speedup).toBeLessThan(5);
+  });
 });

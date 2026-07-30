@@ -796,6 +796,20 @@ function runServing(
  * average accepted lengths for the same model span 2.2 to 3.2 depending on
  * workload and temperature, which is the honest width of the uncertainty. The
  * run reports its own accepted length so it can be compared against those.
+ *
+ * What this rate governs differs by family, which matters when comparing it
+ * against a published figure. A family whose proposal opens with the target's
+ * own next token, as a multi-token-prediction head does, has that position
+ * settled before drafting starts, so the rate applies from the one after it.
+ *
+ * A geometric ladder also cannot express drafting that does not degrade.
+ * Copying a verbatim span out of the prompt, which is what makes lookup strong
+ * on editing and retrieval, holds at near-certainty until the copy diverges
+ * and then fails outright rather than fading a fifth per position. Those are
+ * the runs behind the fivefold and higher figures in the literature, and this
+ * shape cannot reach them: past about eight positions the ladder has decayed
+ * to nothing, so widening the draft stops helping and the speedup caps near
+ * four and a half whichever family is selected.
  */
 export const SPECULATIVE_ACCEPTANCE_DECAY = 0.78;
 
@@ -911,6 +925,11 @@ function speculativeGain(
     baselineTokensPerSecond: baselineRate,
     speculativeTokensPerSecond: speculativeRate,
     speedup: baselineRate > 0 ? speculativeRate / baselineRate : 1,
+    // A verification pass commits what it accepts and no more, so the accepted
+    // length is the speedup no drafter cost and no compute bound could beat.
+    // Reporting it says whether a run is short of its ceiling because drafting
+    // costs something, or because the acceptance was never going to allow more.
+    ceiling: serving.serving.metrics.committedTokensPerTargetForward,
     committedTokensPerTargetForward:
       serving.serving.metrics.committedTokensPerTargetForward,
     firstPositionAcceptance: config.serving.firstPositionAcceptance,

@@ -6378,11 +6378,15 @@ function servingMetrics(result: DashboardResult) {
           value: `${gain.speedup.toFixed(2)}x`,
           // The acceptance is an input, so it is named here rather than left
           // to be read as something the run discovered.
-          detail: `${gain.committedTokensPerTargetForward.toFixed(1)} tokens per target forward, at an assumed ${
-            (gain.firstPositionAcceptance * 100).toFixed(0)
-          }% first-position acceptance. ${
+          detail: `${
             formatRate(gain.baselineTokensPerSecond)
-          } without it.`,
+          } without it. The ${
+            gain.committedTokensPerTargetForward.toFixed(1)
+          } tokens committed per target forward cap this at ${
+            gain.ceiling.toFixed(2)
+          }x, so the acceptance assumed here, ${
+            (gain.firstPositionAcceptance * 100).toFixed(0)
+          }% at the first drafted position, is what decides it.`,
           icon: <Rocket className="size-4 text-violet-700" />,
         }]),
     {

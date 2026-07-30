@@ -410,6 +410,11 @@ export interface DashboardResult {
     readonly baselineTokensPerSecond: number;
     readonly speculativeTokensPerSecond: number;
     readonly speedup: number;
+    /**
+     * Speedup the accepted length allows. A run cannot beat it, so a gap
+     * between it and the speedup is what drafting and verification cost.
+     */
+    readonly ceiling: number;
     readonly committedTokensPerTargetForward: number;
     readonly firstPositionAcceptance: number;
     readonly acceptanceDecay: number;
