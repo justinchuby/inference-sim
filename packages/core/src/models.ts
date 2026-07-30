@@ -751,6 +751,22 @@ function expertParamsPerMoELayer(spec: ModelSpec): number {
       * ffnParams(spec.hiddenDim, moe.sharedExpertIntermediateSize);
 }
 
+/**
+ * Embedding parameters that a forward pass only ever gathers from.
+ *
+ * The per-layer table is pure lookup. The vocabulary table is a lookup on the
+ * way in and a matmul on the way out; when the two are tied they are one
+ * tensor, already counted once, and that copy is attributed to the output
+ * projection rather than to the gather.
+ */
+function embeddingLookupParams(spec: ModelSpec): number {
+  const perLayer = spec.perLayerEmbeddingDim === undefined
+    ? 0
+    : specLayerCount(spec) * spec.vocabSize * spec.perLayerEmbeddingDim;
+  return perLayer
+    + (spec.tiedEmbeddings ? 0 : spec.vocabSize * spec.hiddenDim);
+}
+
 function embeddingParams(spec: ModelSpec): number {
   const perLayer = spec.perLayerEmbeddingDim === undefined
     ? 0
@@ -868,6 +884,7 @@ function buildProfile(
     },
     totalParams,
     embeddingBytes: embeddingParams(spec) * bpp,
+    lookupParams: embeddingLookupParams(spec),
     quantization: {
       weights: weightQuant as QuantType,
       kvCache: kvQuant as QuantType,

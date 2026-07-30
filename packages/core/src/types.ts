@@ -53,6 +53,21 @@ export interface ModelProfile {
    * part of any `layers` entry and dominate residency for small models.
    */
   embeddingBytes?: number;
+  /**
+   * Parameters a token reaches by table lookup rather than by multiplication.
+   *
+   * A gather reads one row per token and does no arithmetic, so counting these
+   * as matmul weights overstates a forward pass by however large the tables
+   * are. That is negligible for most decoders and is not negligible for a
+   * model carrying a per-layer embedding table, where the lookup can be about
+   * half of every parameter in the checkpoint. They still occupy memory, so
+   * this is subtracted from arithmetic and never from residency.
+   *
+   * An untied output projection is a real matmul and stays out of this count;
+   * a tied one is the same tensor serving both roles, so it counts once as the
+   * projection and is not also charged here.
+   */
+  lookupParams?: number;
   quantization: Quantization;
   layers: LayerProfile[];
   moe?: MoEProfile;

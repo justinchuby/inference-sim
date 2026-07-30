@@ -216,8 +216,9 @@ function summarizeProfileWork(model: ModelProfile): {
       + model.moe.sharedExpertBytesPerLayer
     );
   const activeWeightBytesPerToken = denseWeightBytes + activeExpertBytes;
+  // Gathered rows are bytes, not arithmetic. See ModelProfile.lookupParams.
   const activeParameters = model.moe === undefined
-    ? model.totalParams
+    ? Math.max(1, model.totalParams - (model.lookupParams ?? 0))
     : activeWeightBytesPerToken / bytesPerElement(model.quantization.weights);
   return {
     activeWeightBytesPerToken,

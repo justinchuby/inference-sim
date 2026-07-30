@@ -159,6 +159,13 @@ export interface DashboardModelExecutionProfile {
    */
   readonly streamedFfnWeightBytesPerToken?: number;
   readonly forwardFlopsPerToken: number;
+  /**
+   * Dtype the arithmetic runs in. Lets the run resolve the device's published
+   * dense peak so a forward pass is never timed faster than the silicon can
+   * issue, and is the same dtype the roofline chart picks its compute roof
+   * with, so the timing and the chart cannot contradict each other.
+   */
+  readonly computeDtype?: string;
   readonly kvCacheBytesPerToken?: number;
   readonly kvCacheEvidence?: "architecture_derived" | "metadata_declared";
 }

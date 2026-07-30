@@ -757,6 +757,7 @@ function parseModelExecutionProfile(
     "attentionWeightBytesPerToken",
     "ffnWeightBytesPerToken",
     "forwardFlopsPerToken",
+    "computeDtype",
     "kvCacheBytesPerToken",
     "kvCacheEvidence",
   ], "modelBinding executionProfile");
@@ -795,6 +796,17 @@ function parseModelExecutionProfile(
       Number.MAX_SAFE_INTEGER,
       "modelBinding executionProfile forwardFlopsPerToken",
     ),
+    // Carried because it selects the device compute peak that bounds the
+    // forward pass. Dropping it would let a replay run faster than the
+    // original, which is the one thing a replay must not do.
+    ...(profile.computeDtype === undefined
+      ? {}
+      : {
+          computeDtype: requireString(
+            profile.computeDtype,
+            "modelBinding executionProfile computeDtype",
+          ),
+        }),
     ...(profile.kvCacheBytesPerToken === undefined
       ? {}
       : {

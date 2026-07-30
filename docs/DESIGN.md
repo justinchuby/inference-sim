@@ -1277,6 +1277,25 @@ not yet fit compute roofline knees, sequence-length effects, cache-tier
 distributions, or per-product device overrides. Those require a later
 calibration revision rather than weakening revision 3 applicability.
 
+Because the per-token coefficients are normalized constants that do not scale
+with model size, they place no ceiling of their own on the rate a wide prefill
+implies. Two floors bound a compute duration instead, and the longer wins: the
+weight-bandwidth floor, which is the active weights divided by the bandwidth of
+the domain holding them, and the compute-peak floor, which is the arithmetic
+attributed to that stage divided by the device's published dense peak for the
+run's dtype. Arithmetic is split between attention and FFN by their share of
+active weight bytes, the same split the roofline chart uses to place a
+component point, so the timing and the chart cannot disagree about how much of
+a forward pass a stage is.
+
+The compute-peak floor applies only where a peak is published for the dtype
+being computed in. A device-kind coefficient is close enough to a discrete
+accelerator's peak that the floor rarely binds there; an integrated GPU is
+where it matters, being one to two orders of magnitude slower than the
+coefficient assumes. Where the vendor publishes no rate for the dtype, no
+ceiling is applied and the roofline reports the limiting resource as unproven,
+which is the same stance taken for low-bit weight formats above.
+
 ### 11.5 Hierarchical Roofline Result
 
 Dashboard runs emit a deterministic revisioned roofline summary. It is a
@@ -1286,7 +1305,12 @@ The summary separates:
 - device, host, interconnect/network, and storage bandwidth roofs;
 - prefill, decode, mixed continuous batches, speculative target verification,
   pipeline components, and routed-expert work;
-- model arithmetic intensity from simulated replay rate; and
+- model arithmetic intensity from simulated replay rate, where forward
+  arithmetic is twice the parameters a token multiplies against and
+  therefore excludes parameters it only gathers: an input embedding table
+  and any per-layer embedding table are read, not multiplied, which is
+  negligible for most decoders and about half the checkpoint for a model
+  carrying a per-layer table; and
 - declared bandwidth evidence from the cost model's effective compute ceiling.
 
 The chart uses logarithmic FLOP/byte and FLOP/s axes. A point's predicted rate

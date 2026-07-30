@@ -1358,4 +1358,85 @@ describe("topology-aware workload execution", () => {
     expect(duration("multi-gpu")).toBeLessThan(duration("single-gpu-cpu"));
     expect(duration("multi-node")).toBeGreaterThan(duration("multi-gpu"));
   });
+
+  it("bounds expert-parallel FFN by each owner's published compute peak", () => {
+    // Expert parallelism builds its FFN steps from routed-assignment counts
+    // rather than through the shared compute path, so it needs the peak floor
+    // applied per owner or a routed model would be the one shape that can
+    // still be timed faster than the silicon can issue.
+    const routedProfile = (peakOperationsPerSecond: number) => {
+      const base = buildMultiGpuRingScenario(4);
+      const scenario = {
+        ...base,
+        devices: base.devices.map((device) => ({
+          ...device,
+          customComputePeaks: [{
+            dtype: "fp16",
+            operationsPerSecond: peakOperationsPerSecond,
+            sparsity: "dense" as const,
+          }],
+        })),
+      };
+      const result = simulateTopologyWorkload(scenario, {
+        id: "peak-bounded-routed-moe",
+        batchSize: 1,
+        modelWork: {
+          modelId: "peak-bounded",
+          modelName: "Peak bounded",
+          attentionWeightBytesPerToken: 1024 ** 2,
+          ffnWeightBytesPerToken: 3 * 1024 ** 2,
+          forwardFlopsPerToken: 8 * 1024 ** 3,
+          computeDtype: "fp16",
+        },
+        expertPlacement: expertPlacement(
+          "round_robin",
+          ["e0", "e1", "e2", "e3"],
+        ),
+        expertTokenPlacement: "round_robin" as const,
+        units: [{
+          id: "route-0",
+          targetTokenWidth: 1,
+          committedTokens: 1,
+          draftTokens: 0,
+          activeExperts: 4,
+          expertRouted: true,
+          routedExperts: ["e0", "e1", "e2", "e3"].map((expertId) => ({
+            expertId,
+            sourceTier: "hot" as const,
+            loadBytes: 0,
+          })),
+          warmLoadBytes: 0,
+          coldLoadBytes: 0,
+        }],
+      });
+      expect(result.execution.status).toBe("succeeded");
+      return result.plan.steps
+        .filter((step) => (
+          step.operation.kind === "compute"
+          && step.operation.capability === "ffn"
+        ))
+        .map((step) => (
+          step.operation.kind === "compute" ? step.operation.durationNs : 0
+        ));
+    };
+
+    // A peak far above the cost coefficients leaves the coefficients in
+    // charge, which is the discrete-accelerator case and must not move.
+    const fast = routedProfile(1e15);
+    // A peak far below them takes over, which is the integrated case.
+    const slow = routedProfile(1e11);
+
+    expect(fast).toHaveLength(4);
+    expect(slow).toHaveLength(4);
+    for (let index = 0; index < fast.length; index++) {
+      expect(slow[index]).toBeGreaterThan(fast[index]);
+    }
+    // Each of the four owners holds one of four routed assignments, so each
+    // is charged a quarter of the stage rather than all of it.
+    const ffnShare = 3 / 4;
+    const expected = Math.ceil(
+      8 * 1024 ** 3 * ffnShare * (1 / 4) * 1e9 / 1e11,
+    );
+    expect(slow[0]).toBe(expected);
+  });
 });

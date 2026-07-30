@@ -770,10 +770,15 @@ function executionProfile(
     ffnWeightBytesPerToken,
     forwardFlopsPerToken: 2 * (
       model.moe === undefined
-        ? model.totalParams
+        // Table lookups move bytes without multiplying anything, so charging
+        // them as arithmetic inflates intensity by however large the tables
+        // are. Left in, a per-layer embedding table put one model's prefill at
+        // 73 times its own compute roof.
+        ? Math.max(1, model.totalParams - (model.lookupParams ?? 0))
         : (attentionWeightBytesPerToken + ffnWeightBytesPerToken)
           / bytesPerElement(model.quantization.weights)
     ),
+    computeDtype: model.quantization.activations,
     kvCacheBytesPerToken: model.layers.reduce(
       (sum, layer) => sum + layer.kvCachePerToken,
       0,

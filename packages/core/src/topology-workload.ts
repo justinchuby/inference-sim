@@ -1,4 +1,5 @@
 import { compareIds } from "./ordering.js";
+import { denseHardwareComputePeak } from "./hardware-compute-profiles.js";
 import {
   PLAN_CONTRACT_REVISION,
   type FrozenPlan,
@@ -117,6 +118,22 @@ export interface TopologyModelWork {
    * happens. Absent or zero means every weight is resident.
    */
   readonly streamedFfnWeightBytesPerToken?: number;
+  /**
+   * Dtype the arithmetic runs in, used to look up the device's published dense
+   * peak so a forward pass cannot be timed faster than the silicon can issue.
+   *
+   * The per-token costs in the cost model are normalized constants that do not
+   * scale with model size, so on their own they place no ceiling on the rate a
+   * wide prefill implies. That is invisible on a discrete accelerator, whose
+   * published peak is near the constants anyway, and badly wrong on an
+   * integrated one: an Intel iGPU was being timed at 72 TFLOP/s against a
+   * published 2 TFLOP/s, and the roofline chart reported the contradiction as
+   * unexplained rather than as a timing fault.
+   *
+   * Omitted means no ceiling is applied. A peak cannot be chosen without
+   * knowing the dtype, and guessing one would be worse than declining.
+   */
+  readonly computeDtype?: string;
 }
 
 export interface TopologyExpertPlacement {
@@ -1693,6 +1710,10 @@ class WorkloadPlanCompiler {
         ),
       );
     }
+    const totalExpertWorkItems = [...workItemsByPlacement.values()].reduce(
+      (sum, count) => sum + count,
+      0,
+    ) || 1;
     const activeFfnPlacements: PartitionPlacement[] = [];
     const expertTerminals = ffnPlacements.flatMap((placement) => {
       const workItems = workItemsByPlacement.get(placement.partitionId) ?? 0;
@@ -1707,11 +1728,28 @@ class WorkloadPlanCompiler {
         1,
       );
       const durationNs = checkedAdd(
-        this.computeDurationForWorkItems(
-          placement.deviceId,
-          "ffn",
-          workItems,
-          1,
+        Math.max(
+          this.computeDurationForWorkItems(
+            placement.deviceId,
+            "ffn",
+            workItems,
+            1,
+          ),
+          // This placement owns a share of the routed assignments rather than
+          // the whole FFN stage, and the stage's arithmetic already counts the
+          // active experts, so the share is applied to the stage instead of
+          // the work items being read as tokens.
+          this.declaredComputePeakFloor(
+            placement.deviceId,
+            "ffn",
+            checkedMultiply(
+              unit.targetTokenWidth,
+              this.profile.batchSize,
+              "expert floor token batch",
+            ),
+            1,
+            workItems / totalExpertWorkItems,
+          ),
         ),
         cacheLoad.localMemoryPenaltyNs,
         "expert FFN duration",
@@ -2296,12 +2334,89 @@ class WorkloadPlanCompiler {
       : capability === "attention" || capability === "ffn"
         ? this.scenario.execution.parallelism.tensor
         : 1;
-    return this.computeDurationForWorkItems(
-      deviceId,
-      capability,
-      workItems,
-      shardDegree,
+    return Math.max(
+      this.computeDurationForWorkItems(
+        deviceId,
+        capability,
+        workItems,
+        shardDegree,
+      ),
+      // Routed experts are already inside forwardFlopsPerToken by way of the
+      // active weight bytes, so the floor counts tokens rather than work
+      // items: multiplying by activeExperts here would charge them twice.
+      this.declaredComputePeakFloor(
+        deviceId,
+        capability,
+        checkedMultiply(tokenWidth, this.profile.batchSize, "compute tokens"),
+        shardDegree,
+      ),
     );
+  }
+
+  /**
+   * Shortest duration the device's own published dense peak allows for this
+   * slice of the forward pass, or zero when no peak can be resolved.
+   *
+   * Arithmetic is attributed between attention and FFN by their share of
+   * active weight bytes, which is the same split the roofline chart uses to
+   * place a component point, so the two cannot disagree about how much of a
+   * forward pass a stage represents.
+   */
+  private declaredComputePeakFloor(
+    deviceId: string,
+    capability: TopologyComputeCapability,
+    tokens: number,
+    shardDegree: number,
+    // Fraction of this capability's arithmetic that lands on this device when
+    // the caller has already divided the work itself, as expert parallelism
+    // does by owner. One means the device performs the whole stage.
+    workShare = 1,
+  ): number {
+    const modelWork = this.profile.modelWork;
+    if (
+      modelWork === undefined
+      || modelWork.computeDtype === undefined
+      || (capability !== "attention" && capability !== "ffn")
+    ) {
+      return 0;
+    }
+    const peak = this.declaredDensePeak(deviceId, modelWork.computeDtype);
+    if (peak === undefined || !(peak > 0)) {
+      return 0;
+    }
+    const attentionBytes = modelWork.attentionWeightBytesPerToken;
+    const ffnBytes = modelWork.ffnWeightBytesPerToken;
+    const totalBytes = attentionBytes + ffnBytes;
+    if (!(totalBytes > 0)) {
+      return 0;
+    }
+    const share = (capability === "attention" ? attentionBytes : ffnBytes)
+      / totalBytes;
+    const flops = modelWork.forwardFlopsPerToken * share * tokens * workShare
+      / shardDegree;
+    if (!Number.isFinite(flops) || flops <= 0) {
+      return 0;
+    }
+    const duration = Math.ceil(flops * 1e9 / peak);
+    // Everything else in this class builds durations through the checked
+    // helpers, so a floor that silently returned an unsafe integer would be
+    // the one unvalidated number in a plan.
+    assertPositiveSafeInteger(duration, `${capability} compute peak floor`);
+    return duration;
+  }
+
+  private declaredDensePeak(
+    deviceId: string,
+    dtype: string,
+  ): number | undefined {
+    const device = this.device(deviceId);
+    if (device.customComputePeaks !== undefined) {
+      return device.customComputePeaks.find((peak) => (
+        peak.dtype.toLowerCase() === dtype.toLowerCase()
+      ))?.operationsPerSecond;
+    }
+    return denseHardwareComputePeak(device.computeProfileId, dtype)
+      ?.operationsPerSecond;
   }
 
   private computeDurationForWorkItems(

@@ -18,6 +18,8 @@ import {
   simulateDashboardExecution,
 } from "./dashboard-simulation.js";
 import { createBuiltinModelBinding } from "./model-binding.js";
+import { interpretRoofline } from "./roofline-interpretation.js";
+import type { DashboardModelPreset } from "./model-binding.js";
 import type { DashboardRunConfig } from "./types.js";
 
 const base: DashboardRunConfig = {
@@ -1537,5 +1539,86 @@ describe("simulateDashboard", () => {
     const generous = run(0.95, 8);
     expect(generous.ceiling).toBeGreaterThan(modest.ceiling);
     expect(generous.speedup).toBeLessThan(5);
+  });
+
+  it("never predicts a rate the silicon cannot issue", () => {
+    // Two separate faults put one model's prefill at 73 times its own compute
+    // roof, and the chart could only report that as an unexplained conflict.
+    //
+    // The first was arithmetic: FLOPs came from the whole parameter count, but
+    // a per-layer embedding table is gathered, not multiplied, and on this
+    // checkpoint that table is about half of every parameter present.
+    //
+    // The second was timing: the per-token costs are normalized constants that
+    // do not scale with model size, so nothing stopped a wide prefill from
+    // implying an unbounded rate. That is invisible on a discrete accelerator
+    // and badly wrong on an integrated one.
+    const computers = [
+      "rtx-5090-desktop",
+      "rtx-4090-desktop",
+      "mac-mini-m4-pro-64gb",
+      "ryzen-ai-max-395-128gb",
+      "panther-lake-x9-388h-32gb",
+      "arrow-lake-s-285k-64gb",
+    ] as const;
+    const models = [
+      "gemma-4-e2b",
+      "qwen3-0.6b",
+      "llama-3-8b",
+      "qwen3-30b-a3b",
+    ] as const;
+    for (const scenarioName of computers) {
+      for (const preset of models) {
+        const roofline = simulateDashboard({
+          ...base,
+          scenarioName,
+          mode: "serving",
+          serving: { ...base.serving, decodeMode: "target_only" },
+          modelBinding: createBuiltinModelBinding(preset, "int4", "int4"),
+        }).roofline;
+        if (roofline === undefined || roofline.status === "unavailable") {
+          continue;
+        }
+        const roof = roofline.bandwidthRoofs[0];
+        expect(roof).toBeDefined();
+        const verdict = interpretRoofline(roofline, roof!, roofline.points);
+        expect(
+          `${preset} on ${scenarioName}: ${verdict.verdict}`,
+        ).not.toContain("Evidence conflict");
+
+        // A device that publishes a peak for this dtype must bound the run.
+        // Where none is published there is nothing to bound it with, which
+        // the chart already reports rather than papering over.
+        if (roofline.computeRoof !== undefined) {
+          for (const point of roofline.points) {
+            expect(point.predictedFlopsPerSecond)
+              .toBeLessThanOrEqual(roofline.computeRoof.flopsPerSecond * 1.05);
+          }
+        }
+      }
+    }
+  });
+
+  it("charges gathered embeddings as bytes and not as arithmetic", () => {
+    // The per-layer table only distinguishes this checkpoint from its
+    // siblings, so comparing intensities is what shows the lookup is no
+    // longer being multiplied: a table half the size of the model would
+    // otherwise put this one at roughly twice everything near its size.
+    const intensity = (preset: DashboardModelPreset) => {
+      const profile = createBuiltinModelBinding(preset, "int4")
+        .executionProfile;
+      return profile.forwardFlopsPerToken / (
+        profile.attentionWeightBytesPerToken + profile.ffnWeightBytesPerToken
+      );
+    };
+    const withTable = intensity("gemma-4-e2b");
+    const peers = [
+      intensity("qwen3-0.6b"),
+      intensity("llama-3.2-1b"),
+      intensity("qwen3-4b"),
+    ];
+    for (const peer of peers) {
+      expect(withTable / peer).toBeLessThan(1.35);
+    }
   });
 });
