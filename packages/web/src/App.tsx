@@ -251,14 +251,14 @@ export const DEFAULT_CONFIG: DashboardRunConfig = {
     family: "prompt_lookup",
     outputTokens: 128,
     draftWidth: 4,
-    firstPositionAcceptance: 0.82,
+    firstPositionAcceptance: 0.72,
   },
   serving: {
     compareTopologies: false,
     useExpertCache: false,
     decodeMode: "target_only",
     draftWidth: 4,
-    firstPositionAcceptance: 0.82,
+    firstPositionAcceptance: 0.72,
     // One request, batched with nothing, prefilled in one pass. Continuous
     // batching and chunked prefill are the first two things worth turning on,
     // but they are only legible once the run without them has been seen.

@@ -142,7 +142,12 @@ export function createBuiltinModelBinding(
       unmodeledComponentIds: [],
       limitations: moeLimitations,
     },
-    speculativeFamilies: ["prompt_lookup"],
+    // Prompt lookup needs nothing from the checkpoint, so every model can do
+    // it. Anything else has to have shipped in the weights.
+    speculativeFamilies: [
+      "prompt_lookup",
+      ...(model.speculative?.families ?? []),
+    ] as readonly SpeculativeProposerFamily[],
   };
 }
 

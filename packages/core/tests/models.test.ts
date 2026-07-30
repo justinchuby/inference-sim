@@ -415,4 +415,29 @@ describe("model presets", () => {
     expect(withoutCache).toHaveLength(20);
     expect(withoutCache.every((layer) => layer.attentionBytes > 0)).toBe(true);
   });
+
+  it("declares a drafter only where the released weights contain one", () => {
+    // Whether a checkpoint can speculate unaided is a property of what
+    // shipped, not of the runtime, and every one of these was confirmed by a
+    // config field or an official companion checkpoint rather than by the
+    // architecture being capable of it in principle.
+    const ships = (preset: Parameters<typeof buildModelProfile>[0]) =>
+      buildModelProfile(preset).speculative?.families ?? [];
+
+    for (const preset of [
+      "deepseek-v3", "gemma-4-e2b", "gemma-4-12b", "qwen3.6-27b",
+    ] as const) {
+      expect(ships(preset), preset).toContain("mtp");
+    }
+
+    // These do not, and one of them is emphatic about it: Kimi K2 carries the
+    // field set to zero. Declaring a head they do not have would invent a
+    // speedup a reader could not reproduce.
+    for (const preset of [
+      "deepseek-v2", "llama-3-8b", "qwen-3-235b", "kimi-k2", "mixtral-8x7b",
+      "gpt-oss-120b",
+    ] as const) {
+      expect(ships(preset), preset).toStrictEqual([]);
+    }
+  });
 });

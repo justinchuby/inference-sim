@@ -64,6 +64,15 @@ export interface ModelProfile {
   components?: readonly ModelComponentProfile[];
   /** Media modalities this checkpoint accepts. Absent when it is text only. */
   mediaInputs?: readonly MediaInputProfile[];
+  /**
+   * Speculative drafting the released weights can do unaided. Absent when the
+   * checkpoint ships no drafter, which is the common case.
+   */
+  speculative?: {
+    readonly families: readonly string[];
+    readonly drafterParams?: number;
+    readonly draftWidth?: number;
+  };
   /** Present for iterative denoisers. */
   diffusion?: DiffusionProfile;
   provenance: ModelProfileProvenance;

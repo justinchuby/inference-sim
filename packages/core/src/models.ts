@@ -6,6 +6,7 @@
  * itself. `derivedTotalParams` recomputes the parameter count from the same
  * geometry; `tests/models.test.ts` checks it against the published count.
  */
+import type { SpeculativeProposerFamily } from "./speculative-family.js";
 import type {
   DiffusionProfile,
   ExpertDistribution,
@@ -582,6 +583,16 @@ export interface ModelSpec {
    * token streams, which is why it belongs with the embeddings.
    */
   readonly perLayerEmbeddingDim?: number;
+  /**
+   * Speculative drafting the released checkpoint can do on its own.
+   *
+   * Whether a model can speculate without a second checkpoint is a property of
+   * what shipped, not of the runtime: a multi-token-prediction head has to be
+   * in the weights. Absent means the checkpoint ships no drafter, which is the
+   * common case; prompt lookup needs nothing from the model and is available
+   * regardless.
+   */
+  readonly speculative?: SpeculativeShippedSpec;
   readonly moe?: MoESpec;
   readonly multimodal?: MultimodalSpec;
   /**
@@ -603,6 +614,16 @@ interface MultimodalComponentSpec {
   readonly tokenEmbedding?: { readonly vocabSize: number; readonly width: number };
   /** Decoder tokens one media item expands into after any token merging. */
   readonly tokensPerItem?: number;
+}
+
+/** A drafter the released weights contain. */
+export interface SpeculativeShippedSpec {
+  /** Families this checkpoint can drive with no second model. */
+  readonly families: readonly SpeculativeProposerFamily[];
+  /** Parameters the drafter adds beyond the target, when published. */
+  readonly drafterParams?: number;
+  /** Tokens it proposes per step, when the checkpoint fixes one. */
+  readonly draftWidth?: number;
 }
 
 interface MultimodalSpec {
@@ -853,6 +874,9 @@ function buildProfile(
       activations: "fp16",
     },
     layers,
+    ...(spec.speculative === undefined
+      ? {}
+      : { speculative: spec.speculative }),
     ...(spec.multimodal === undefined
       ? {}
       : {
@@ -1154,6 +1178,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "gemma-4-e2b": {
+    // Ships a drafter in the released weights, evidenced by the gemma-4-E2B-it-assistant checkpoint.
+    speculative: {
+      families: ["mtp"],
+      drafterParams: 77e6,
+    },
+
     name: "Gemma-4-E2B",
     // "E" is for effective: 5.1B stored, of which 2.3B are read as weights.
     // The rest is a per-layer embedding table that is looked up, not streamed.
@@ -1243,6 +1273,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "gemma-4-12b": {
+    // Ships a drafter in the released weights, evidenced by the gemma-4-12B-it-assistant checkpoint.
+    speculative: {
+      families: ["mtp"],
+      drafterParams: 384e6,
+    },
+
     name: "Gemma-4-12B",
     publishedTotalParams: 12e9,
     numLayers: 48,
@@ -1319,6 +1355,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "qwen3.6-27b": {
+    // Ships a drafter in the released weights, evidenced by mtp_num_hidden_layers: 1.
+    speculative: {
+      families: ["mtp"],
+      drafterParams: 470e6,
+    },
+
     name: "Qwen3.6-27B",
     publishedTotalParams: 27e9,
     numLayers: 64,
@@ -1358,6 +1400,11 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "gemma-4-31b": {
+    // Ships a drafter in the released weights, evidenced by an assistant checkpoint Google documents.
+    speculative: {
+      families: ["mtp"],
+    },
+
     name: "Gemma-4-31B",
     publishedTotalParams: 31e9,
     numLayers: 60,
@@ -1742,6 +1789,11 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "gemma-4-26b-a4b": {
+    // Ships a drafter in the released weights, evidenced by an assistant checkpoint Google documents.
+    speculative: {
+      families: ["mtp"],
+    },
+
     name: "Gemma-4-26B-A4B",
     publishedTotalParams: 26e9,
     numLayers: 30,
@@ -1850,6 +1902,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "qwen3.6-35b-a3b": {
+    // Ships a drafter in the released weights, evidenced by mtp_num_hidden_layers: 1.
+    speculative: {
+      families: ["mtp"],
+      drafterParams: 900e6,
+    },
+
     name: "Qwen3.6-35B-A3B",
     publishedTotalParams: 35e9,
     numLayers: 40,
@@ -1998,6 +2056,12 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   "deepseek-v3": {
+    // Ships a drafter in the released weights, evidenced by num_nextn_predict_layers: 1.
+    speculative: {
+      families: ["mtp"],
+      drafterParams: 11.5e9,
+    },
+
     name: "DeepSeek-V3",
     publishedTotalParams: 671e9,
     numLayers: 61,

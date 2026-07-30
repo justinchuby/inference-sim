@@ -781,15 +781,23 @@ function runServing(
  * proposer would actually agree with the target on: that depends on the
  * checkpoint pair and on the text being generated, and prompt lookup in
  * particular swings from excellent on editing and summarisation, where the
- * output repeats the prompt, to near useless on open generation. The first
- * position is whatever the reader declares, and later positions decay because
- * a draft that has already diverged rarely recovers.
+ * output repeats the prompt, to near useless on open generation.
  *
- * The decay is a modelling choice with no measurement behind it, which is why
- * it is named here rather than left inline: any speedup this simulator reports
- * is a consequence of these numbers and is only as good as they are.
+ * The decay is now anchored on measurement rather than invented. Published
+ * per-position conditional acceptance for a shipped MTP head falls roughly
+ * 0.92, 0.72, 0.50 across the first three positions, so each position keeps
+ * about 0.78 of the one before it. An earlier 0.86 here was unsourced and
+ * about a fifth too generous.
+ *
+ * Two caveats survive the correction. Real acceptance decays faster than any
+ * constant ratio, because after the first position the head is extending its
+ * own output rather than the target's hidden state, so this overstates wide
+ * drafts and a width beyond four should be read as optimistic. And published
+ * average accepted lengths for the same model span 2.2 to 3.2 depending on
+ * workload and temperature, which is the honest width of the uncertainty. The
+ * run reports its own accepted length so it can be compared against those.
  */
-export const SPECULATIVE_ACCEPTANCE_DECAY = 0.86;
+export const SPECULATIVE_ACCEPTANCE_DECAY = 0.78;
 
 export function speculativeAcceptanceLadder(
   firstPositionAcceptance: number,
